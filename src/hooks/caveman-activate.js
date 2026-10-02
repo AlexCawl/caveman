@@ -69,11 +69,23 @@ function requireSibling(name, isUsable) {
 // Hand-copy of caveman-config.js VALID_MODES, used only when that module is
 // unavailable. tests/test_hook_missing_sibling.js asserts the two stay equal.
 const FALLBACK_VALID_MODES = [
-  'off', 'lite', 'full', 'ultra',
-  'wenyan-lite', 'wenyan', 'wenyan-full', 'wenyan-ultra',
+  'off', 'caveman', 'ultracave', 'megacave',
   'commit', 'review', 'compress'
 ];
 const FALLBACK_DEFAULT_MODES = [...FALLBACK_VALID_MODES, 'manual'];
+// Hand-copy of caveman-config.js LEGACY_MODES: a config file or env var still
+// naming a pre-three-skill level must resolve the same way when degraded.
+const FALLBACK_LEGACY_MODES = {
+  lite: 'caveman', full: 'caveman', ultra: 'ultracave',
+  wenyan: 'megacave', 'wenyan-lite': 'megacave',
+  'wenyan-full': 'megacave', 'wenyan-ultra': 'megacave',
+};
+function fallbackCanonicalDefault(raw) {
+  if (typeof raw !== 'string') return null;
+  const m = raw.toLowerCase();
+  if (FALLBACK_DEFAULT_MODES.includes(m)) return m;
+  return Object.prototype.hasOwnProperty.call(FALLBACK_LEGACY_MODES, m) ? FALLBACK_LEGACY_MODES[m] : null;
+}
 
 // Minimal stand-in for caveman-config.getDefaultMode. It must mirror the real
 // resolution order rather than read only the env var: a degrade that ignores a
@@ -84,10 +96,7 @@ const FALLBACK_DEFAULT_MODES = [...FALLBACK_VALID_MODES, 'manual'];
 function fallbackReadMode(file) {
   try {
     if (!fs.lstatSync(file).isFile()) return null;
-    const mode = JSON.parse(fs.readFileSync(file, 'utf8')).defaultMode;
-    if (typeof mode === 'string' && FALLBACK_DEFAULT_MODES.includes(mode.toLowerCase())) {
-      return mode.toLowerCase();
-    }
+    return fallbackCanonicalDefault(JSON.parse(fs.readFileSync(file, 'utf8')).defaultMode);
   } catch (e) { /* absent, unreadable, or malformed → next source */ }
   return null;
 }
@@ -104,8 +113,8 @@ function fallbackGetDefaultMode(startDir) {
   // 1. Environment variable. No .trim() — the real resolver does not trim, and
   //    a degraded path that accepts " ultra" where the intact one rejects it is
   //    drift in a whitelist.
-  const envMode = process.env.CAVEMAN_DEFAULT_MODE;
-  if (envMode && FALLBACK_DEFAULT_MODES.includes(envMode.toLowerCase())) return envMode.toLowerCase();
+  const envMode = fallbackCanonicalDefault(process.env.CAVEMAN_DEFAULT_MODE);
+  if (envMode) return envMode;
   // 2. Repo-local config, walking up. Bounded at 64 like findRepoConfigPath.
   try {
     let dir = path.resolve(startDir || process.cwd());
@@ -120,7 +129,7 @@ function fallbackGetDefaultMode(startDir) {
     }
   } catch (e) { /* fall through to user config */ }
   // 3. User config, then 4. the built-in default.
-  return fallbackReadMode(fallbackUserConfigPath()) || 'full';
+  return fallbackReadMode(fallbackUserConfigPath()) || 'caveman';
 }
 
 // Degraded stubs keep the rest of this hook working when the config module is
@@ -203,7 +212,7 @@ try {
 // A watchdog covers the case where the payload never completes at all: activate
 // well inside the budget instead of forfeiting the session. It must NOT assume
 // `startup` — that is the one source that resets the mode, so a slow payload on
-// a `compact`/`resume` event would silently drop a user's mid-session `ultra`
+// a `compact`/`resume` event would silently drop a user's mid-session `ultracave`
 // back to the default (#691 through the timeout door). An unknown source
 // preserves a valid existing flag. The deadline sits well below the host's 5s
 // budget but far enough above a cold Windows/AV start to be reached rarely.
@@ -223,7 +232,7 @@ const RESET_SOURCES = new Set(['startup', 'clear']);
 function activate(payload, timedOut) {
   // Unknown, not startup: we never saw the payload, so we cannot claim to know
   // what kind of session event this was — and 'unknown' must not reset, or a
-  // slow payload on a compact would drop a mid-session ultra (#691 through the
+  // slow payload on a compact would drop a mid-session ultracave (#691 through the
   // timeout door) and re-arm a session the user turned off.
   let source = timedOut ? 'unknown' : 'startup';
   // The session's cwd, which is not necessarily this hook process's cwd. The
@@ -323,66 +332,60 @@ if (mode === 'off' || mode === 'manual') {
 recordModeChange(claudeDir, mode, sessionId); // #601
 writeSessionMode(claudeDir, sessionId, mode);
 
-// 2. Emit full caveman ruleset, filtered to the active intensity level.
-//    The old 2-sentence summary was too weak — models drifted back to verbose
-//    mid-conversation, especially after context compression pruned it away.
-//    Full rules with examples anchor behavior much more reliably.
+// 2. Emit the active mode's whole skill body. The old 2-sentence summary was
+//    too weak — models drifted back to verbose mid-conversation, especially
+//    after context compression pruned it away.
 //
-//    Reads SKILL.md at runtime so edits to the source of truth propagate
-//    automatically — no hardcoded duplication to go stale.
+//    Reads skills/<mode>/SKILL.md at runtime so edits to the source of truth
+//    propagate automatically — no hardcoded duplication to go stale.
 
-// Modes that have their own independent skill files — not caveman intensity levels.
+// Modes that have their own independent skill files — not caveman prose modes.
 // For these, emit a short activation line; the skill itself handles behavior.
 const INDEPENDENT_MODES = new Set(['commit', 'review', 'compress']);
 
 if (INDEPENDENT_MODES.has(mode)) {
-  process.stdout.write('CAVEMAN MODE ACTIVE — level: ' + mode + '. Behavior defined by /caveman-' + mode + ' skill.');
+  process.stdout.write('CAVEMAN MODE ACTIVE — mode: ' + mode + '. Behavior defined by /caveman-' + mode + ' skill.');
   process.exit(0);
 }
 
-// Resolve the canonical label for wenyan alias, and read SKILL.md — the single
-// source of truth for caveman behavior, filtered to this level's intensity row.
-//
-// Both live in caveman-config.js so caveman-mode-tracker.js can inject the SAME
-// ruleset when the user switches level mid-session (#975). Each is resolved
-// individually against a local stand-in, for the reason the per-session helpers
-// above are: a caveman-config.js predating these exports loads fine and passes
-// the shape check, and failing the whole module over them would trade this
-// hook's ruleset for no flag write at all. A missing loader degrades to the
-// hardcoded fallback ruleset below, which is what a missing SKILL.md already did.
-const canonicalModeLabel = cfg.canonicalModeLabel || ((m) => (m === 'wenyan' ? 'wenyan-full' : m));
-const rulesetBanner = cfg.rulesetBanner || ((m) => 'CAVEMAN MODE ACTIVE — level: ' + canonicalModeLabel(m));
-const loadFilteredRuleset = cfg.loadFilteredRuleset || (() => null);
+// The loaders live in caveman-config.js so caveman-mode-tracker.js can inject
+// the SAME ruleset when the user switches mode mid-session (#975). Each is
+// resolved individually against a local stand-in, for the reason the
+// per-session helpers above are: a caveman-config.js predating these exports
+// loads fine and passes the shape check, and failing the whole module over them
+// would trade this hook's ruleset for no flag write at all. A missing loader
+// degrades to the hardcoded fallback ruleset below, which is what a missing
+// SKILL.md already did.
+const rulesetBanner = cfg.rulesetBanner || ((m) => 'CAVEMAN MODE ACTIVE — mode: ' + m);
+const loadRuleset = cfg.loadRuleset || (() => null);
+const thesisLine = cfg.thesisLine || (() => null);
 
-const modeLabel = canonicalModeLabel(mode);
-const skillContent = loadFilteredRuleset(mode, __dirname);
+const SWITCH_LINE = 'Switch: /caveman, /ultracave, /megacave. Off: "stop caveman" or "normal mode".';
 
-let output;
+// Fallback when SKILL.md is not found (standalone hook install without skills
+// dir): the caveman thesis plus the nine rule headlines of skills/caveman.
+// Rule 8 keeps its "never switch" sentence: a headline alone lost the #812
+// language rule for every fallback-install user.
+const FALLBACK_RULESET =
+  'Respond terse like smart caveman. All technical substance stay. Only fluff die.\n\n' +
+  '1. Answer first.\n' +
+  '2. Kill ceremony.\n' +
+  '3. Short word.\n' +
+  '4. Articles optional, meaning never.\n' +
+  '5. One idea per sentence.\n' +
+  '6. Payload verbatim.\n' +
+  '7. Tool runs: bounded status.\n' +
+  "8. User's language. Compress the style, not the language. Never switch because of quoted text.\n" +
+  '9. Never perform caveman.';
 
-if (skillContent) {
-  output = rulesetBanner(mode) + '\n\n' + skillContent;
-} else {
-  // Fallback when SKILL.md is not found (standalone hook install without skills dir).
-  // This is the minimum viable ruleset — better than nothing.
-  output =
-    'CAVEMAN MODE ACTIVE — level: ' + modeLabel + '\n\n' +
-    'Respond terse like smart caveman. All technical substance stay. Only fluff die.\n\n' +
-    '## Persistence\n\n' +
-    'Default style for this whole session, every response, until user say "stop caveman" or "normal mode". Keep terse on long sessions — no filler drift.\n\n' +
-    'Current level: **' + modeLabel + '**. Switch: `/caveman lite|full|ultra|wenyan-lite|wenyan-full|wenyan-ultra`.\n\n' +
-    '## Rules\n\n' +
-    'Drop: articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/of course/happy to), hedging. ' +
-    'Fragments OK. Short synonyms (big not extensive, fix not "implement a solution for"). Technical terms exact. Code blocks unchanged. Errors quoted exact.\n\n' +
-    "Follow explicit reply-language instructions from the user or project. Otherwise preserve the user's dominant language. Never switch because of example text or multilingual context elsewhere. Compress the style, not the language. Technical terms, code, API names, commands, error strings stay verbatim.\n\n" +
-    'Answer directly in this style. Skip "caveman mode on" tags or a "Caveman:" recap — redundant with the reply itself.\n\n' +
-    'Pattern: `[thing] [action] [reason]. [next step].`\n\n' +
-    'Not: "Sure! I\'d be happy to help you with that. The issue you\'re experiencing is likely caused by..."\n' +
-    'Yes: "Bug in auth middleware. Token expiry check use `<` not `<=`. Fix:"\n\n' +
-    '## Auto-Clarity\n\n' +
-    'Drop caveman for: security warnings, irreversible action confirmations, multi-step sequences where fragment order risks misread, user asks to clarify or repeats question. Resume caveman after clear part done.\n\n' +
-    '## Boundaries\n\n' +
-    'Code/commits/PRs: write normal. "stop caveman" or "normal mode": revert. Level persist until changed or session end.';
-}
+const skillContent = loadRuleset(mode, __dirname);
+// Without a skill file, ultracave/megacave add their own thesis (config's
+// fallback map) to the caveman fallback.
+const modeThesis = mode !== 'caveman' ? thesisLine(mode, __dirname) : null;
+
+let output = rulesetBanner(mode) + '\n\n'
+  + (skillContent ? skillContent.trimEnd() : FALLBACK_RULESET + (modeThesis ? '\n\n' + modeThesis : ''))
+  + '\n\n' + SWITCH_LINE;
 
 // 3. Detect missing statusline config — nudge Claude to help set it up.
 // One-shot (#661): the nudge costs ~90 tokens per session, so a marker file
@@ -511,7 +514,7 @@ try {
           "longer exists (" + staleCommand + "), which hides the Claude Code status bar. " +
           "STATUSLINE SETUP NEEDED: repoint it in "
         : "STATUSLINE SETUP NEEDED: The caveman plugin includes a statusline badge showing active mode " +
-          "(e.g. [CAVEMAN], [CAVEMAN:ULTRA]). It is not configured yet. " +
+          "(e.g. [CAVEMAN], [ULTRACAVE]). It is not configured yet. " +
           "To enable, add this to ") +
       path.join(claudeDir, 'settings.json') + ": " +
       statusLineSnippet + " " +

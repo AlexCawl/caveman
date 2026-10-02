@@ -708,7 +708,7 @@ def verify_hook_install_flow() -> None:
         )
         ensure("CAVEMAN MODE ACTIVE" in activate.stdout, "activation output missing caveman banner")
         ensure("STATUSLINE SETUP NEEDED" not in activate.stdout, "activation should stay quiet when custom statusline exists")
-        ensure((claude_dir / ".caveman-active").read_text(encoding="utf-8") == "full", "activation flag should default to full")
+        ensure((claude_dir / ".caveman-active").read_text(encoding="utf-8") == "caveman", "activation flag should default to caveman")
 
         # Test configurable default mode via CAVEMAN_DEFAULT_MODE env var
         activate_custom = run(
@@ -717,8 +717,8 @@ def verify_hook_install_flow() -> None:
         )
         ensure("CAVEMAN MODE ACTIVE" in activate_custom.stdout, "activation with custom default missing banner")
         ensure(
-            (claude_dir / ".caveman-active").read_text(encoding="utf-8") == "ultra",
-            "CAVEMAN_DEFAULT_MODE=ultra should set flag to ultra",
+            (claude_dir / ".caveman-active").read_text(encoding="utf-8") == "ultracave",
+            "CAVEMAN_DEFAULT_MODE=ultra (legacy) should set flag to ultracave",
         )
         # Test "off" mode — activation skipped, flag removed
         activate_off = run(
@@ -741,8 +741,8 @@ def verify_hook_install_flow() -> None:
         )
         ensure(not (claude_dir / ".caveman-active").exists(), "/caveman with off default should not write flag")
 
-        # Reset back to full for subsequent tests
-        (claude_dir / ".caveman-active").write_text("full", encoding="utf-8")
+        # Reset back to caveman for subsequent tests
+        (claude_dir / ".caveman-active").write_text("caveman", encoding="utf-8")
 
         run(
             ["node", "src/hooks/caveman-mode-tracker.js"],
@@ -756,15 +756,15 @@ def verify_hook_install_flow() -> None:
             env={**os.environ, **hook_env},
             text=True,
             encoding="utf-8",
-            input='{"prompt":"/caveman ultra"}',
+            input='{"prompt":"/ultracave"}',
             capture_output=True,
             check=True,
         )
         ensure(
-            "CAVEMAN MODE ACTIVE (ultra)" in ultra_prompt.stdout,
+            "CAVEMAN MODE ACTIVE (ultracave)" in ultra_prompt.stdout,
             "mode tracker should emit active-mode reinforcement",
         )
-        ensure((claude_dir / ".caveman-active").read_text(encoding="utf-8") == "ultra", "mode tracker did not record ultra")
+        ensure((claude_dir / ".caveman-active").read_text(encoding="utf-8") == "ultracave", "mode tracker did not record ultracave")
 
         subprocess.run(
             ["node", "src/hooks/caveman-mode-tracker.js"],
@@ -783,7 +783,7 @@ def verify_hook_install_flow() -> None:
             [bash, "src/hooks/caveman-statusline.sh"],
             env=hook_env,
         )
-        ensure("[CAVEMAN:WENYAN-ULTRA]" in statusline.stdout, "statusline badge output mismatch")
+        ensure("[MEGACAVE]" in statusline.stdout, "statusline badge output mismatch (legacy wenyan-ultra → megacave)")
 
         reinstall = run([bash, "src/hooks/install.sh"], env=hook_env)
         ensure("Nothing to do" in reinstall.stdout, "install.sh should be idempotent")

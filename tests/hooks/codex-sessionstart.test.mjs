@@ -70,34 +70,37 @@ test('hand-copied fallback whitelist stays equal to caveman-config VALID_MODES',
   assert.deepEqual(fallback, VALID_MODES);
 });
 
-test('default resolution with no config emits the full-level ruleset', (t) => {
+// Distinctive lines from each skill body: proof the right SKILL.md travelled.
+const CAVEMAN_BODY = /Caveman is a voice, not broken grammar\./;
+const ULTRA_BODY = /Ultracave is caveman with the grammar stripped\./;
+const MEGA_BODY = /Megacave is caveman in Classical Chinese\./;
+
+test('default resolution with no config emits the caveman skill', (t) => {
   const item = fixture(t);
   const r = runHook(item, item.dir);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /CAVEMAN MODE ACTIVE — level: full/);
-  // SKILL.md was found and filtered, so the real table row is present and
-  // every other level's row is gone.
-  assert.match(r.stdout, /\*\*full\*\*/);
-  assert.doesNotMatch(r.stdout, /\*\*ultra\*\*/);
-  assert.doesNotMatch(r.stdout, /\*\*lite\*\*/);
+  assert.match(r.stdout, /CAVEMAN MODE ACTIVE — mode: caveman/);
+  assert.match(r.stdout, CAVEMAN_BODY);
+  assert.doesNotMatch(r.stdout, ULTRA_BODY);
 });
 
-test('CAVEMAN_DEFAULT_MODE wins over config files and selects its level', (t) => {
+test('CAVEMAN_DEFAULT_MODE wins over config files and selects its mode', (t) => {
   const item = fixture(t);
-  writeFileSync(join(item.dir, '.caveman.json'), JSON.stringify({ defaultMode: 'ultra' }));
-  const r = runHook(item, item.dir, { CAVEMAN_DEFAULT_MODE: 'lite' });
+  writeFileSync(join(item.dir, '.caveman.json'), JSON.stringify({ defaultMode: 'ultracave' }));
+  const r = runHook(item, item.dir, { CAVEMAN_DEFAULT_MODE: 'megacave' });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /level: lite/);
-  assert.doesNotMatch(r.stdout, /\*\*ultra\*\*/);
+  assert.match(r.stdout, /mode: megacave/);
+  assert.match(r.stdout, MEGA_BODY);
+  assert.doesNotMatch(r.stdout, ULTRA_BODY);
 });
 
-test('repo-local .caveman.json defaultMode is honored', (t) => {
+test('repo-local .caveman.json defaultMode is honored (legacy value maps forward)', (t) => {
   const item = fixture(t);
   writeFileSync(join(item.dir, '.caveman.json'), JSON.stringify({ defaultMode: 'ultra' }));
   const r = runHook(item, item.dir);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /level: ultra/);
-  assert.match(r.stdout, /\*\*ultra\*\*/);
+  assert.match(r.stdout, /mode: ultracave/);
+  assert.match(r.stdout, ULTRA_BODY);
 });
 
 test('user config defaultMode is honored when no repo config or env is set', (t) => {
@@ -107,7 +110,7 @@ test('user config defaultMode is honored when no repo config or env is set', (t)
   writeFileSync(join(configDir, 'config.json'), JSON.stringify({ defaultMode: 'lite' }));
   const r = runHook(item, item.dir, { XDG_CONFIG_HOME: join(item.dir, 'xdg') });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /level: lite/);
+  assert.match(r.stdout, /mode: caveman/);
 });
 
 test('user config defaultMode "off" silences the hook (no forced injection)', (t) => {
@@ -134,11 +137,11 @@ test('independent-skill modes inject only a one-line pointer', (t) => {
     assert.equal(r.status, 0, r.stderr);
     const lines = r.stdout.split('\n').filter((l) => l.trim() !== '');
     assert.equal(lines.length, 1, mode + ': ' + JSON.stringify(r.stdout));
-    assert.match(lines[0], new RegExp('level: ' + mode));
+    assert.match(lines[0], new RegExp('mode: ' + mode));
   }
 });
 
-test('degraded loader still resolves the mode and names the level', (t) => {
+test('degraded loader still resolves the mode and names it', (t) => {
   const item = fixture(t);
   // Remove the fixture's shared resolver (both candidate paths): the hook
   // must resolve the mode with its hand-copied fallback, emit the degraded
@@ -147,9 +150,10 @@ test('degraded loader still resolves the mode and names the level', (t) => {
   writeFileSync(join(item.dir, '.caveman.json'), JSON.stringify({ defaultMode: 'ultra' }));
   const r = runHook(item, item.dir);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /CAVEMAN MODE ACTIVE — level: ultra/);
-  assert.match(r.stdout, /Rules: skills\/caveman\/SKILL\.md/);
-  assert.doesNotMatch(r.stdout, /level: full/);
+  assert.match(r.stdout, /CAVEMAN MODE ACTIVE — mode: ultracave/);
+  assert.match(r.stdout, /Rules: skills\/ultracave\/SKILL\.md/);
+  assert.match(r.stdout, /Respond terse like smart caveman/);
+  assert.doesNotMatch(r.stdout, /mode: caveman/);
   assert.doesNotMatch(r.stdout, /## Rules/, 'degraded path must not read SKILL.md');
 });
 
@@ -159,17 +163,17 @@ test('CAVEMAN_DEFAULT_MODE with stray whitespace is rejected, not trimmed', (t) 
   // the intact one rejects it would be drift in a whitelist.
   const r = runHook(item, item.dir, { CAVEMAN_DEFAULT_MODE: ' ultra' });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /level: full/);
-  assert.doesNotMatch(r.stdout, /level: ultra/);
+  assert.match(r.stdout, /mode: caveman/);
+  assert.doesNotMatch(r.stdout, /mode: ultracave/);
 });
 
-test('wenyan alias resolves to its canonical label and only that row', (t) => {
+test('legacy wenyan default resolves to the megacave skill', (t) => {
   const item = fixture(t);
   const r = runHook(item, item.dir, { CAVEMAN_DEFAULT_MODE: 'wenyan' });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /level: wenyan-full/);
-  assert.match(r.stdout, /\*\*wenyan-full\*\*/);
-  assert.doesNotMatch(r.stdout, /\*\*wenyan-ultra\*\*/);
+  assert.match(r.stdout, /mode: megacave/);
+  assert.match(r.stdout, MEGA_BODY);
+  assert.doesNotMatch(r.stdout, CAVEMAN_BODY);
 });
 
 test('invalid JSON in the user config is skipped, not fatal', (t) => {
@@ -180,7 +184,7 @@ test('invalid JSON in the user config is skipped, not fatal', (t) => {
   const r = runHook(item, item.dir, { XDG_CONFIG_HOME: join(item.dir, 'xdg') });
   assert.equal(r.status, 0, r.stderr);
   // Falls through to the built-in default instead of dying.
-  assert.match(r.stdout, /level: full/);
+  assert.match(r.stdout, /mode: caveman/);
 });
 
 test('symlinked repo config is refused, symmetric with the real resolver', (t) => {
@@ -201,10 +205,10 @@ test('symlinked repo config is refused, symmetric with the real resolver', (t) =
     const r = runHook(item, item.dir);
     assert.equal(r.status, 0, r.stderr);
     if (linked) {
-      assert.doesNotMatch(r.stdout, /level: ultra/, 'symlinked config must not be honored');
-      assert.match(r.stdout, /level: full/);
+      assert.doesNotMatch(r.stdout, /mode: ultracave/, 'symlinked config must not be honored');
+      assert.match(r.stdout, /mode: caveman/);
     } else {
-      assert.match(r.stdout, /level: full/, 'config absent on this platform → built-in default');
+      assert.match(r.stdout, /mode: caveman/, 'config absent on this platform → built-in default');
     }
   } finally {
     rmSync(join(item.dir, '.caveman.json'), { force: true });
@@ -222,6 +226,6 @@ test('exit code is 0 and output is non-empty exactly once under pipe (SIGPIPE-fr
     { encoding: 'utf8', timeout: 20_000 },
   );
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /CAVEMAN MODE ACTIVE — level: full/);
+  assert.match(r.stdout, /CAVEMAN MODE ACTIVE — mode: caveman/);
   assert.ok(r.stdout.length > 200, 'full ruleset should survive the pipe intact');
 });
