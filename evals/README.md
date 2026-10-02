@@ -18,6 +18,23 @@ Comparing a skill to the no-system-prompt baseline conflates the skill
 with the generic terseness ask, which is what an earlier version of
 this harness did and is why its numbers were inflated.
 
+## Current snapshot
+
+`snapshots/results.json` was generated on `claude-opus-5-5` with Claude
+Code 2.1.288 (2026-10-02), with the three response-style skills as the
+skill arms: `caveman`, `ultracave`, `megacave`. The other `skills/*`
+directories are workflow skills, not response styles, so they are left out.
+
+```bash
+CAVEMAN_EVAL_MODEL=claude-opus-5-5 CAVEMAN_EVAL_SKILLS=caveman,ultracave,megacave \
+  python3 evals/llm_run.py
+```
+
+The previous snapshot (`claude-opus-4-6`, April 2026) was generated
+without host isolation, so whatever plugins and CLAUDE.md files were
+installed could reach every arm. `llm_run.py` now isolates each call
+(see below); numbers from the two snapshots are not directly comparable.
+
 ## Why this design
 
 - **Real LLM output**, not hand-written examples (no circularity).
@@ -26,6 +43,12 @@ this harness did and is why its numbers were inflated.
   and so any change to the numbers is reviewable as a diff.
 - **Control arm** isolates the skill's contribution from the generic
   "be terse" effect.
+- **Host isolation.** Each `claude -p` call runs with
+  `--setting-sources project --strict-mcp-config --disable-slash-commands`
+  from an empty temp dir: no user settings (so no installed plugins or
+  their SessionStart hooks), no MCP servers, no installed skills, no
+  CLAUDE.md. Without it a plugin's injected ruleset, or an MCP auth nag the
+  model repeats in its answer, lands in every arm including the baseline.
 
 ## Files
 
@@ -52,6 +75,14 @@ a small model to keep it cheap:
 CAVEMAN_EVAL_MODEL=claude-haiku-4-5 uv run python evals/llm_run.py
 ```
 
+By default every `skills/*/SKILL.md` gets an arm. `CAVEMAN_EVAL_SKILLS`
+(comma-separated skill ids) restricts the skill arms; an unknown id aborts
+before any call:
+
+```bash
+CAVEMAN_EVAL_SKILLS=caveman,ultracave,megacave uv run python evals/llm_run.py
+```
+
 ## Read the snapshot (no LLM, no API key, runs in CI)
 
 ```bash
@@ -65,7 +96,8 @@ Append a line to `prompts/en.txt`, then refresh the snapshot.
 ## Adding a skill
 
 Drop a `skills/<name>/SKILL.md`, then refresh the snapshot. `llm_run.py`
-picks up every skill directory automatically.
+picks up every skill directory automatically, unless `CAVEMAN_EVAL_SKILLS`
+is set, in which case add the new id to that list.
 
 ## What this does NOT measure
 
