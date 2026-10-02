@@ -1010,6 +1010,7 @@ test("Claude remote-control is a flag, not only a subcommand (#1101)", async () 
   // Naming the prefix does not turn Remote Control on, so it must keep routing
   // through the proxy — bypassing here would silently drop compression.
   for (const argv of [
+    ["-p", "remote-control"],
     ["--remote-control-session-name-prefix", "laptop", "-p", "hi"],
     ["--remote-control-session-name-prefix=laptop", "-p", "hi"],
     ["-p", "write a --remote-control guide"],

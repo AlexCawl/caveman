@@ -13366,10 +13366,12 @@ function agentRouteOverride(agent: AgentProfile, args: string[]): AgentRouteOver
 // silently drop compression for a session that never needed the bypass. Scanning
 // stops at `--`, after which argv belongs to the agent's own payload.
 function claudeStartsRemoteControl(args: string[]): boolean {
+  // The bare legacy word is a subcommand, so it counts only in first position;
+  // anywhere else it is a value (`-p remote-control`) and must keep routing.
+  if (args[0] === "remote-control") return true;
   for (const arg of args) {
     if (arg === "--") return false;
-    if (arg === "remote-control" || arg === "--remote-control") return true;
-    if (arg.startsWith("--remote-control=")) return true;
+    if (arg === "--remote-control" || arg.startsWith("--remote-control=")) return true;
   }
   return false;
 }
