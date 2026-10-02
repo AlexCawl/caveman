@@ -129,9 +129,10 @@ if [ -f "$caveman_flag" ]; then
 fi
 ```
 
-The older one-file version of this snippet still works — it just shows whichever
-window wrote last, and it never sees a literal `off` because the legacy mirror
-is deleted on deactivation rather than set to `off`.
+The older one-file version of this snippet reads the legacy mirror, so it shows
+whichever window wrote last and renders the new ids as `[CAVEMAN:CAVEMAN]` or
+`[CAVEMAN:ULTRACAVE]`; re-run the installer to pick up the badge map above. It
+never sees a literal `off` because the legacy mirror is deleted on deactivation.
 
 Badge examples:
 - `/caveman` → `[CAVEMAN]`

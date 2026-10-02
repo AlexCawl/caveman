@@ -71,3 +71,13 @@ Regenerate `src/hooks/checksums.sha256`, plugin mirror, `dist/caveman.skill`, `p
 - Old mode-tracker reading new ids from the mirror: injects the generic reinforcement. Fine.
 - `MAX_FLAG_BYTES` sized for `wenyan-ultra`; `ultracave` is shorter.
 - README "What you get" table must name both new skills or `verify_repo` fails.
+
+## Mixed-version install (added after review)
+
+Plugin hooks and standalone hooks can both be registered. A standalone
+`caveman-activate.js` from before 3.1 does not recognise the new ids: on
+`compact`/`resume` it re-derives the default and writes `full`, undoing an
+`/ultracave` or `/megacave` roughly every other continuation while the plugin
+hook writes the new id back. The release notes tell standalone users to re-run
+the installer (`npx caveman`) or remove the standalone hooks. New code never
+writes legacy ids, so there is no in-code mitigation.
