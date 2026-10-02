@@ -18148,7 +18148,7 @@ function readStdin(): Promise<Buffer> {
       return;
     }
     const chunks: Buffer[] = [];
-    process.stdin.on("data", (chunk) => chunks.push(chunk));
+    process.stdin.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     process.stdin.on("end", () => resolve(Buffer.concat(chunks)));
     process.stdin.on("error", reject);
   });

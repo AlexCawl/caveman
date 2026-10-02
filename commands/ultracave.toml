@@ -1,0 +1,2 @@
+description = "Ultracave: caveman at maximum compression (fragments, one word when one word is enough, each fact once)"
+prompt = "Switch to ultracave mode. Apply the ultracave skill's rules — the hooks inject them for you. Fragments; each fact once; code, commands, paths, numbers, error strings and negations never touched. Plain prose for security warnings and irreversible actions."

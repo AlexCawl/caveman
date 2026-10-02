@@ -105,7 +105,7 @@ Each row prints the agent id, profile slug (where applicable), and whether it wa
 ### Oh My Pi (OMP)
 
 With `omp` on your PATH, run `node bin/install.js --only omp` from this clone,
-then restart OMP. The native plugin adds seven skills, six commands, Cavecrew
+then restart OMP. The native plugin adds nine skills, eight commands, Cavecrew
 presets, a CAVEMAN badge, and Caveman instructions on each agent turn. Commands
 such as `/ultracave` and `stop caveman` instruct the model; the badge indicates
 that the plugin is loaded. Host lifecycle and prompt delivery were checked with
