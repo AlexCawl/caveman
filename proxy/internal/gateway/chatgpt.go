@@ -90,16 +90,36 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 			originalBody = captured
 			_, _ = reqHash.Write(originalBody)
 			_, _ = reqCapture.Write(originalBody)
-			transform.Body = originalBody
-			headersForInspect := r.Header.Clone()
-			headersForInspect.Set("x-cave-route-path", suffix)
-			meta, inspectErr := adapter.InspectRequest(r.Context(), bytes.NewReader(originalBody), headersForInspect)
-			if inspectErr == nil {
-				meta.Endpoint = suffix
-				meta.SessionID = evidence.SessionID
-				if s.cacheEpochAllows(r, adapter, meta, originalBody, evidence.SessionID) {
-					comp = s.compressRequest(adapter, originalBody, meta, &transform, requestID, lockedRoutes)
+
+			logicalBody, requestEncoding, decodable := decodeChatGPTRequestBody(originalBody, r.Header.Get("Content-Encoding"))
+			if decodable {
+				transform.Body = logicalBody
+				headersForInspect := r.Header.Clone()
+				headersForInspect.Del("Content-Encoding")
+				headersForInspect.Set("x-cave-route-path", suffix)
+				meta, inspectErr := adapter.InspectRequest(r.Context(), bytes.NewReader(logicalBody), headersForInspect)
+				if inspectErr == nil {
+					meta.Endpoint = suffix
+					meta.SessionID = evidence.SessionID
+					if s.cacheEpochAllows(r, adapter, meta, logicalBody, evidence.SessionID) {
+						comp = s.compressRequest(adapter, logicalBody, meta, &transform, requestID, lockedRoutes)
+					}
 				}
+				if comp != nil {
+					if encoded, ok := encodeChatGPTRequestBody(transform.Body, requestEncoding); ok {
+						transform.Body = encoded
+					} else {
+						transform = providers.TransformResult{Body: originalBody, OptimizerIDs: []string{}}
+						comp = nil
+					}
+				} else {
+					// No logical transform means no reason to perturb Pi's
+					// original zstd frame.
+					transform.Body = originalBody
+				}
+			} else {
+				// Unknown or malformed encodings remain exact pass-through.
+				transform.Body = originalBody
 			}
 			reqBody = bytes.NewReader(transform.Body)
 		} else {
@@ -280,12 +300,18 @@ func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, tr
 	if respCapture != nil && !respCapture.truncated {
 		providers.ParseUsageBytes("openai", respCapture.buf.Bytes(), &usage)
 	}
+	var originalLogicalBody []byte
+	if requestHashComplete && reqCapture != nil && !reqCapture.truncated {
+		if decoded, _, ok := decodeChatGPTRequestBody(reqCapture.buf.Bytes(), r.Header.Get("Content-Encoding")); ok {
+			originalLogicalBody = decoded
+		}
+	}
 	model := "unknown"
-	if reqCapture != nil && !reqCapture.truncated {
+	if originalLogicalBody != nil {
 		var body struct {
 			Model string `json:"model"`
 		}
-		if json.Unmarshal(reqCapture.buf.Bytes(), &body) == nil && body.Model != "" {
+		if json.Unmarshal(originalLogicalBody, &body) == nil && body.Model != "" {
 			model = body.Model
 		}
 	}
@@ -351,11 +377,11 @@ func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, tr
 		CompressionTokenCountBasis: compBasis,
 		RecoveryHandle:             compHandle,
 	}
-	var originalBody []byte
 	meta := providers.RequestMetadata{Provider: "chatgpt-subscription", Model: model}
-	if requestHashComplete && reqCapture != nil && !reqCapture.truncated {
-		originalBody = reqCapture.buf.Bytes()
-		if inspected, err := openai.New("").InspectRequest(r.Context(), bytes.NewReader(originalBody), r.Header); err == nil {
+	if originalLogicalBody != nil {
+		headersForInspect := r.Header.Clone()
+		headersForInspect.Del("Content-Encoding")
+		if inspected, err := openai.New("").InspectRequest(r.Context(), bytes.NewReader(originalLogicalBody), headersForInspect); err == nil {
 			meta = inspected
 			meta.Provider = "chatgpt-subscription"
 		}
@@ -363,10 +389,13 @@ func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, tr
 	if s.chatGPTUpstream != DefaultChatGPTUpstream {
 		meta.PricingUnsupportedReason = "custom_subscription_origin"
 	}
+	var acceptedLogicalBody []byte
 	if acceptedBody == nil {
-		acceptedBody = originalBody
+		acceptedLogicalBody = originalLogicalBody
+	} else if decoded, _, ok := decodeChatGPTRequestBody(acceptedBody, r.Header.Get("Content-Encoding")); ok {
+		acceptedLogicalBody = decoded
 	}
-	requestAccounting(&row, meta, usage, originalBody, acceptedBody, false)
+	requestAccounting(&row, meta, usage, originalLogicalBody, acceptedLogicalBody, false)
 	s.sink.Record(row)
 }
 
