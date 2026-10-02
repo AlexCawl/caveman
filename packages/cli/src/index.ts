@@ -26,6 +26,7 @@ import {
   unlinkSync,
   utimesSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { chmod, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir, hostname, tmpdir, userInfo } from "node:os";
@@ -1053,34 +1054,58 @@ const TELEMETRY_CLAIM_LOCK_STALE_MS = 5000;
 // hazard over different state files, and a second copy of this spin is how the
 // two would drift apart. Callers supply their own stale window because their
 // hold times differ by orders of magnitude — see refreshClaimLock.
-function acquireClaimLock(lockPath: string, budgetMs: number, staleMs: number): boolean {
+function acquireClaimLock(lockPath: string, budgetMs: number, staleMs: number): string | null {
   try {
     mkdirSync(dirname(lockPath), { recursive: true });
   } catch {
-    return false;
+    return null;
   }
+  // The token names THIS holder. releaseClaimLock unlinks only a lock that
+  // still carries it, so a holder that was reclaimed as stale mid-section
+  // cannot delete its successor's lock on the way out.
+  const token = `${process.pid}:${randomUUID()}`;
   const deadline = Date.now() + budgetMs;
   for (;;) {
     try {
-      closeSync(openSync(lockPath, "wx"));
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") return false;
+      const fd = openSync(lockPath, "wx");
       try {
-        if (Date.now() - statSync(lockPath).mtimeMs > staleMs) unlinkSync(lockPath);
-      } catch {
-        /* raced the holder releasing it; loop back to the create attempt */
+        writeSync(fd, token);
+      } finally {
+        closeSync(fd);
       }
-      if (Date.now() >= deadline) return false;
+      return token;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") return null;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > staleMs) {
+          // Reclaim by rename, not unlink. Two waiters can both see the same
+          // stale lock; with unlink the slower one would delete the lock the
+          // faster one had already created in its place, and both would hold
+          // it. Only one rename of the stale file can succeed; the loser's
+          // rename fails and it loops back to the create attempt.
+          const grave = `${lockPath}.${process.pid}.${Date.now()}.stale`;
+          renameSync(lockPath, grave);
+          unlinkSync(grave);
+        }
+      } catch {
+        /* raced the holder releasing it, or another waiter reclaiming; loop back */
+      }
+      if (Date.now() >= deadline) return null;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
     }
   }
 }
 
-// releaseClaimLock drops a lock taken above. Never throws: a lock already gone
-// (reclaimed as stale by someone else) is the same end state as one we removed.
-function releaseClaimLock(lockPath: string): void {
+// releaseClaimLock drops a lock taken above, but only while it is still ours:
+// a lock a waiter reclaimed as stale carries the waiter's token now, and
+// unlinking it would hand the guarded section to a third process. The read
+// and the unlink are not one step; a reclaim between them needs the lock to
+// cross the stale threshold in that gap, which the sync heartbeat and the
+// millisecond telemetry hold keep far away. Never throws: a lock already gone
+// is the same end state as one we removed.
+function releaseClaimLock(lockPath: string, token: string): void {
   try {
+    if (readFileSync(lockPath, "utf8") !== token) return;
     unlinkSync(lockPath);
   } catch {
     /* already gone */
@@ -1111,7 +1136,8 @@ function telemetryTokenDelta(): { processed: number; saved: number; basis: strin
   // together can both read the pre-write watermark before either commits (see
   // the regression test below).
   const lockPath = telemetryClaimLockPath();
-  if (!acquireClaimLock(lockPath, 500, TELEMETRY_CLAIM_LOCK_STALE_MS)) return null;
+  const lockToken = acquireClaimLock(lockPath, 500, TELEMETRY_CLAIM_LOCK_STALE_MS);
+  if (!lockToken) return null;
   let claimed = true;
   let readOnly = false;
   try {
@@ -1130,7 +1156,7 @@ function telemetryTokenDelta(): { processed: number; saved: number; basis: strin
   } catch {
     readOnly = true; // Read-only home: report nothing rather than resend the same delta forever.
   } finally {
-    releaseClaimLock(lockPath);
+    releaseClaimLock(lockPath, lockToken);
   }
   if (readOnly || !claimed) return null;
   if (processed === 0 && saved === 0) return null;
@@ -11130,7 +11156,8 @@ async function syncLocalSavings(cfg: Config): Promise<SyncOutcome> {
   // lock in its budget sends nothing and leaves the watermark alone, so its
   // rows are picked up by the next sync rather than duplicated by this one.
   const lockPath = syncClaimLockPath();
-  if (!acquireClaimLock(lockPath, SYNC_CLAIM_LOCK_BUDGET_MS, SYNC_CLAIM_LOCK_STALE_MS)) {
+  const lockToken = acquireClaimLock(lockPath, SYNC_CLAIM_LOCK_BUDGET_MS, SYNC_CLAIM_LOCK_STALE_MS);
+  if (!lockToken) {
     db.close();
     return { kind: "busy" };
   }
@@ -11218,7 +11245,7 @@ async function syncLocalSavings(cfg: Config): Promise<SyncOutcome> {
     };
   } finally {
     clearInterval(heartbeat);
-    releaseClaimLock(lockPath);
+    releaseClaimLock(lockPath, lockToken);
   }
 }
 
