@@ -40,9 +40,9 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1",
-    "@types/node": "26.6.3",
-    "esbuild": "0.28.2",
-    "typescript": "7.0.2"
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@types/node": "24.10.1",
+    "esbuild": "0.28.1",
+    "typescript": "5.9.3"
   }
 }
