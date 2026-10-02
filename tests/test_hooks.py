@@ -181,6 +181,31 @@ class HookScriptTests(unittest.TestCase):
             self.assertNotIn("STATUSLINE SETUP NEEDED", result.stdout)
             self.assertEqual((claude_dir / ".caveman-active").read_text(encoding="utf-8"), "full")
 
+    def test_activate_does_not_flag_a_tilde_statusline_as_stale(self):
+        # `~` and `$HOME` are expanded by the shell at statusline time, not by
+        # the hook's existence probe. A hand-written command using them works,
+        # so it must not trigger a "repair needed" nudge that invites the model
+        # to rewrite the user's settings.
+        for command in (
+            'bash "~/.claude/hooks/caveman-statusline.sh"',
+            'bash "$HOME/.claude/hooks/caveman-statusline.sh"',
+            'bash "${CLAUDE_CONFIG_DIR}/hooks/caveman-statusline.sh"',
+        ):
+            with tempfile.TemporaryDirectory(prefix="caveman-hooks-activate-") as tmp:
+                home = Path(tmp)
+                claude_dir = home / ".claude"
+                claude_dir.mkdir(parents=True)
+                (claude_dir / ".caveman-nudge-shown").write_text("1", encoding="utf-8")
+                (claude_dir / "settings.json").write_text(
+                    json.dumps({"statusLine": {"type": "command", "command": command}}) + "\n",
+                    encoding="utf-8",
+                )
+
+                result = self.run_cmd(["node", "src/hooks/caveman-activate.js"], home)
+
+                self.assertNotIn("STATUSLINE REPAIR NEEDED", result.stdout, command)
+                self.assertNotIn("STATUSLINE SETUP NEEDED", result.stdout, command)
+
     # --- #1147: the statusline nudge must not pin a versioned plugin-cache path ---
     #
     # A plugin install runs the hook out of

@@ -444,6 +444,14 @@ function statuslineScriptGone(command) {
     if (bare) found.push(...bare);
   }
   if (found.length === 0) return false;
+  // `~`, `$VAR` and backslash escapes are expanded by the shell at statusline
+  // time, not by existsSync: a hand-written "~/.claude/hooks/..." command works
+  // but reads as missing here, and a false "repair needed" nudge invites the
+  // model to rewrite the user's settings. Treat such a candidate as unknown.
+  // On Windows a backslash is a path separator, so only `~` and `$` are opaque.
+  const opaque = (candidate) =>
+    /[~$]/.test(candidate) || (process.platform !== 'win32' && candidate.includes('\\'));
+  if (found.some(opaque)) return false;
   return found.every((candidate) => !fs.existsSync(candidate));
 }
 
