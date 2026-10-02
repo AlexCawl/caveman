@@ -38,7 +38,8 @@ function parseWindowsNodeShim(source) {
     // Shim-relative target (npm cmd-shim, pnpm/yarn-classic @zkochan forms), or
     // a drive-absolute target (pnpm emits one when the global bin dir and the
     // store sit on different drives — path.relative crosses drives as absolute).
-    const match = line.match(/"%(?:dp0%|~dp0)\\([^"\r\n]+\.(?:cjs|mjs|js))"\s+%\*/i)
+    // %~dp0 already ends with a separator; managed Pi adds none before its target.
+    const match = line.match(/"%(?:dp0%|~dp0)\\?([^"\r\n]+\.(?:cjs|mjs|js))"\s+%\*/i)
       || line.match(/"([A-Za-z]:[\\/][^"\r\n]+\.(?:cjs|mjs|js))"\s+%\*/i);
     if (match) return match[1];
   }
@@ -62,8 +63,11 @@ function resolveWindowsNodeShim(executable, depth = 0, seen = new Set()) {
     throw new Error(`cannot safely launch Windows command shim: ${normalized}`);
   }
   const source = fs.readFileSync(normalized, 'utf8');
-  const jsTarget = parseWindowsNodeShim(source);
-  const child = jsTarget || parseWindowsNestedShim(source);
+  // Batch forwarding must match the whole wrapper, not a later Node command.
+  const nested = parseWindowsNestedShim(source);
+  const forwardsToBatch = /"[^"\r\n]+\.(?:cmd|bat)"[ \t]+%\*/i.test(source);
+  const jsTarget = forwardsToBatch ? null : parseWindowsNodeShim(source);
+  const child = jsTarget || nested;
   if (!child) throw new Error(`cannot safely launch non-Node Windows command shim: ${normalized}`);
   const target = /^[A-Za-z]:[\\/]/.test(child)
     ? child

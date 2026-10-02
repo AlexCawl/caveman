@@ -27,6 +27,10 @@ test("absolute Windows commands use PATHEXT and skip Unix shims and directories"
   assert.equal(portable.resolveWindowsCommand(join(root, "missing"), env), null);
 });
 
+test("root installer parses managed Pi's Node command shim", () => {
+  assert.equal(portable.parseWindowsNodeShim('@ECHO off\r\nnode "%~dp0pi-launcher.js" %*\r\n'), "pi-launcher.js");
+});
+
 test("root installer unwraps Windows Node shims without a shell", () => {
   const root = mkdtempSync(join(tmpdir(), "caveman-installer-win-"));
   const bin = join(root, "bin");
@@ -62,6 +66,8 @@ test("root installer unwraps nested cmd shims, rejects extra commands and missin
   const invoke = () => portable.portableInvocation(shim, args, { platform: "win32", execPath: "node.exe" });
   assert.deepEqual(invoke(), { command: "node.exe", args: [script, ...args] });
   writeFileSync(shim, '"%~dp0pi.bat" %*\r\necho unsafe\r\n');
+  assert.throws(invoke, /cannot safely launch non-Node Windows command shim/);
+  writeFileSync(shim, '"%~dp0pi.bat" %*\r\nnode "%~dp0cli.js" %*\r\n');
   assert.throws(invoke, /cannot safely launch non-Node Windows command shim/);
   writeFileSync(shim, '"%~dp0missing.cmd" %*\r\n');
   assert.throws(invoke, /Windows command shim target is missing/);

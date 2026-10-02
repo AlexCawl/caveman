@@ -25,6 +25,10 @@ function fixture() {
   return { root, bin };
 }
 
+test("win32: managed Pi's Node command shim is parsed", () => {
+  assert.equal(parseWindowsNodeShim('@ECHO off\r\nnode "%~dp0pi-launcher.js" %*\r\n'), "pi-launcher.js");
+});
+
 test("win32: nested cmd → bat → JS is unwrapped without a shell", () => {
   const { root, bin } = fixture();
   try {
@@ -39,6 +43,9 @@ test("win32: nested cmd → bat → JS is unwrapped without a shell", () => {
     assert.deepEqual(portableInvocation(shim, args, "win32", {}), {
       command: process.execPath, args: [target, ...args],
     });
+    writeFileSync(shim, '"%~dp0nested.bat" %*\r\nnode "%~dp0\\..\\package space\\cli.cjs" %*\r\n');
+    assert.throws(() => portableInvocation(shim, args, "win32", {}), /cannot safely launch non-Node Windows command shim/);
+    writeFileSync(shim, '@ECHO off\r\n"%~dp0nested.bat" %*\r\n');
     writeFileSync(nested, '"%~dp0pi.CMD" %*\r\n');
     assert.throws(() => portableInvocation(shim, args, "win32", {}), /Windows command shim cycle/);
   } finally {

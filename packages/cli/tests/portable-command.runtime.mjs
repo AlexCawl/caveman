@@ -6,6 +6,10 @@ import test from "node:test";
 
 import { parseWindowsNodeShim, portableInvocation } from "../dist/portable-command.js";
 
+test("parses managed Pi's Node command shim", () => {
+  assert.equal(parseWindowsNodeShim('@ECHO off\r\nnode "%~dp0pi-launcher.js" %*\r\n'), "pi-launcher.js");
+});
+
 test("parses npm and pnpm Node command shims", () => {
   assert.equal(
     parseWindowsNodeShim('endLocal & "%_prog%" "%dp0%\\..\\pkg\\cli.js" %*'),
@@ -88,6 +92,7 @@ test("nested shims reject unsafe wrappers, missing targets, cycles and excessive
   try {
     const shim = join(root, "pi.cmd");
     const child = join(root, "child.bat");
+    writeFileSync(join(root, "cli.js"), "// fixture\n");
     const args = ["x&y"];
     const invoke = () => portableInvocation(shim, args, "win32");
     for (const content of [
@@ -96,6 +101,7 @@ test("nested shims reject unsafe wrappers, missing targets, cycles and excessive
       '"%~dp0child.exe" %*\r\n',
       '"%~dp0child.ps1" %*\r\n',
       '"%~dp0child.bat" %*\r\nnode "%~dp0missing.js" %*\r\n',
+      '"%~dp0child.bat" %*\r\nnode "%~dp0cli.js" %*\r\n',
     ]) {
       writeFileSync(shim, content);
       assert.throws(invoke, /cannot safely launch non-Node Windows command shim/);
