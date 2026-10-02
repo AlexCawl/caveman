@@ -320,7 +320,7 @@ Each skill has a human-facing `README.md` alongside the LLM-facing `SKILL.md`. T
 
 ### Three skills, one mode model
 
-Three self-contained skills, each 1:1 with a stored mode id: `caveman` (default voice), `ultracave` (grammar stripped), `megacave` (文言文). The SessionStart hook injects `skills/<id>/SKILL.md` whole; there is no per-level filtering. Legacy stored values map on read: `lite` and `full` → `caveman`, `ultra` → `ultracave`, every `wenyan*` → `megacave`. Writes emit new ids only. Mode persists until changed or session ends. Plan: `docs/plans/three-skills-refactor.md`.
+Three self-contained skills, each 1:1 with a stored mode id: `caveman` (default voice), `ultracave` (grammar stripped), `megacave` (文言文). The SessionStart hook injects `skills/<id>/SKILL.md` whole; there is no per-level filtering. Legacy stored values map on read: `lite` and `full` → `caveman`, `ultra` → `ultracave`, every `wenyan*` → `megacave`. Writes emit new ids only. Mode persists until changed or session ends. Plan: `docs/technical/three-skills-refactor.md`.
 
 `defaultMode: "manual"` is a Claude Code startup policy, not a fourth mode. It starts inactive, stores only `off`, and explicit bare-command or natural-language activation resolves to `caveman`. Keep it out of `VALID_MODES`; only configuration accepts it. OpenCode maps this policy to its existing full-mode default because its installer also supplies static AGENTS.md activation. `/caveman status` is read-only and must return before one-shot restoration or any mode-state mutation.
 
