@@ -59,6 +59,8 @@ installed could reach every arm. `llm_run.py` now isolates each call
 - `measure.py` — reads the snapshot, counts tokens with tiktoken
   `o200k_base`, prints a markdown table with median / mean / min / max /
   stdev across prompts.
+- `snapshot_contract.py` — rejects incomplete or malformed snapshot matrices
+  before `measure.py` reports metrics.
 - `snapshots/results.json` — committed source of truth, regenerated only
   when SKILL.md files or prompts change.
 
@@ -88,6 +90,10 @@ CAVEMAN_EVAL_SKILLS=caveman,ultracave,megacave uv run python evals/llm_run.py
 ```bash
 uv run --with tiktoken python evals/measure.py
 ```
+
+Reporting fails closed unless the snapshot has both control arms, at least one
+skill arm, exactly one string output per prompt in every arm, and metadata whose
+`n_prompts` matches the prompt list.
 
 ## Adding a prompt
 
