@@ -130,6 +130,7 @@ function reinforcementForMode(mode) {
   return 'CAVEMAN MODE ACTIVE (' + mode + '). Enforce this reply: ' + rules +
     ' No unrequested background, lists, examples, walkthroughs, or follow-up' +
     ' offers; give code, steps, or warnings when the task needs them.' +
+    ' Auto-clarity exceptions (security warnings, irreversible actions, multi-step order) stay normal prose.' +
     ' Technical terms, code, commands, paths, and errors stay exact.';
 }
 
