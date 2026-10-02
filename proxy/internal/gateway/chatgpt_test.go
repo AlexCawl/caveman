@@ -73,6 +73,7 @@ func TestPiChatGPTSubscriptionDetection(t *testing.T) {
 		{name: "encoded path", method: http.MethodPost, path: "/codex/responses", rawPath: "/codex%2Fresponses", agent: "pi", account: "acct", auth: "Bearer token"},
 		{name: "query", method: http.MethodPost, path: "/codex/responses", query: "x=1", agent: "pi", account: "acct", auth: "Bearer token"},
 		{name: "wrong agent", method: http.MethodPost, path: "/codex/responses", agent: "other", account: "acct", auth: "Bearer token"},
+		{name: "unverified agent path", method: http.MethodPost, path: "/codex/responses", agent: "", account: "acct", auth: "Bearer token"},
 		{name: "missing account", method: http.MethodPost, path: "/codex/responses", agent: "pi", auth: "Bearer token"},
 		{name: "non bearer auth", method: http.MethodPost, path: "/codex/responses", agent: "pi", account: "acct", auth: "Basic nope"},
 	} {
@@ -83,7 +84,8 @@ func TestPiChatGPTSubscriptionDetection(t *testing.T) {
 			req.Header.Set("x-cave-agent", tt.agent)
 			req.Header.Set("ChatGPT-Account-ID", tt.account)
 			req.Header.Set("Authorization", tt.auth)
-			if got := isPiChatGPTSubscription(req); got != tt.want {
+			verifiedAgentPath := tt.agent == "pi"
+			if got := isPiChatGPTSubscription(req, verifiedAgentPath); got != tt.want {
 				t.Fatalf("isPiChatGPTSubscription() = %v, want %v", got, tt.want)
 			}
 		})
