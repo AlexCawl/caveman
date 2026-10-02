@@ -397,6 +397,42 @@ func TestChatGPTSSETerminalEventAtEOFGetsDispatched(t *testing.T) {
 	}
 }
 
+func TestChatGPTSSETerminalDelimiterWithContentLength(t *testing.T) {
+	for _, ending := range []string{"", "\n", "\n\n"} {
+		t.Run(fmt.Sprintf("ending_%q", ending), func(t *testing.T) {
+			sse := "event: response.completed\ndata: {\"type\":\"response.completed\"}" + ending
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Length", strconv.Itoa(len(sse)))
+				_, _ = io.WriteString(w, sse)
+			}))
+			defer upstream.Close()
+			srv, _, _ := chatgptTestServer(t, upstream.URL)
+			proxy := httptest.NewServer(srv.Handler())
+			defer proxy.Close()
+
+			req, err := http.NewRequest(http.MethodPost, proxy.URL+"/chatgpt/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("x-cave-agent", "pi")
+			resp, err := proxy.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read terminal stream: %v", err)
+			}
+			want := strings.TrimRight(sse, "\n") + "\n\n"
+			if string(body) != want {
+				t.Fatalf("terminal SSE body = %q, want %q", body, want)
+			}
+		})
+	}
+}
+
 func TestChatGPTSSECleanEOFWithoutTerminalEventAborts(t *testing.T) {
 	sse := "event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"usage\":{\"input_tokens\":111,\"output_tokens\":22}}}\n\n"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

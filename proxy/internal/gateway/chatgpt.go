@@ -244,8 +244,6 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("x-caveman-tokens-after", strconv.Itoa(comp.after))
 		w.Header().Set("x-caveman-token-count-basis", "estimated_engine_o200k")
 	}
-	w.WriteHeader(resp.StatusCode)
-
 	respCapture := &cappedBuffer{limit: chatGPTCaptureLimit}
 	piResponsesRoute := rc.AgentSlug == "pi" && r.Method == http.MethodPost && suffix == "/responses"
 	requestBodyComplete := chatGPTRequestHashComplete(requestBodyFullyRead, r.ContentLength, reqCapture, requestBodyTracker)
@@ -257,7 +255,10 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 		completionReader := &chatGPTSSECompletionReader{source: responseBody}
 		responseBody = completionReader
 		completionTracker = completionReader
+		// EOF normalization can append a delimiter; upstream's length no longer applies.
+		w.Header().Del("Content-Length")
 	}
+	w.WriteHeader(resp.StatusCode)
 	counter, errCode := s.streamResponse(w, r, io.TeeReader(responseBody, respCapture), stream, requestID, completionTracker)
 	respBytes := counter.n
 
