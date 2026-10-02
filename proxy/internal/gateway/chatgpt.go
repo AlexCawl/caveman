@@ -247,12 +247,18 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	respCapture := &cappedBuffer{limit: chatGPTCaptureLimit}
-	stream := streamingResponse(resp.Header)
+	piResponsesRoute := rc.AgentSlug == "pi" && r.Method == http.MethodPost && suffix == "/responses"
+	requestBodyComplete := chatGPTRequestHashComplete(requestBodyFullyRead, r.ContentLength, reqCapture, requestBodyTracker)
+	piResponsesStream := piResponsesRoute && chatGPTRequestWantsStream(reqCapture.buf.Bytes(), r.Header.Get("Content-Encoding"), reqCapture.truncated, requestBodyComplete)
+	stream := streamingResponse(resp.Header) || piResponsesStream
 	var responseBody io.Reader = resp.Body
-	if stream && rc.AgentSlug == "pi" && suffix == "/responses" && resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusBadRequest && isChatGPTEventStream(resp.Header) {
-		responseBody = &chatGPTSSECompletionReader{source: responseBody}
+	var completionTracker streamCompletionTracker
+	if piResponsesRoute && stream && resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusBadRequest && (piResponsesStream || isChatGPTEventStream(resp.Header)) {
+		completionReader := &chatGPTSSECompletionReader{source: responseBody}
+		responseBody = completionReader
+		completionTracker = completionReader
 	}
-	counter, errCode := s.streamResponse(w, r, io.TeeReader(responseBody, respCapture), stream, requestID)
+	counter, errCode := s.streamResponse(w, r, io.TeeReader(responseBody, respCapture), stream, requestID, completionTracker)
 	respBytes := counter.n
 
 	// The streaming path forwarded the request without ever holding it whole, so it
@@ -429,6 +435,20 @@ func chatGPTRequestHashComplete(fullyRead bool, contentLength int64, capture *ca
 	return tracker != nil && tracker.sawEOF
 }
 
+func chatGPTRequestWantsStream(wire []byte, contentEncoding string, truncated, complete bool) bool {
+	if truncated || !complete {
+		return false
+	}
+	decoded, _, ok := decodeChatGPTRequestBody(wire, contentEncoding)
+	if !ok {
+		return false
+	}
+	var request struct {
+		Stream bool `json:"stream"`
+	}
+	return json.Unmarshal(decoded, &request) == nil && request.Stream
+}
+
 // cappedBuffer retains up to limit bytes and records the true total; past the
 // limit it flags truncation instead of growing (bounded memory, no partial
 // parses downstream).
@@ -452,9 +472,20 @@ type chatGPTSSECompletionReader struct {
 	eventOverflow bool
 	eventTypeHint bool
 	terminal      bool
+	delivered     bool
 	eof           bool
 	ending        []byte
 	endingErr     error
+}
+
+func (r *chatGPTSSECompletionReader) markClientWrite() {
+	if r.terminal {
+		r.delivered = true
+	}
+}
+
+func (r *chatGPTSSECompletionReader) terminalDelivered() bool {
+	return r.delivered
 }
 
 func isChatGPTEventStream(header http.Header) bool {
