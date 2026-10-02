@@ -181,6 +181,25 @@ class TestValidateIntegration(unittest.TestCase):
             self.assertTrue(any("Inline code lost" in e for e in result.errors))
 
 
+
+class TestInnerBacktickSpans(unittest.TestCase):
+    """CommonMark lets a span carry a backtick run of another length inside it
+    (``a`b``). A content class that excludes every backtick cannot match such a
+    span at all, so a rewrite of its code went unvalidated."""
+
+    def test_double_backtick_span_with_inner_backtick_is_extracted(self):
+        self.assertEqual(extract_inline_codes("use ``a`b`` here and `c`"), ["a`b", "c"])
+
+    def test_single_backtick_span_with_inner_double_run(self):
+        self.assertEqual(extract_inline_codes("see `a``b` now"), ["a``b"])
+
+    def test_inner_backtick_span_rewrite_still_fails_validation(self):
+        orig = "# T\n\nRun ``git log --format=`%h` -1`` first.\n"
+        comp = orig.replace("%h", "%H")
+        result = ValidationResult()
+        validate_inline_codes(orig, comp, result)
+        self.assertFalse(result.is_valid, result.errors)
+
 if __name__ == "__main__":
     unittest.main()
 
