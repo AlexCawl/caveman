@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -324,6 +325,7 @@ func TestChatGPTSSEStreamsThroughAndMetersUsage(t *testing.T) {
 	srv, sink, _ := chatgptTestServer(t, upstream.URL)
 
 	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true}`))
+	req.Header.Set("x-cave-agent", "pi")
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
@@ -345,6 +347,64 @@ func TestChatGPTSSEStreamsThroughAndMetersUsage(t *testing.T) {
 	}
 	if row.RawRequestSHA256 != row.TransformedRequestSHA256 {
 		t.Fatal("passthrough hashes must match — nothing may be transformed")
+	}
+}
+
+func TestChatGPTSSETerminalEventAtEOFGetsDispatched(t *testing.T) {
+	sse := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":111,\"output_tokens\":22}}}\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer upstream.Close()
+	srv, sink, _ := chatgptTestServer(t, upstream.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true}`))
+	req.Header.Set("x-cave-agent", "pi")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if got, want := rec.Body.String(), sse+"\n"; got != want {
+		t.Fatalf("terminal SSE event was not delimited for Pi:\n got %q\nwant %q", got, want)
+	}
+	row := sink.last(t)
+	if row.ErrorCode != "" || row.InputTokens != 111 || row.OutputTokens != 22 {
+		t.Fatalf("completed stream was not recorded: %+v", row)
+	}
+}
+
+func TestChatGPTSSECleanEOFWithoutTerminalEventAborts(t *testing.T) {
+	sse := "event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"usage\":{\"input_tokens\":111,\"output_tokens\":22}}}\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+	srv, sink, _ := chatgptTestServer(t, upstream.URL)
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, err := http.NewRequest(http.MethodPost, proxy.URL+"/chatgpt/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("x-cave-agent", "pi")
+	resp, err := proxy.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if readErr == nil {
+		t.Fatal("clean EOF without response terminal event was returned as complete")
+	}
+	row := sink.last(t)
+	if row.ErrorCode != "cave_upstream_body_read_failed" {
+		t.Fatalf("incomplete stream error code = %q, want cave_upstream_body_read_failed", row.ErrorCode)
+	}
+	if row.InputTokens != 0 || row.OutputTokens != 0 {
+		t.Fatalf("partial SSE usage was recorded: %+v", row)
 	}
 }
 
