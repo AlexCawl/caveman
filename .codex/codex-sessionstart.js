@@ -31,11 +31,11 @@
 //   3. User config: $XDG_CONFIG_HOME/caveman/config.json, then
 //      ~/.config/caveman/config.json (macOS/Linux) or
 //      %APPDATA%\caveman\config.json (Windows)
-//   4. 'full'
+//   4. 'caveman'
 //
 // Deliberate non-goal (#185 scope): this hook resolves the CONFIGURED default
 // only. It does not read the legacy `~/.claude/.caveman-active` mirror or the
-// per-session store, so a level switched mid-session is not resumed here —
+// per-session store, so a mode switched mid-session is not resumed here —
 // Codex has no tracker hook wired in this repo-local setup, so there is
 // nothing session-scoped to read without guessing at another host's state.
 
@@ -48,18 +48,30 @@ const os = require('os');
 // copy stays equal to the real one; tests/hooks/codex-sessionstart.test.mjs
 // asserts this copy does too.
 const FALLBACK_VALID_MODES = [
-  'off', 'lite', 'full', 'ultra',
-  'wenyan-lite', 'wenyan', 'wenyan-full', 'wenyan-ultra',
+  'off', 'caveman', 'ultracave', 'megacave',
   'commit', 'review', 'compress'
 ];
+// Hand-copy of caveman-config.js LEGACY_MODES: a config still naming a
+// pre-three-skill level resolves the same way when degraded.
+const FALLBACK_LEGACY_MODES = {
+  lite: 'caveman', full: 'caveman', ultra: 'ultracave',
+  wenyan: 'megacave', 'wenyan-lite': 'megacave',
+  'wenyan-full': 'megacave', 'wenyan-ultra': 'megacave',
+};
+function fallbackCanonicalMode(raw) {
+  if (typeof raw !== 'string') return null;
+  const m = raw.toLowerCase();
+  if (FALLBACK_VALID_MODES.includes(m)) return m;
+  return Object.prototype.hasOwnProperty.call(FALLBACK_LEGACY_MODES, m) ? FALLBACK_LEGACY_MODES[m] : null;
+}
 
 // The only mode that injects nothing: the user opted out, and rules must not
 // be force-injected (caveman-activate.js treats `off` the same way on the
 // Claude side).
 const SILENT_MODES = new Set(['off']);
 
-// Modes with their own independent skill files — not caveman intensity
-// levels. The Claude hook emits a one-line pointer for them; so does this.
+// Modes with their own independent skill files — not caveman prose modes.
+// The Claude hook emits a one-line pointer for them; so does this.
 const INDEPENDENT_MODES = new Set(['commit', 'review', 'compress']);
 
 // Hand-copy of caveman-config.js readModeFromConfigFile, used only when that
@@ -68,10 +80,7 @@ const INDEPENDENT_MODES = new Set(['commit', 'review', 'compress']);
 function fallbackReadMode(file) {
   try {
     if (!fs.lstatSync(file).isFile()) return null;
-    const mode = JSON.parse(fs.readFileSync(file, 'utf8')).defaultMode;
-    if (typeof mode === 'string' && FALLBACK_VALID_MODES.includes(mode.toLowerCase())) {
-      return mode.toLowerCase();
-    }
+    return fallbackCanonicalMode(JSON.parse(fs.readFileSync(file, 'utf8')).defaultMode);
   } catch (e) { /* absent, unreadable, or malformed → next source */ }
   return null;
 }
@@ -97,10 +106,8 @@ function fallbackGetDefaultMode(startDir) {
   // 1. Environment variable. No .trim() — the real resolver does not trim,
   //    and a degraded path accepting " ultra" where the intact one rejects it
   //    is drift in a whitelist.
-  const envMode = process.env.CAVEMAN_DEFAULT_MODE;
-  if (envMode && FALLBACK_VALID_MODES.includes(envMode.toLowerCase())) {
-    return envMode.toLowerCase();
-  }
+  const envMode = fallbackCanonicalMode(process.env.CAVEMAN_DEFAULT_MODE);
+  if (envMode) return envMode;
   // 2. Repo-local config, walking up. Bounded at 64 like findRepoConfigPath.
   try {
     let dir = path.resolve(startDir || process.cwd());
@@ -115,7 +122,7 @@ function fallbackGetDefaultMode(startDir) {
     }
   } catch (e) { /* fall through to user config */ }
   // 3. User config, then 4. the built-in default.
-  return fallbackUserConfigMode() || 'full';
+  return fallbackUserConfigMode() || 'caveman';
 }
 
 // The hook dir is `<repo>/.codex`, so the shared resolver lives one level up.
@@ -147,37 +154,37 @@ function main() {
   }
 
   if (INDEPENDENT_MODES.has(mode)) {
-    process.stdout.write('CAVEMAN MODE ACTIVE — level: ' + mode + '. Behavior defined by /caveman-' + mode + ' skill.');
+    process.stdout.write('CAVEMAN MODE ACTIVE — mode: ' + mode + '. Behavior defined by /caveman-' + mode + ' skill.');
     return;
   }
 
-  const loadFilteredRuleset = (shared && typeof shared.loadFilteredRuleset === 'function')
-    ? shared.loadFilteredRuleset
+  const loadRuleset = (shared && typeof shared.loadRuleset === 'function')
+    ? shared.loadRuleset
     : null;
   const rulesetBanner = (shared && typeof shared.rulesetBanner === 'function')
     ? shared.rulesetBanner
-    : ((m) => 'CAVEMAN MODE ACTIVE — level: ' + (m === 'wenyan' ? 'wenyan-full' : m));
+    : ((m) => 'CAVEMAN MODE ACTIVE — mode: ' + m);
 
-  // SKILL.md lives at <repo>/skills/caveman/SKILL.md. skillPathCandidates()
+  // SKILL.md lives at <repo>/skills/<mode>/SKILL.md. skillPathCandidates()
   // resolves the plugin layouts; a repo checkout is the first candidate it
   // tries. Pass the shared resolver's own directory so the candidates resolve
   // relative to src/hooks/, not this file.
-  const skillContent = loadFilteredRuleset
-    ? loadFilteredRuleset(mode, path.join(hookDir, '..', 'src', 'hooks'))
+  const skillContent = loadRuleset
+    ? loadRuleset(mode, path.join(hookDir, '..', 'src', 'hooks'))
     : null;
 
   let output;
   if (skillContent) {
     output = rulesetBanner(mode) + '\n\n' + skillContent;
   } else {
-    // Degraded one-liner: name the level and where its rules come from, so a
+    // Degraded one-liner: name the mode and where its rules come from, so a
     // missing SKILL.md degrades the same way on Codex as the Claude hook's
     // fallback does. The old static echo's full text would go stale, which is
     // the defect class this hook exists to end.
     output = rulesetBanner(mode)
-      + '. Rules: skills/caveman/SKILL.md. Switch level: /caveman lite|full|ultra'
-      + ' (wenyan levels supported). Drop articles/filler/pleasantries/hedging.'
-      + ' Fragments OK. Code/commits/security: write normal.';
+      + '. Rules: skills/' + mode + '/SKILL.md. Switch: /caveman, /ultracave, /megacave.'
+      + ' Respond terse like smart caveman. All technical substance stay. Only fluff die.'
+      + ' Code/commits/security: write normal.';
   }
 
   process.stdout.write(output);

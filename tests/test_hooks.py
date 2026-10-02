@@ -179,7 +179,7 @@ class HookScriptTests(unittest.TestCase):
             result = self.run_cmd(["node", "src/hooks/caveman-activate.js"], home)
 
             self.assertNotIn("STATUSLINE SETUP NEEDED", result.stdout)
-            self.assertEqual((claude_dir / ".caveman-active").read_text(encoding="utf-8"), "full")
+            self.assertEqual((claude_dir / ".caveman-active").read_text(encoding="utf-8"), "caveman")
 
     def test_activate_does_not_flag_a_tilde_statusline_as_stale(self):
         # `~` and `$HOME` are expanded by the shell at statusline time, not by
@@ -221,7 +221,7 @@ class HookScriptTests(unittest.TestCase):
         hooks = cache / "src" / "hooks"
         hooks.parent.mkdir(parents=True)
         shutil.copytree(REPO_ROOT / "src" / "hooks", hooks)
-        # loadFilteredRuleset resolves skills/ as a sibling of src/
+        # loadRuleset resolves skills/ as a sibling of src/
         shutil.copytree(REPO_ROOT / "skills", cache / "skills")
         (home / ".claude" / "settings.json").write_text("{}\n", encoding="utf-8")
         return hooks
@@ -362,11 +362,14 @@ class HookScriptTests(unittest.TestCase):
 
             result = self.run_cmd(["node", "src/hooks/caveman-activate.js"], home)
 
-            # Intensity table exists only in SKILL.md, never in the fallback
-            self.assertIn("## Intensity", result.stdout)
-            # Default mode is full — table filtered to the active level's row
-            self.assertIn("| **full** |", result.stdout)
-            self.assertNotIn("| **lite** |", result.stdout)
+            # The whole skill body, unfiltered — the fallback carries only
+            # rule headlines, never the `### n.` sections.
+            skill = (REPO_ROOT / "skills" / "caveman" / "SKILL.md").read_text(encoding="utf-8")
+            body = re.sub(r"\A---[\s\S]*?---\s*", "", skill).rstrip()
+            self.assertIn("### 1. Answer first", result.stdout)
+            self.assertIn(body, result.stdout)
+            self.assertTrue(result.stdout.startswith("CAVEMAN MODE ACTIVE — mode: caveman\n\n# caveman\n"))
+            self.assertIn("Switch: /caveman, /ultracave, /megacave.", result.stdout)
 
     def test_activate_finds_skill_beside_config_dir_hooks(self):
         # Standalone layout: hooks at $CLAUDE_CONFIG_DIR/hooks/, skill installed
@@ -464,8 +467,8 @@ class SessionStartSourceTests(unittest.TestCase):
 
     def test_startup_persists_the_session_mode(self):
         self.activate({"session_id": "sessA", "source": "startup"})
-        self.assertEqual(self.session_mode("sessA"), "full")
-        self.assertEqual((self.claude_dir / ".caveman-active").read_text(encoding="utf-8"), "full")
+        self.assertEqual(self.session_mode("sessA"), "caveman")
+        self.assertEqual((self.claude_dir / ".caveman-active").read_text(encoding="utf-8"), "caveman")
 
     def test_compact_does_not_resurrect_a_deactivated_session(self):
         self.set_session_mode("sessA", "off")
@@ -476,18 +479,54 @@ class SessionStartSourceTests(unittest.TestCase):
     def test_compact_still_re_emits_the_ruleset_when_active(self):
         # Compaction is exactly what prunes the rules out of context, so the
         # hook must keep re-injecting them — it just must not change the mode.
-        self.set_session_mode("sessA", "ultra")
+        self.set_session_mode("sessA", "ultracave")
         r = self.activate({"session_id": "sessA", "source": "compact"})
-        self.assertIn("CAVEMAN MODE ACTIVE — level: ultra", r.stdout)
+        self.assertIn("CAVEMAN MODE ACTIVE — mode: ultracave", r.stdout)
+        self.assertIn("Ultracave is caveman with the grammar stripped.", r.stdout)
 
     def test_compact_does_not_re_derive_the_configured_default(self):
+        # A pre-three-skill session file: 'lite' resolves to caveman.
         self.set_session_mode("sessA", "lite")
         r = self.activate(
             {"session_id": "sessA", "source": "compact"},
             extra_env={"CAVEMAN_DEFAULT_MODE": "ultra"},
         )
-        self.assertIn("level: lite", r.stdout)
-        self.assertNotIn("level: ultra", r.stdout)
+        self.assertIn("mode: caveman", r.stdout)
+        self.assertNotIn("mode: ultracave", r.stdout)
+
+    def test_legacy_wenyan_session_file_resolves_to_megacave(self):
+        self.set_session_mode("sessA", "wenyan-lite")
+        r = self.activate({"session_id": "sessA", "source": "compact"})
+        self.assertIn("CAVEMAN MODE ACTIVE — mode: megacave", r.stdout)
+        self.assertIn("Megacave is caveman in Classical Chinese.", r.stdout)
+        # Re-persisted under the new id; the mirror follows.
+        self.assertEqual(self.session_mode("sessA"), "megacave")
+        self.assertEqual((self.claude_dir / ".caveman-active").read_text(encoding="utf-8"), "megacave")
+
+    def test_legacy_env_default_resolves_to_its_skill(self):
+        r = self.activate(
+            {"session_id": "sessA", "source": "startup"},
+            extra_env={"CAVEMAN_DEFAULT_MODE": "ultra"},
+        )
+        self.assertIn("CAVEMAN MODE ACTIVE — mode: ultracave", r.stdout)
+        self.assertEqual(self.session_mode("sessA"), "ultracave")
+
+    def test_fallback_ruleset_without_any_skill_file(self):
+        # Standalone hooks with no skills dir: thesis + rule headlines, plus the
+        # mode's own thesis for ultracave/megacave.
+        with tempfile.TemporaryDirectory(prefix="caveman-noskill-") as tmp:
+            hooks = Path(tmp) / "hooks"
+            hooks.mkdir()
+            for name in ("caveman-activate.js", "caveman-config.js", "package.json"):
+                shutil.copy(REPO_ROOT / "src" / "hooks" / name, hooks / name)
+            self.ACTIVATE = str(hooks / "caveman-activate.js")
+            r = self.activate({"session_id": "sessA", "source": "startup"},
+                              extra_env={"CAVEMAN_DEFAULT_MODE": "megacave"})
+        self.assertIn("CAVEMAN MODE ACTIVE — mode: megacave", r.stdout)
+        self.assertIn("Respond terse like smart caveman.", r.stdout)
+        self.assertIn("9. Never perform caveman.", r.stdout)
+        self.assertIn("以文言答。技術之實皆存，唯贅言去之。", r.stdout)
+        self.assertNotIn("### 1.", r.stdout)
 
     def test_resume_preserves_a_deactivated_session_too(self):
         # Not just compaction: a resumed session that was turned off must stay
@@ -498,7 +537,7 @@ class SessionStartSourceTests(unittest.TestCase):
 
     def test_resume_without_stored_state_uses_the_default(self):
         r = self.activate({"session_id": "brandnew", "source": "resume"})
-        self.assertIn("CAVEMAN MODE ACTIVE — level: full", r.stdout)
+        self.assertIn("CAVEMAN MODE ACTIVE — mode: caveman", r.stdout)
 
     def test_clear_re_applies_the_default(self):
         # /clear is an explicit user reset, unlike a compaction: nothing else
@@ -510,17 +549,18 @@ class SessionStartSourceTests(unittest.TestCase):
     def test_a_pre_upgrade_legacy_flag_survives_a_compaction(self):
         # Upgrade path: the session began before per-session state existed, so
         # only the machine-wide flag holds its mode.
+        # Its legacy 'lite' value resolves to caveman.
         (self.claude_dir / ".caveman-active").write_text("lite", encoding="utf-8")
         r = self.activate(
             {"session_id": "sessA", "source": "compact"},
             extra_env={"CAVEMAN_DEFAULT_MODE": "ultra"},
         )
-        self.assertIn("level: lite", r.stdout)
+        self.assertIn("mode: caveman", r.stdout)
 
     def test_payloadless_invocation_behaves_as_before(self):
         for payload in (None, {}, {"source": "startup"}):
             r = self.activate(payload)
-            self.assertIn("CAVEMAN MODE ACTIVE — level: full", r.stdout)
+            self.assertIn("CAVEMAN MODE ACTIVE — mode: caveman", r.stdout)
 
     def test_malformed_payload_degrades_instead_of_failing(self):
         env = os.environ.copy()
@@ -538,7 +578,7 @@ class SessionStartSourceTests(unittest.TestCase):
 
     def test_rejected_session_id_writes_no_state_file(self):
         self.activate({"session_id": "../../escape", "source": "startup"})
-        self.assertEqual((self.claude_dir / ".caveman-active").read_text(encoding="utf-8"), "full")
+        self.assertEqual((self.claude_dir / ".caveman-active").read_text(encoding="utf-8"), "caveman")
         stray = list(self.claude_dir.rglob("*.mode")) + list(self.claude_dir.rglob("*escape*"))
         self.assertEqual(stray, [], f"unexpected files: {stray}")
 

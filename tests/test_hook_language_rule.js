@@ -11,7 +11,7 @@
 //
 // The ruleset reaches the model by TWO paths and the fix has to hold on both:
 //
-//   1. SKILL.md, read at runtime by loadFilteredRuleset() — the plugin install
+//   1. SKILL.md, read at runtime by loadRuleset() — the plugin install
 //      and any standalone install that also has a skills/ directory.
 //   2. The ruleset hardcoded in caveman-activate.js, used when SKILL.md cannot
 //      be found. bin/install.js's installHooks() copies HOOK_FILES alone into

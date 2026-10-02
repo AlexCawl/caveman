@@ -45,27 +45,27 @@ for (const source of ['env', 'repo', 'user']) {
     assert.equal(run('caveman-mode-tracker.js', { prompt: 'ordinary request' }), '');
     assert.match(run('caveman-mode-tracker.js', { prompt: '/caveman status' }), /Caveman mode: off/);
     assert.match(run('caveman-mode-tracker.js', { prompt: '/caveman' }), /CAVEMAN MODE ACTIVE/);
-    assert.equal(mode(), 'full');
+    assert.equal(mode(), 'caveman');
     for (const source of ['compact', 'resume']) {
       assert.match(run('caveman-activate.js', { source }), /CAVEMAN MODE ACTIVE/);
-      assert.equal(mode(), 'full');
+      assert.equal(mode(), 'caveman');
     }
-    run('caveman-mode-tracker.js', { prompt: '/caveman ultra' });
+    run('caveman-mode-tracker.js', { prompt: '/ultracave' });
     run('caveman-mode-tracker.js', { prompt: '/caveman-commit' });
     run('caveman-mode-tracker.js', { prompt: 'continue' });
-    assert.equal(mode(), 'ultra');
+    assert.equal(mode(), 'ultracave');
     run('caveman-mode-tracker.js', { prompt: 'stop caveman' });
     assert.equal(run('caveman-activate.js', { source: 'compact' }), 'OK');
     assert.equal(mode(), 'off');
     run('caveman-mode-tracker.js', { prompt: 'talk like caveman' });
-    assert.equal(mode(), 'full');
-    run('caveman-mode-tracker.js', { prompt: '/caveman ultra' });
+    assert.equal(mode(), 'caveman');
+    run('caveman-mode-tracker.js', { prompt: '/megacave' });
     run('caveman-mode-tracker.js', { prompt: '/caveman-commit' });
     assert.equal(run('caveman-activate.js', { source: 'clear' }), 'OK');
     assert.equal(mode(), 'off');
     run('caveman-mode-tracker.js', { prompt: '/caveman-review' });
     run('caveman-mode-tracker.js', { prompt: 'continue after reset' });
-    assert.equal(mode(), 'off', 'one-shot after clear must not resurrect stale ultra');
+    assert.equal(mode(), 'off', 'one-shot after clear must not resurrect stale megacave');
   });
 }
 

@@ -84,7 +84,7 @@ class ModeTrackerTests(unittest.TestCase):
             deadline = time.time() + 5
             while time.time() < deadline and self.flag_value() is None:
                 time.sleep(0.05)
-            self.assertEqual(self.flag_value(), "ultra")
+            self.assertEqual(self.flag_value(), "ultracave")
         finally:
             try:
                 proc.stdin.close()
@@ -96,18 +96,18 @@ class ModeTrackerTests(unittest.TestCase):
     # ── #598: deactivation word orders ──────────────────────────────────
 
     def test_turn_caveman_mode_off_deactivates(self):
-        # Pre-fix: this ACTIVATED caveman and downgraded ultra -> full.
+        # Pre-fix: this ACTIVATED caveman and downgraded the mode to the default.
         self.flag.write_text("ultra", encoding="utf-8")
         self.send("turn caveman mode off")
         self.assertIsNone(self.flag_value())
 
     def test_turn_caveman_off_deactivates(self):
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
         self.send("turn caveman off")
         self.assertIsNone(self.flag_value())
 
     def test_turn_off_caveman_deactivates(self):
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
         self.send("turn off caveman")
         self.assertIsNone(self.flag_value())
 
@@ -118,28 +118,28 @@ class ModeTrackerTests(unittest.TestCase):
         self.assertIsNone(self.flag_value())
 
     def test_normal_mode_command_deactivates(self):
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
         self.send("normal mode")
         self.assertIsNone(self.flag_value())
 
     def test_back_to_normal_mode_deactivates(self):
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
         self.send("back to normal mode please")
         self.assertIsNone(self.flag_value())
 
     def test_vim_normal_mode_does_not_deactivate(self):
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
         self.send("how do I exit vim normal mode")
-        self.assertEqual(self.flag_value(), "full")
+        self.assertEqual(self.flag_value(), "caveman")
 
     # ── #598: activation guards ─────────────────────────────────────────
 
     def test_enable_caveman_with_stop_elsewhere_activates(self):
         # Pre-fix: "stop" anywhere suppressed activation, then the
         # deactivation regex matched "caveman and stop" and deleted the flag.
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
         self.send("enable caveman and stop apologizing")
-        self.assertEqual(self.flag_value(), "full")
+        self.assertEqual(self.flag_value(), "caveman")
 
     def test_question_does_not_activate(self):
         self.send("what is caveman mode?")
@@ -153,39 +153,45 @@ class ModeTrackerTests(unittest.TestCase):
 
     def test_unscoped_brevity_activates(self):
         self.send("be brief")
-        self.assertEqual(self.flag_value(), "full")
+        self.assertEqual(self.flag_value(), "caveman")
 
     def test_activate_caveman_still_works(self):
         self.send("activate caveman")
-        self.assertEqual(self.flag_value(), "full")
+        self.assertEqual(self.flag_value(), "caveman")
 
     def test_turn_on_caveman_mode_still_works(self):
         self.send("turn on caveman mode")
-        self.assertEqual(self.flag_value(), "full")
+        self.assertEqual(self.flag_value(), "caveman")
 
     def test_talk_like_caveman_still_works(self):
         self.send("talk like a caveman")
-        self.assertEqual(self.flag_value(), "full")
+        self.assertEqual(self.flag_value(), "caveman")
 
     def test_bare_caveman_mode_still_works(self):
         self.send("caveman mode")
-        self.assertEqual(self.flag_value(), "full")
+        self.assertEqual(self.flag_value(), "caveman")
 
     # ── slash commands ──────────────────────────────────────────────────
 
-    def test_slash_caveman_level_switch(self):
-        self.send("/caveman ultra")
-        self.assertEqual(self.flag_value(), "ultra")
+    def test_slash_mode_commands(self):
+        for prompt, mode in [
+            ("/ultracave", "ultracave"), ("/caveman:megacave", "megacave"),
+            ("/caveman ultra", "ultracave"), ("/caveman wenyan-lite", "megacave"),
+            ("/caveman lite", "caveman"), ("/caveman", "caveman"),
+        ]:
+            with self.subTest(prompt=prompt):
+                self.send(prompt)
+                self.assertEqual(self.flag_value(), mode)
 
     def test_slash_caveman_off(self):
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
         self.send("/caveman off")
         self.assertIsNone(self.flag_value())
 
     # ── #856: read-only mode status ──────────────────────────────────────
 
     def test_status_reports_active_mode_without_mutating_state(self):
-        self.flag.write_text("ultra", encoding="utf-8")
+        self.flag.write_text("ultracave", encoding="utf-8")
         before = self.flag.read_text(encoding="utf-8")
 
         result = self.send("/caveman status")
@@ -193,7 +199,7 @@ class ModeTrackerTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(
             payload["hookSpecificOutput"]["additionalContext"],
-            "Report this status verbatim without changing mode: Caveman mode: ultra",
+            "Report this status verbatim without changing mode: Caveman mode: ultracave",
         )
         self.assertEqual(self.flag_value(), before)
         self.assertFalse(
@@ -201,7 +207,7 @@ class ModeTrackerTests(unittest.TestCase):
             "status must not record a mode transition",
         )
 
-    def test_namespaced_status_reports_canonical_wenyan_mode(self):
+    def test_namespaced_status_reports_the_new_id_for_a_legacy_value(self):
         self.flag.write_text("wenyan", encoding="utf-8")
 
         result = self.send("/caveman:caveman status")
@@ -209,9 +215,9 @@ class ModeTrackerTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(
             payload["hookSpecificOutput"]["additionalContext"],
-            "Report this status verbatim without changing mode: Caveman mode: wenyan-full",
+            "Report this status verbatim without changing mode: Caveman mode: megacave",
         )
-        self.assertEqual(self.flag_value(), "wenyan")
+        self.assertEqual(self.flag_value(), "wenyan", "status must not rewrite the file")
 
     def test_status_reports_independent_modes(self):
         for mode in ("commit", "review", "compress"):
@@ -226,16 +232,16 @@ class ModeTrackerTests(unittest.TestCase):
                 self.assertEqual(self.flag_value(), mode)
 
     def test_enveloped_status_is_read_only(self):
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
 
         result = self.send('<command-name>/caveman:caveman</command-name><command-args>status</command-args>')
 
         payload = json.loads(result.stdout)
         self.assertEqual(
             payload["hookSpecificOutput"]["additionalContext"],
-            "Report this status verbatim without changing mode: Caveman mode: full",
+            "Report this status verbatim without changing mode: Caveman mode: caveman",
         )
-        self.assertEqual(self.flag_value(), "full")
+        self.assertEqual(self.flag_value(), "caveman")
 
     def test_status_reports_off_for_missing_and_durable_off_state(self):
         missing = json.loads(self.send("/caveman status").stdout)
@@ -282,13 +288,14 @@ class ModeTrackerTests(unittest.TestCase):
 
     # ── #599: one-shot independent modes ────────────────────────────────
 
-    def test_commit_restores_prior_level_on_next_prompt(self):
+    def test_commit_restores_prior_mode_on_next_prompt(self):
+        # A legacy 'ultra' flag comes back as its new id.
         self.flag.write_text("ultra", encoding="utf-8")
         self.send("/caveman-commit")
         self.assertEqual(self.flag_value(), "commit")
         r = self.send("ordinary follow-up question")
-        self.assertEqual(self.flag_value(), "ultra")
-        self.assertIn("CAVEMAN MODE ACTIVE (ultra)", r.stdout)
+        self.assertEqual(self.flag_value(), "ultracave")
+        self.assertIn("CAVEMAN MODE ACTIVE (ultracave)", r.stdout)
 
     def test_commit_with_no_prior_mode_deactivates_after(self):
         self.send("/caveman-commit")
@@ -303,11 +310,11 @@ class ModeTrackerTests(unittest.TestCase):
         self.send("/caveman-review")
         self.assertEqual(self.flag_value(), "review")
         self.send("ordinary follow-up question")
-        self.assertEqual(self.flag_value(), "wenyan-ultra")
+        self.assertEqual(self.flag_value(), "megacave")
 
     def test_namespaced_commit_and_review_recognized(self):
         # Pre-fix: only compress and stats had the /caveman:caveman- variant.
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
         self.send("/caveman:caveman-commit")
         self.assertEqual(self.flag_value(), "commit")
         self.send("next prompt")  # restore
@@ -315,7 +322,7 @@ class ModeTrackerTests(unittest.TestCase):
         self.assertEqual(self.flag_value(), "review")
 
     def test_no_reinforcement_during_independent_turn(self):
-        self.flag.write_text("full", encoding="utf-8")
+        self.flag.write_text("caveman", encoding="utf-8")
         r = self.send("/caveman-commit")
         self.assertNotIn("CAVEMAN MODE ACTIVE", r.stdout)
 
@@ -371,25 +378,25 @@ class SessionScopedModeTests(unittest.TestCase):
         return self.legacy.read_text(encoding="utf-8") if self.legacy.exists() else None
 
     def test_parallel_sessions_keep_separate_modes(self):
-        self.send("/caveman ultra", "sessA")
-        self.send("/caveman lite", "sessB")
-        self.assertEqual(self.mode_of("sessA"), "ultra")
-        self.assertEqual(self.mode_of("sessB"), "lite")
+        self.send("/ultracave", "sessA")
+        self.send("/megacave", "sessB")
+        self.assertEqual(self.mode_of("sessA"), "ultracave")
+        self.assertEqual(self.mode_of("sessB"), "megacave")
 
     def test_status_uses_session_mode_before_legacy_fallback(self):
-        self.send("/caveman ultra", "sessA")
-        self.send("/caveman lite", "sessB")
+        self.send("/ultracave", "sessA")
+        self.send("/megacave", "sessB")
 
         status_a = json.loads(self.send("/caveman status", "sessA").stdout)
         status_b = json.loads(self.send("/caveman status", "sessB").stdout)
 
         self.assertEqual(
             status_a["hookSpecificOutput"]["additionalContext"],
-            "Report this status verbatim without changing mode: Caveman mode: ultra",
+            "Report this status verbatim without changing mode: Caveman mode: ultracave",
         )
         self.assertEqual(
             status_b["hookSpecificOutput"]["additionalContext"],
-            "Report this status verbatim without changing mode: Caveman mode: lite",
+            "Report this status verbatim without changing mode: Caveman mode: megacave",
         )
 
     def test_status_preserves_session_off_and_all_state_bytes(self):
@@ -405,18 +412,18 @@ class SessionScopedModeTests(unittest.TestCase):
             self.assertIn('Caveman mode: ' + expected, response.stdout)
             self.assertEqual(snapshot(), before)
         self.send('continue', 'sessB')
-        self.assertEqual(self.mode_of('sessB'), 'ultra')
+        self.assertEqual(self.mode_of('sessB'), 'ultracave')
 
     def test_reinforcement_reflects_own_session(self):
-        self.send("/caveman ultra", "sessA")
-        self.send("/caveman lite", "sessB")
+        self.send("/ultracave", "sessA")
+        self.send("/megacave", "sessB")
         r = self.send("ordinary prompt", "sessA")
-        self.assertIn("CAVEMAN MODE ACTIVE (ultra)", r.stdout)
-        self.assertNotIn("lite", r.stdout)
+        self.assertIn("CAVEMAN MODE ACTIVE (ultracave)", r.stdout)
+        self.assertNotIn("megacave", r.stdout)
 
     def test_deactivating_one_session_leaves_the_other_active(self):
-        self.send("/caveman ultra", "sessA")
-        self.send("/caveman full", "sessB")
+        self.send("/ultracave", "sessA")
+        self.send("/caveman", "sessB")
         self.send("stop caveman", "sessB")
 
         self.assertEqual(self.mode_of("sessB"), "off", "off must be durable on disk")
@@ -424,37 +431,37 @@ class SessionScopedModeTests(unittest.TestCase):
         self.assertNotIn("CAVEMAN MODE ACTIVE", r.stdout)
 
         r = self.send("ordinary prompt", "sessA")
-        self.assertIn("CAVEMAN MODE ACTIVE (ultra)", r.stdout)
+        self.assertIn("CAVEMAN MODE ACTIVE (ultracave)", r.stdout)
 
     def test_legacy_mirror_never_holds_literal_off(self):
         # An older statusline or hook reading the legacy path must see absence,
         # not the string 'off' — it would render [CAVEMAN:OFF] / inject
         # "CAVEMAN MODE ACTIVE (off)".
-        self.send("/caveman full", "sessA")
-        self.assertEqual(self.legacy_value(), "full")
+        self.send("/caveman", "sessA")
+        self.assertEqual(self.legacy_value(), "caveman")
         self.send("stop caveman", "sessA")
         self.assertIsNone(self.legacy_value())
 
     def test_legacy_mirror_tracks_last_write(self):
-        self.send("/caveman ultra", "sessA")
-        self.send("/caveman lite", "sessB")
-        self.assertEqual(self.legacy_value(), "lite")
+        self.send("/ultracave", "sessA")
+        self.send("/megacave", "sessB")
+        self.assertEqual(self.legacy_value(), "megacave")
 
     def test_prev_restore_is_session_scoped(self):
-        # Each window runs a one-shot skill; each must return to its own level.
-        self.send("/caveman ultra", "sessA")
-        self.send("/caveman lite", "sessB")
+        # Each window runs a one-shot skill; each must return to its own mode.
+        self.send("/ultracave", "sessA")
+        self.send("/megacave", "sessB")
         self.send("/caveman-commit", "sessA")
         self.send("/caveman-commit", "sessB")
 
         self.send("follow-up", "sessA")
-        self.assertEqual(self.mode_of("sessA"), "ultra")
+        self.assertEqual(self.mode_of("sessA"), "ultracave")
         self.send("follow-up", "sessB")
-        self.assertEqual(self.mode_of("sessB"), "lite")
+        self.assertEqual(self.mode_of("sessB"), "megacave")
 
     def test_malformed_session_id_falls_back_to_legacy(self):
-        self.send("/caveman ultra", "../../escape")
-        self.assertEqual(self.legacy_value(), "ultra", "must degrade, not fail")
+        self.send("/ultracave", "../../escape")
+        self.assertEqual(self.legacy_value(), "ultracave", "must degrade, not fail")
         self.assertFalse(
             self.sessions.exists() and any(self.sessions.iterdir()),
             "no state file may be created for a rejected session id",
@@ -462,7 +469,7 @@ class SessionScopedModeTests(unittest.TestCase):
 
     def test_session_id_cannot_escape_the_sessions_directory(self):
         for bad in ["../../evil", "a/b", "..", "x" * 200]:
-            self.send("/caveman ultra", bad)
+            self.send("/ultracave", bad)
         stray = list(self.claude_dir.rglob("*evil*")) + list(self.claude_dir.rglob("*.mode"))
         self.assertEqual(stray, [], f"unexpected files written: {stray}")
 
@@ -484,10 +491,20 @@ class SessionScopedModeTests(unittest.TestCase):
         )
 
     def test_existing_legacy_flag_is_honored_before_first_session_write(self):
-        # Upgrade path: only the old flag exists when a new session starts.
+        # Upgrade path: only the old flag exists when a new session starts,
+        # holding a pre-three-skill level name.
         self.legacy.write_text("wenyan", encoding="utf-8")
         r = self.send("ordinary prompt", "sessA")
-        self.assertIn("CAVEMAN MODE ACTIVE (wenyan)", r.stdout)
+        self.assertIn("CAVEMAN MODE ACTIVE (megacave)", r.stdout)
+
+    def test_legacy_session_file_resolves_to_its_skill(self):
+        self.sessions.mkdir(parents=True)
+        (self.sessions / "sessA.mode").write_text("wenyan-lite", encoding="utf-8")
+        self.legacy.write_text("lite", encoding="utf-8")
+        r = self.send("ordinary prompt", "sessA")
+        self.assertIn("CAVEMAN MODE ACTIVE (megacave)", r.stdout)
+        r = self.send("ordinary prompt", "sessNoState")
+        self.assertIn("CAVEMAN MODE ACTIVE (caveman)", r.stdout, "mirror 'lite' reads as caveman")
 
 
 if __name__ == "__main__":
