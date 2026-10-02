@@ -16,6 +16,35 @@ export function parseWindowsNodeShim(source: string): string | null {
   return null;
 }
 
+// Accept only a single shim-relative forwarding command, optionally preceded by
+// @echo off. Never evaluate batch syntax or interpolate caller-controlled argv.
+function parseWindowsNestedShim(source: string): string | null {
+  const match = source.match(/^(?:@echo[ \t]+off[ \t]*\r?\n)?[ \t]*"%~dp0\\?([\w .@+\-\\/]+\.(?:cmd|bat))"[ \t]+%\*[ \t]*(?:\r?\n)?$/i);
+  return match?.[1] ?? null;
+}
+
+function resolveWindowsNodeShim(executable: string, depth = 0, seen = new Set<string>()): string {
+  if (depth > 4) throw new Error("Windows command shim nesting too deep");
+  const normalized = resolve(executable);
+  if (seen.has(normalized.toLowerCase())) throw new Error("Windows command shim cycle");
+  seen.add(normalized.toLowerCase());
+  const stat = statSync(normalized);
+  if (!stat.isFile() || stat.size > 256 * 1024) {
+    throw new Error(`cannot safely launch Windows command shim: ${normalized}`);
+  }
+  const source = readFileSync(normalized, "utf8");
+  const jsTarget = parseWindowsNodeShim(source);
+  const child = jsTarget ?? parseWindowsNestedShim(source);
+  if (!child) {
+    throw new Error(`cannot safely launch non-Node Windows command shim: ${normalized}; install a native .exe`);
+  }
+  const target = /^[A-Za-z]:[\\/]/.test(child)
+    ? child
+    : resolve(dirname(normalized), ...child.split(/[\\/]+/));
+  if (!existsSync(target) || !statSync(target).isFile()) throw new Error(`Windows command shim target is missing: ${target}`);
+  return jsTarget ? target : resolveWindowsNodeShim(target, depth + 1, seen);
+}
+
 function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
   return key === undefined ? undefined : env[key];
@@ -60,19 +89,6 @@ export function portableInvocation(
   if (platform !== "win32") return { command, args: [...args] };
   const executable = resolveWindowsCommand(command, env) ?? command;
   if (!/\.(?:cmd|bat)$/i.test(executable)) return { command: executable, args: [...args] };
-  const stat = statSync(executable);
-  if (!stat.isFile() || stat.size > 256 * 1024) {
-    throw new Error(`cannot safely launch Windows command shim: ${executable}`);
-  }
-  const shimScript = parseWindowsNodeShim(readFileSync(executable, "utf8"));
-  if (!shimScript) {
-    throw new Error(`cannot safely launch non-Node Windows command shim: ${executable}; install a native .exe`);
-  }
-  const script = /^[A-Za-z]:[\\/]/.test(shimScript)
-    ? shimScript
-    : resolve(dirname(executable), ...shimScript.split(/[\\/]+/));
-  if (!statSync(script).isFile()) {
-    throw new Error(`Windows command shim target is missing: ${script}`);
-  }
+  const script = resolveWindowsNodeShim(executable);
   return { command: process.execPath, args: [script, ...args] };
 }

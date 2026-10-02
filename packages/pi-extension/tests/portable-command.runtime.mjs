@@ -25,6 +25,27 @@ function fixture() {
   return { root, bin };
 }
 
+test("win32: nested cmd → bat → JS is unwrapped without a shell", () => {
+  const { root, bin } = fixture();
+  try {
+    const nested = join(bin, "nested.bat");
+    const target = join(root, "package space", "cli.cjs");
+    mkdirSync(join(root, "package space"));
+    writeFileSync(target, "// fixture\n");
+    writeFileSync(nested, 'node "%~dp0\\..\\package space\\cli.cjs" %*\r\n');
+    const shim = join(bin, "pi.CMD");
+    writeFileSync(shim, '@ECHO off\r\n"%~dp0nested.bat" %*\r\n');
+    const args = ["a & %PATH%"];
+    assert.deepEqual(portableInvocation(shim, args, "win32", {}), {
+      command: process.execPath, args: [target, ...args],
+    });
+    writeFileSync(nested, '"%~dp0pi.CMD" %*\r\n');
+    assert.throws(() => portableInvocation(shim, args, "win32", {}), /Windows command shim cycle/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("non-win32 is an untouched pass-through", () => {
   const r = portableInvocation("caveman", ["native-hook", "pi", "SessionStart"], "darwin", {});
   assert.deepEqual(r, { command: "caveman", args: ["native-hook", "pi", "SessionStart"] });

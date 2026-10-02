@@ -49,6 +49,24 @@ test("root installer unwraps Windows Node shims without a shell", () => {
   });
 });
 
+test("root installer unwraps nested cmd shims, rejects extra commands and missing children", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "caveman nested win "));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const shim = join(root, "pi.CMD");
+  const child = join(root, "pi.bat");
+  const script = join(root, "cli.js");
+  writeFileSync(script, "// fixture\n");
+  writeFileSync(child, 'node "%~dp0\\cli.js" %*\r\n');
+  writeFileSync(shim, '@ECHO off\r\n"%~dp0pi.bat" %*\r\n');
+  const args = ["space & %PATH%"];
+  const invoke = () => portable.portableInvocation(shim, args, { platform: "win32", execPath: "node.exe" });
+  assert.deepEqual(invoke(), { command: "node.exe", args: [script, ...args] });
+  writeFileSync(shim, '"%~dp0pi.bat" %*\r\necho unsafe\r\n');
+  assert.throws(invoke, /cannot safely launch non-Node Windows command shim/);
+  writeFileSync(shim, '"%~dp0missing.cmd" %*\r\n');
+  assert.throws(invoke, /Windows command shim target is missing/);
+});
+
 test("root installer rejects non-Node command shims", () => {
   const root = mkdtempSync(join(tmpdir(), "caveman-installer-win-"));
   const shim = join(root, "unsafe.cmd");
