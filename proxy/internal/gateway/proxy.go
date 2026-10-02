@@ -83,9 +83,25 @@ func connectionSetupFailure(err error) bool {
 	return opErr.Op == "dial" || opErr.Op == "proxyconnect"
 }
 
+func isPiChatGPTSubscription(r *http.Request) bool {
+	return r.Method == http.MethodPost &&
+		r.URL.Path == "/codex/responses" &&
+		r.URL.RawPath == "" &&
+		r.URL.RawQuery == "" &&
+		r.Header.Get("x-cave-agent") == "pi" &&
+		strings.TrimSpace(r.Header.Get("ChatGPT-Account-ID")) != "" &&
+		strings.HasPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer ")
+}
+
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	if !normalizeAgentPath(r) {
 		httpx.Error(w, r, http.StatusNotFound, "cave_route_not_found", "Proxy path is not recognized.")
+		return
+	}
+	if isPiChatGPTSubscription(r) {
+		r.URL.Path = "/chatgpt/responses"
+		r.URL.RawPath = ""
+		s.chatgpt(w, r)
 		return
 	}
 	start := time.Now()
