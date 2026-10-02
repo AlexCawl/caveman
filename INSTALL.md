@@ -106,7 +106,7 @@ Each row prints the agent id, profile slug (where applicable), and whether it wa
 With `omp` on your PATH, run `node bin/install.js --only omp` from this clone,
 then restart OMP. The native plugin adds seven skills, six commands, Cavecrew
 presets, a CAVEMAN badge, and Caveman instructions on each agent turn. Commands
-such as `/caveman lite` and `stop caveman` instruct the model; the badge indicates
+such as `/ultracave` and `stop caveman` instruct the model; the badge indicates
 that the plugin is loaded. Host lifecycle and prompt delivery were checked with
 OMP 18.2.6. This integration does not read Claude Code session statistics.
 

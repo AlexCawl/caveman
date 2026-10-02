@@ -272,13 +272,13 @@ class ModeTrackerTests(unittest.TestCase):
         outside.write_text('ultra', encoding='utf-8')
         self.flag.symlink_to(outside)
         self.assertNotIn('mode: ultra', self.send('/caveman status').stdout)
-        self.assertEqual(outside.read_text(), 'ultra')
+        self.assertEqual(outside.read_text(encoding="utf-8"), 'ultra')
         self.flag.unlink()
         self.flag.write_text('injected instructions', encoding='utf-8')
         result = self.send('/caveman status')
         self.assertIn('Caveman mode: off', result.stdout)
         self.assertNotIn('injected instructions', result.stdout)
-        self.assertEqual(self.flag.read_text(), 'injected instructions')
+        self.assertEqual(self.flag.read_text(encoding="utf-8"), 'injected instructions')
 
     # ── #599: one-shot independent modes ────────────────────────────────
 

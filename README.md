@@ -175,7 +175,7 @@ The full 30+ agent matrix, dry runs, flags, and verification live in [INSTALL.md
 **Small rock.** The skill, right after `npx skills add`:
 
 1. **Ask it something.** Any coding question. Watch the preamble vanish and the answer stay.
-2. **Turn the dial.** `/caveman lite` for tight-but-polite. `/caveman ultra` for grunts. `/caveman wenyan` for classical Chinese, because someone asked.
+2. **Pick your club.** `/caveman` for the voice. `/ultracave` for grunts. `/megacave` for classical Chinese, because someone asked.
 3. **Commit like a caveman.** `/caveman-commit` writes a Conventional Commit in one line.
 4. **Review like a caveman.** `/caveman-review` gives one finding per line: `L42: 🔴 null deref. Guard it.`
 5. **Shrink your memory files.** `/caveman-compress CLAUDE.md` cuts the prose, keeps every heading, path, and command, and backs up the original.
@@ -327,14 +327,14 @@ Fair headline. We link it anyway. See [The Numbers](#-the-numbers).
 
 ## 💬 The skill, unpacked
 
-One rule file, one talking style, plus a small toolbox. `/caveman lite|full|ultra|wenyan-lite|wenyan-full|wenyan-ultra` sets intensity. `/caveman status` reports current mode. `/caveman off` or `normal mode` turns it off. Want opt-in startup? Claude Code supports [`defaultMode: "manual"`](skills/caveman/README.md#how-to-invoke).
+Three skills, one voice, plus a small toolbox. `/caveman` is the voice, `/ultracave` strips the grammar, `/megacave` speaks classical Chinese. `/caveman status` reports current mode. `/caveman off` or `normal mode` turns it off. Want opt-in startup? Claude Code supports [`defaultMode: "manual"`](skills/caveman/README.md#how-to-invoke).
 
-| Level | Same question: "Why does my React component re-render?" |
+| Skill | Same question: "Why does my React component re-render?" |
 |---|---|
-| **lite** | Your component re-renders because you create a new object reference each render. Wrap it in `useMemo`. |
-| **full** *(default)* | New object ref each render. Inline object prop = new ref = re-render. Wrap in `useMemo`. |
-| **ultra** | Inline obj prop, new ref, re-render. `useMemo`. |
-| **wenyan-full** | 每繪新生對象參照，故重繪；以 useMemo 包之則免。 |
+| **plain** *(no skill)* | Your component re-renders because you create a new object reference each render. Wrap it in `useMemo`. |
+| **caveman** *(default)* | New object ref each render. Inline object prop = new ref = re-render. Wrap in `useMemo`. |
+| **ultracave** | Inline object prop, new ref, re-render. `useMemo`. |
+| **megacave** | 每繪新生對象參照，故重繪；以 useMemo 包之則免。 |
 
 Three things the skill will never do: shorten your code, paraphrase an error message, or grunt through a security warning. It drops to full sentences for anything irreversible, then picks the club back up.
 
@@ -345,7 +345,7 @@ Three things the skill will never do: shorten your code, paraphrase an error mes
 
 | Tool / command                                                                                                                                  | What you get                                                                                                                |
 | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `/caveman [lite\|full\|ultra\|wenyan-lite\|wenyan-full\|wenyan-ultra\|off]`                                                                     | Shorter replies at the intensity you choose.                                                                                |
+| `/caveman`, `/ultracave`, `/megacave`                                                                                                             | Shorter replies: the caveman voice, the grammar stripped, or classical Chinese.                                             |
 | `cavecrew-investigator`, `cavecrew-builder`, `cavecrew-reviewer`                                                                                | Compressed subagent presets for locating, editing, and reviewing code.                                                      |
 | `/caveman-commit`                                                                                                                               | Terse Conventional Commit messages.                                                                                         |
 | `/caveman-review`                                                                                                                               | One-line, actionable review findings.                                                                                       |

@@ -203,6 +203,8 @@ def verify_skill_frontmatter_upload_compatibility() -> None:
 
     skill_paths = [
         ROOT / "skills/caveman/SKILL.md",
+        ROOT / "skills/ultracave/SKILL.md",
+        ROOT / "skills/megacave/SKILL.md",
         ROOT / "skills/caveman-commit/SKILL.md",
         ROOT / "skills/caveman-help/SKILL.md",
         ROOT / "skills/caveman-review/SKILL.md",

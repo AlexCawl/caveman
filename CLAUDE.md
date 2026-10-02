@@ -115,7 +115,7 @@ caveman/
 
 | File | What it controls |
 |------|-----------------|
-| `skills/caveman/SKILL.md` | Caveman behavior: intensity levels, rules, wenyan mode, auto-clarity, persistence. Only file to edit for behavior changes. |
+| `skills/caveman/SKILL.md` | The caveman voice: rules, auto-clarity, persistence. Sibling skills `skills/ultracave/SKILL.md` (grammar stripped) and `skills/megacave/SKILL.md` (文言文) are self-contained and each map 1:1 to a stored mode. Edit these three for behavior changes. |
 | `src/rules/caveman-activate.md` | Always-on auto-activation rule body. Consumed by `src/tools/caveman-init.js` when a user runs `npx caveman --with-init` (per-repo IDE rule files). Edit here, not in any per-agent rule copy. |
 | `src/rules/caveman-openclaw-bootstrap.md` | Marker-fenced bootstrap snippet appended to `~/.openclaw/workspace/SOUL.md` by `bin/lib/openclaw.js`. Drives always-on caveman through the OpenClaw gateway. Must include the SENTINEL `Respond terse like smart caveman` and stay well under OpenClaw's 12K-per-bootstrap-file cap. |
 | `.codex/codex-sessionstart.js` | Repo-local Codex SessionStart hook. Resolves the configured default mode through `src/hooks/caveman-config.js` and emits the filtered ruleset, replacing the hardcoded `full`-level echo `.codex/hooks.json` used to carry — so `CAVEMAN_DEFAULT_MODE`, a repo-local `.caveman.json` and a user-config `defaultMode: "off"` all take effect on Codex. Repo-local only: `bin/install.js` never copies `.codex/`, and Codex users install through `npx skills add -a codex`. Carries a hand-copied `FALLBACK_VALID_MODES` for when the shared resolver is absent; `tests/hooks/codex-sessionstart.test.mjs` fails if it drifts from `VALID_MODES`. |
@@ -225,7 +225,7 @@ SessionStart hook ──┐                                        ┌── Use
                           mirrors       reads
                              ▼             ▼
               .caveman-active      caveman-statusline.sh ◀── session JSON on stdin
-           (last-write-wins,        [CAVEMAN] / [CAVEMAN:ULTRA] / ...
+           (last-write-wins,        [CAVEMAN] / [ULTRACAVE] / [MEGACAVE]
             compat only)
 ```
 
@@ -275,12 +275,10 @@ Silent-fails on all filesystem errors — never blocks session start.
 Reads JSON from stdin — `session_id` scopes every read and write. Three responsibilities:
 
 **1. Slash-command activation.** If prompt starts with `/caveman`, writes the session's mode via `writeSessionMode`:
-- `/caveman` → configured default (see `caveman-config.js`, defaults to `full`)
-- `/caveman lite` → `lite`
-- `/caveman ultra` → `ultra`
-- `/caveman wenyan` or `/caveman wenyan-full` → `wenyan` (alias) / `wenyan-full`
-- `/caveman wenyan-lite` → `wenyan-lite`
-- `/caveman wenyan-ultra` → `wenyan-ultra`
+- `/caveman` → configured default (see `caveman-config.js`, defaults to `caveman`)
+- `/ultracave` (alias `/caveman ultra`) → `ultracave`
+- `/megacave` (alias `/caveman wenyan`, any `wenyan-*`) → `megacave`
+- `/caveman lite` or `/caveman full` (legacy aliases) → `caveman`
 - `/caveman-commit` → `commit`
 - `/caveman-review` → `review`
 - `/caveman-compress` → `compress`
@@ -292,9 +290,9 @@ Reads JSON from stdin — `session_id` scopes every read and write. Three respon
 ### `src/hooks/caveman-statusline.sh` — Statusline badge
 
 Reads the session JSON Claude Code pipes to it on stdin, extracts `session_id` (pure bash — no `jq` dependency), and reads `.caveman-sessions/<id>.mode`; falls back to `$CLAUDE_CONFIG_DIR/.caveman-active` when there is no usable id. Outputs colored badge string for Claude Code statusline:
-- `full` or empty → `[CAVEMAN]` (orange)
+- `caveman` or empty → `[CAVEMAN]` (orange)
 - `off` → nothing at all. Never `[CAVEMAN:OFF]` — that reads as a mode rather than the absence of one
-- anything else → `[CAVEMAN:<MODE_UPPERCASED>]` (orange)
+- `ultracave` → `[ULTRACAVE]`, `megacave` → `[MEGACAVE]`; one-shots → `[CAVEMAN:<MODE_UPPERCASED>]` (orange). Legacy stored values render through the same map
 
 Stdin is bounded the same way as the SessionStart hook: `[ ! -t 0 ]` skips an interactive terminal, and `read -r -d '' -t 1` caps the wait. The timeout is an **integer on purpose** — macOS ships bash 3.2, which rejects `-t 0.3` with `invalid timeout specification`.
 
@@ -320,11 +318,11 @@ Skills = Markdown files with YAML frontmatter consumed by Claude Code's skill/pl
 
 Each skill has a human-facing `README.md` alongside the LLM-facing `SKILL.md`. The README explains what the skill does for users browsing GitHub; the SKILL.md is the prompt body the agent loads. Don't merge them — different audiences, different formats.
 
-### Intensity levels
+### Three skills, one mode model
 
-Defined in `skills/caveman/SKILL.md`. Six levels: `lite`, `full` (default), `ultra`, `wenyan-lite`, `wenyan-full`, `wenyan-ultra`. Persists until changed or session ends.
+Three self-contained skills, each 1:1 with a stored mode id: `caveman` (default voice), `ultracave` (grammar stripped), `megacave` (文言文). The SessionStart hook injects `skills/<id>/SKILL.md` whole; there is no per-level filtering. Legacy stored values map on read: `lite` and `full` → `caveman`, `ultra` → `ultracave`, every `wenyan*` → `megacave`. Writes emit new ids only. Mode persists until changed or session ends. Plan: `docs/plans/three-skills-refactor.md`.
 
-`defaultMode: "manual"` is a Claude Code startup policy, not a seventh intensity level. It starts inactive, stores only `off`, and explicit bare-command or natural-language activation resolves to `full`. Keep it out of `VALID_MODES`; only configuration accepts it. OpenCode maps this policy to its existing full-mode default because its installer also supplies static AGENTS.md activation. `/caveman status` is read-only and must return before one-shot restoration or any mode-state mutation.
+`defaultMode: "manual"` is a Claude Code startup policy, not a fourth mode. It starts inactive, stores only `off`, and explicit bare-command or natural-language activation resolves to `caveman`. Keep it out of `VALID_MODES`; only configuration accepts it. OpenCode maps this policy to its existing full-mode default because its installer also supplies static AGENTS.md activation. `/caveman status` is read-only and must return before one-shot restoration or any mode-state mutation.
 
 ### Auto-clarity rule
 
