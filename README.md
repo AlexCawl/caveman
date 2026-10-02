@@ -203,9 +203,9 @@ Every number below is either from a committed run in this repo or from a named t
 |---|---|---|
 | **[Adobe Research](https://arxiv.org/abs/2606.24083)** (CAVEWOMAN, arXiv 2606.24083) | Eight models, five datasets, five compression levels | Output-side caveman style cuts realized cost **1.4 to 2.4× per model, up to 3×** in the best case |
 | **[JetBrains](https://blog.jetbrains.com/ai/2026/07/speak-to-ai-agents-like-cavemen-tosave-tokens/)** | 86 real coding tasks, paired A/B, Claude Code 2.1.200. **Skill only, no proxy** (July 2026, before the proxy existed) | **8.5% fewer output tokens**, about 10% cost. **No detectable quality change** (sign test p = 0.82) |
-| **This repo** ([committed eval snapshot](./evals/README.md)) | Ten dev questions, skill vs a plain `Answer concisely.` control, claude-opus-4-6 | **50% fewer output tokens at the median** on top of the terse control. Length only, not correctness |
+| **This repo** ([committed eval snapshot](./evals/README.md)) | Ten dev questions, skill vs a plain `Answer concisely.` control, claude-opus-5-5 | **Default caveman: 3% fewer output tokens at the median** on top of the terse control, inside the noise (per question: 16% longer to 20% shorter). **ultracave: 35%.** megacave: 9%. Length only, not correctness |
 
-Read those three together and you get the honest picture. Chat-style Q&A: big cut. Agentic coding sessions, where most tokens are code and tool calls that the skill never touches: high single digits on output, quality flat.
+Read those three together and you get the honest picture. Chat-style Q&A on a current model that already obeys "be concise": default caveman adds little on top, ultracave still cuts 35%. Agentic coding sessions, where most tokens are code and tool calls that the skill never touches: high single digits on output, quality flat.
 
 **The JetBrains number is why the proxy exists.** They measured the skill alone, in July 2026, before the proxy shipped. Their finding was that an agent's bill is mostly *reading*, not writing, and no talking style fixes that. So we built the thing that shrinks the reading. The table below is what that changed.
 
