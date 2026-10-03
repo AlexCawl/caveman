@@ -353,6 +353,81 @@ class HookScriptTests(unittest.TestCase):
                 "the hook overwrote a script it does not own",
             )
 
+    # A pre-3.1 statusline whitelists only the old mode ids, so a command still
+    # pinned to an old (unpruned) plugin-cache copy renders nothing at all.
+    OLD_STATUSLINE = "#!/bin/bash\n# reads .caveman-sessions\ncase \"$m\" in lite|full|ultra) echo CAVEMAN;; esac\n"
+
+    def test_activate_reoffers_an_outdated_statusline_script_once(self):
+        with tempfile.TemporaryDirectory(prefix="caveman-nudge-outdated-") as tmp:
+            home = Path(tmp)
+            hooks = self._plugin_install(home, version="3.1.0")
+            claude_dir = home / ".claude"
+            old = claude_dir / "plugins" / "cache" / "caveman" / "caveman" / "3.0.0" / "src" / "hooks" / "caveman-statusline.sh"
+            old.parent.mkdir(parents=True)
+            old.write_text(self.OLD_STATUSLINE, encoding="utf-8")
+            (claude_dir / "settings.json").write_text(
+                json.dumps({"statusLine": {"type": "command", "command": f'bash "{old}"'}}) + "\n",
+                encoding="utf-8",
+            )
+            (claude_dir / ".caveman-nudge-shown").write_text("1", encoding="utf-8")
+
+            result = self.run_cmd(["node", str(hooks / "caveman-activate.js")], home)
+
+            self.assertIn("STATUSLINE REPAIR NEEDED", result.stdout)
+            self.assertIn("outdated copy", result.stdout)
+            command = self._nudge_command(result.stdout)
+            self.assertNotIn("3.0.0", command, f"re-offered the outdated path: {command}")
+            script = Path(re.search(r"(/[^\"]*caveman-statusline\.(?:sh|ps1))", command).group(1))
+            self.assertEqual(
+                script.read_text(encoding="utf-8"),
+                (hooks / "caveman-statusline.sh").read_text(encoding="utf-8"),
+                "repair recommended a script that is not the current one",
+            )
+
+            # One-shot per distinct command: a declined repair is not re-asked.
+            again = self.run_cmd(["node", str(hooks / "caveman-activate.js")], home)
+            self.assertNotIn("STATUSLINE", again.stdout)
+
+    def test_activate_leaves_an_outdated_foreign_statusline_alone(self):
+        """A script named like ours but without the ownership marker is the user's."""
+        with tempfile.TemporaryDirectory(prefix="caveman-nudge-outdated-foreign-") as tmp:
+            home = Path(tmp)
+            hooks = self._plugin_install(home)
+            mine = home / "bin" / "caveman-statusline.sh"
+            mine.parent.mkdir(parents=True)
+            mine.write_text("#!/bin/bash\necho MINE\n", encoding="utf-8")
+            (home / ".claude" / "settings.json").write_text(
+                json.dumps({"statusLine": {"type": "command", "command": f'bash "{mine}"'}}) + "\n",
+                encoding="utf-8",
+            )
+
+            result = self.run_cmd(["node", str(hooks / "caveman-activate.js")], home)
+            self.assertNotIn("STATUSLINE", result.stdout)
+
+    def test_activate_refreshes_an_accepted_stable_statusline_copy(self):
+        """The stable copy a user accepted keeps up with plugin updates without a nudge."""
+        with tempfile.TemporaryDirectory(prefix="caveman-stable-refresh-") as tmp:
+            home = Path(tmp)
+            hooks = self._plugin_install(home, version="3.1.0")
+            claude_dir = home / ".claude"
+            stable = claude_dir / "hooks" / "caveman-statusline.sh"
+            stable.parent.mkdir(parents=True)
+            stable.write_text(self.OLD_STATUSLINE, encoding="utf-8")
+            (claude_dir / "settings.json").write_text(
+                json.dumps({"statusLine": {"type": "command", "command": f'bash "{stable}"'}}) + "\n",
+                encoding="utf-8",
+            )
+            (claude_dir / ".caveman-nudge-shown").write_text("1", encoding="utf-8")
+
+            result = self.run_cmd(["node", str(hooks / "caveman-activate.js")], home)
+
+            self.assertEqual(
+                stable.read_text(encoding="utf-8"),
+                (hooks / "caveman-statusline.sh").read_text(encoding="utf-8"),
+                "the accepted stable statusline copy was not refreshed",
+            )
+            self.assertNotIn("STATUSLINE", result.stdout)
+
     # Regression for #587/#589 — hook at <root>/src/hooks/ must resolve SKILL.md
     # at <root>/skills/caveman/, not the nonexistent <root>/src/skills/.
     def test_activate_emits_skill_md_not_fallback_from_repo_layout(self):

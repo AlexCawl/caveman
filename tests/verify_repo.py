@@ -228,6 +228,8 @@ def verify_synced_files() -> None:
     # of four let the other three drift silently between runs.
     skill_copies = [
         (ROOT / "plugins/caveman/skills/caveman/SKILL.md", skill_source),
+        (ROOT / "plugins/caveman/skills/ultracave/SKILL.md", ROOT / "skills/ultracave/SKILL.md"),
+        (ROOT / "plugins/caveman/skills/megacave/SKILL.md", ROOT / "skills/megacave/SKILL.md"),
         (ROOT / "plugins/caveman/skills/cavecrew/SKILL.md", ROOT / "skills/cavecrew/SKILL.md"),
         (
             ROOT / "plugins/caveman/skills/caveman-compress/SKILL.md",

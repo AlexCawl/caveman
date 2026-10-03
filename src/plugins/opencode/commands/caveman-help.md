@@ -5,7 +5,7 @@ Show the caveman quick-reference card.
 
 | Command | What |
 |---|---|
-| `/caveman` | Activate caveman |
+| `/caveman` | Caveman voice, default |
 | `/ultracave` | Maximum compression |
 | `/megacave` | Classical Chinese (文言文) |
 | `/caveman off` | Deactivate |

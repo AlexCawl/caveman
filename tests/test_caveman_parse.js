@@ -36,6 +36,10 @@ console.log('caveman-parse (shared mode-change parser) tests\n');
 
 const defaultCaveman = { getDefaultMode: () => 'caveman' };
 const defaultOff = { getDefaultMode: () => 'off' };
+const MODE_OF = {
+  '/ultracave': 'ultracave', '/caveman:ultracave': 'ultracave',
+  '/megacave': 'megacave', '/caveman:megacave': 'megacave',
+};
 
 test('status uses one read-only verdict for literal and expanded commands', () => {
   const options = { getDefaultMode: () => { throw new Error('status must not resolve a default'); } };
@@ -88,6 +92,20 @@ test('legacy level names still parse as aliases of the three modes', () => {
     ['wenyan-full', 'megacave'], ['wenyan-ultra', 'megacave'],
   ]) {
     assert.deepStrictEqual(parseModeChange('/caveman ' + arg, defaultCaveman), { action: 'set', mode }, arg);
+  }
+});
+
+test('/ultracave and /megacave take the same off/status words as /caveman', () => {
+  for (const cmd of ['/ultracave', '/caveman:ultracave', '/megacave', '/caveman:megacave']) {
+    for (const word of ['off', 'stop', 'disable', 'off.']) {
+      assert.deepStrictEqual(parseModeChange(`${cmd} ${word}`, defaultCaveman), { action: 'clear' }, `${cmd} ${word}`);
+    }
+    assert.deepStrictEqual(parseModeChange(`${cmd} status`, defaultCaveman), { action: 'status' }, `${cmd} status`);
+    assert.deepStrictEqual(
+      parseModeChange(`${cmd} please`, defaultCaveman),
+      { action: 'set', mode: MODE_OF[cmd] },
+      `${cmd} please`
+    );
   }
 });
 
@@ -399,6 +417,38 @@ test('expandedTpl recognizes the independent-mode command templates (#602 drift)
   assert.deepStrictEqual(
     parseModeChange('Compress the file at: notes.md', { ...defaultCaveman, expandedTpl: true }),
     { action: 'set', mode: 'compress' }
+  );
+});
+
+test('expandedTpl: no non-activation opencode template switches a prose mode', () => {
+  // Every shipped command file, expanded the way opencode delivers it: front
+  // matter stripped, $ARGUMENTS empty. /caveman-help listed "Activate caveman"
+  // in its table, which flipped ultracave back to caveman (or turned it on).
+  const dir = path.join(__dirname, '..', 'src', 'plugins', 'opencode', 'commands');
+  const PROSE = new Set(['caveman', 'ultracave', 'megacave']);
+  const checked = [];
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+    if (PROSE.has(file.replace(/\.md$/, ''))) continue; // activation templates by design
+    const body = fs.readFileSync(path.join(dir, file), 'utf8')
+      .replace(/^---[\s\S]*?---\s*/, '').split('$ARGUMENTS').join('');
+    for (const getDefaultMode of [() => 'caveman', () => 'ultracave']) {
+      const verdict = parseModeChange(body, { getDefaultMode, expandedTpl: true, unwrapQuotes: true });
+      const switches = verdict && (verdict.action === 'clear' || (verdict.action === 'set' && PROSE.has(verdict.mode)));
+      assert.ok(!switches, `${file} → ${JSON.stringify(verdict)}`);
+    }
+    checked.push(file);
+  }
+  for (const f of ['caveman-help.md', 'caveman-commit.md', 'caveman-review.md', 'caveman-compress.md', 'caveman-stats.md']) {
+    assert.ok(checked.includes(f), `${f} not checked`);
+  }
+});
+
+test('expandedTpl: the help card opener short-circuits even a trigger in its body', () => {
+  assert.strictEqual(
+    parseModeChange('Show the caveman quick-reference card.\n\n| /caveman | Activate caveman |\nstop caveman', {
+      ...defaultCaveman, expandedTpl: true,
+    }),
+    null
   );
 });
 
