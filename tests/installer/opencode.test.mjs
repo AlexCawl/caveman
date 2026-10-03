@@ -772,3 +772,34 @@ test('opencode plugin restores the displaced prose mode after a one-shot mode', 
     fs.rmSync(shimDir, { recursive: true, force: true });
   }
 });
+
+// ── 10. Uninstall removes the opencode mode state, both files ──────────────
+// The Claude-side cleanup sweeps a `stateFiles` list that already names
+// `.caveman-active.prev`; the opencode branch only unlinked `.caveman-active`,
+// which was correct while the plugin never wrote a prev file. It writes one now
+// (one-shot restore, test 9), so uninstall has to take both or it leaves state
+// behind — and a stale prev is not inert: a reinstall's first one-shot would
+// read it as that session's return target.
+test('opencode uninstall removes both the mode flag and the one-shot prev file', () => {
+  const xdg = freshTmpDir();
+  const shimDir = shimOpencode();
+  try {
+    const env = { ...process.env, XDG_CONFIG_HOME: xdg, PATH: pathWith(shimDir), NO_COLOR: '1' };
+    const installed = runInstaller(['--only', 'opencode'], env);
+    assert.equal(installed.status, 0, installed.stderr);
+
+    const ocDir = path.join(xdg, 'opencode');
+    const flag = path.join(ocDir, '.caveman-active');
+    const prev = path.join(ocDir, '.caveman-active.prev');
+    fs.writeFileSync(flag, 'commit');
+    fs.writeFileSync(prev, 'ultracave');
+
+    const removed = runInstaller(['--uninstall'], env);
+    assert.equal(removed.status, 0, removed.stderr);
+    assert.equal(fs.existsSync(flag), false, 'mode flag must be removed');
+    assert.equal(fs.existsSync(prev), false, 'one-shot prev file must be removed');
+  } finally {
+    fs.rmSync(xdg, { recursive: true, force: true });
+    fs.rmSync(shimDir, { recursive: true, force: true });
+  }
+});
