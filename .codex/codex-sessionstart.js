@@ -58,17 +58,19 @@ const FALLBACK_LEGACY_MODES = {
   wenyan: 'megacave', 'wenyan-lite': 'megacave',
   'wenyan-full': 'megacave', 'wenyan-ultra': 'megacave',
 };
+// Default-mode sources also accept the 'manual' startup policy, like the real
+// resolver's VALID_DEFAULT_MODES.
 function fallbackCanonicalMode(raw) {
   if (typeof raw !== 'string') return null;
   const m = raw.toLowerCase();
-  if (FALLBACK_VALID_MODES.includes(m)) return m;
+  if (FALLBACK_VALID_MODES.includes(m) || m === 'manual') return m;
   return Object.prototype.hasOwnProperty.call(FALLBACK_LEGACY_MODES, m) ? FALLBACK_LEGACY_MODES[m] : null;
 }
 
-// The only mode that injects nothing: the user opted out, and rules must not
-// be force-injected (caveman-activate.js treats `off` the same way on the
-// Claude side).
-const SILENT_MODES = new Set(['off']);
+// Modes that inject nothing: the user opted out (`off`) or starts inactive
+// (`manual`), and rules must not be force-injected (caveman-activate.js treats
+// both the same way on the Claude side).
+const SILENT_MODES = new Set(['off', 'manual']);
 
 // Modes with their own independent skill files — not caveman prose modes.
 // The Claude hook emits a one-line pointer for them; so does this.

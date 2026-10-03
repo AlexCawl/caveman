@@ -237,6 +237,11 @@ function parseModeChange(promptRaw, options) {
   // prompt that CITES a trigger does not fire it. A prompt that starts with a
   // slash is a command invocation: its own text must not toggle our mode,
   // symmetric with the skipNaturalLanguage a foreign command envelope sets.
+  // opencode's expanded /caveman-help card lists the commands and quotes the
+  // triggers; its prose ("Activate caveman" once the backtick span is blanked)
+  // must not switch the mode. Checked before every trigger, deactivation too.
+  if (options.expandedTpl && /^show the caveman quick-reference card\b/.test(prompt)) return null;
+
   const naturalLanguage = !options.skipNaturalLanguage && !prompt.startsWith('/');
   const nlPrompt = naturalLanguage ? prompt.replace(QUOTED_SPAN_REGEX, ' ') : '';
 
@@ -306,6 +311,10 @@ function parseModeChange(promptRaw, options) {
   const parts = prompt.split(/\s+/);
   const cmd = parts[0]; // /caveman, /ultracave, /caveman-commit, etc.
   if (Object.prototype.hasOwnProperty.call(MODE_COMMANDS, cmd)) {
+    // Same off/status words /caveman takes; anything else is just the mode.
+    const arg = normalizeModeArg(parts[1]);
+    if (arg === 'off' || arg === 'stop' || arg === 'disable') return { action: 'clear' };
+    if (arg === 'status') return { action: 'status' };
     return { action: 'set', mode: MODE_COMMANDS[cmd] };
   }
   if (prompt.startsWith('/caveman')) {

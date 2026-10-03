@@ -157,6 +157,22 @@ test('degraded loader still resolves the mode and names it', (t) => {
   assert.doesNotMatch(r.stdout, /## Rules/, 'degraded path must not read SKILL.md');
 });
 
+test('manual startup policy injects nothing, intact or degraded', (t) => {
+  const item = fixture(t);
+  const silent = (label, extraEnv) => {
+    const r = runHook(item, item.dir, extraEnv);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, '', label);
+  };
+  silent('intact env', { CAVEMAN_DEFAULT_MODE: 'manual' });
+  // Degraded: without the shared resolver, the hand-copied fallback must
+  // know `manual` too instead of skipping it and landing on the default.
+  rmSync(join(item.dir, 'src', 'hooks', 'caveman-config.js'));
+  silent('degraded env', { CAVEMAN_DEFAULT_MODE: 'manual' });
+  writeFileSync(join(item.dir, '.caveman.json'), JSON.stringify({ defaultMode: 'manual' }));
+  silent('degraded repo config', {});
+});
+
 test('CAVEMAN_DEFAULT_MODE with stray whitespace is rejected, not trimmed', (t) => {
   const item = fixture(t);
   // The real resolver does not trim; a fallback that accepted " ultra" where

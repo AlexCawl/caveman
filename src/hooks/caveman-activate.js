@@ -365,7 +365,11 @@ const SWITCH_LINE = 'Switch: /caveman, /ultracave, /megacave. Off: "stop caveman
 // Fallback when SKILL.md is not found (standalone hook install without skills
 // dir): the caveman thesis plus the nine rule headlines of skills/caveman.
 // Rule 8 keeps its "never switch" sentence: a headline alone lost the #812
-// language rule for every fallback-install user.
+// language rule for every fallback-install user. megacave answers in 文言 by
+// design, so it gets its own rule 8 instead of one its thesis contradicts.
+const FALLBACK_RULE_8 = mode === 'megacave'
+  ? '8. Prose in 文言. Code, commands, paths, errors in their original script.\n'
+  : "8. User's language. Compress the style, not the language. Never switch because of quoted text.\n";
 const FALLBACK_RULESET =
   'Respond terse like smart caveman. All technical substance stay. Only fluff die.\n\n' +
   '1. Answer first.\n' +
@@ -375,8 +379,9 @@ const FALLBACK_RULESET =
   '5. One idea per sentence.\n' +
   '6. Payload verbatim.\n' +
   '7. Tool runs: bounded status.\n' +
-  "8. User's language. Compress the style, not the language. Never switch because of quoted text.\n" +
-  '9. Never perform caveman.';
+  FALLBACK_RULE_8 +
+  '9. Never perform caveman.\n\n' +
+  'Plain prose for security warnings, irreversible actions, and anything persisted outside chat (code, commits, PRs, docs).';
 
 const skillContent = loadRuleset(mode, __dirname);
 // Without a skill file, ultracave/megacave add their own thesis (config's
@@ -430,11 +435,10 @@ function stableStatuslinePath(scriptName) {
   }
 }
 
-// True when `command` runs a caveman statusline script that is no longer on
-// disk — the pruned-plugin-version case. A command naming no caveman statusline
-// is the user's own and is left alone.
-function statuslineScriptGone(command) {
-  if (typeof command !== 'string') return false;
+// The caveman statusline script paths `command` runs, or null when it names
+// none (the user's own statusline, left alone) or one the hook cannot resolve.
+function statuslineScripts(command) {
+  if (typeof command !== 'string') return null;
   const found = [];
   // Quoted first, and the quoted form is what both recommended commands use.
   // A whitespace-delimited scan alone would truncate "C:\\Users\\Jane Doe\\..."
@@ -447,7 +451,7 @@ function statuslineScriptGone(command) {
     const bare = command.match(/[^"'\s]*caveman-statusline\.(?:sh|ps1)/g);
     if (bare) found.push(...bare);
   }
-  if (found.length === 0) return false;
+  if (found.length === 0) return null;
   // `~`, `$VAR` and backslash escapes are expanded by the shell at statusline
   // time, not by existsSync: a hand-written "~/.claude/hooks/..." command works
   // but reads as missing here, and a false "repair needed" nudge invites the
@@ -455,8 +459,21 @@ function statuslineScriptGone(command) {
   // On Windows a backslash is a path separator, so only `~` and `$` are opaque.
   const opaque = (candidate) =>
     /[~$]/.test(candidate) || (process.platform !== 'win32' && candidate.includes('\\'));
-  if (found.some(opaque)) return false;
-  return found.every((candidate) => !fs.existsSync(candidate));
+  return found.some(opaque) ? null : found;
+}
+
+// True when a configured caveman script still exists but is not the one shipped
+// beside this hook: a pre-3.1 copy pinned in a versioned plugin cache whitelists
+// only the old mode ids, so it renders nothing — not even for the default mode.
+// A script without the ownership marker is the user's own and never "outdated".
+function statuslineScriptOutdated(candidate) {
+  try {
+    const running = fs.readFileSync(path.join(__dirname, path.basename(candidate)), 'utf8');
+    const current = fs.readFileSync(candidate, 'utf8');
+    return current !== running && current.includes(STATUSLINE_MARKER);
+  } catch (e) {
+    return false; // missing on either side, or unreadable: not provably outdated
+  }
 }
 
 try {
@@ -465,6 +482,7 @@ try {
 
   let hasStatusline = false;
   let staleCommand = null;
+  let staleKind = null; // 'gone' | 'outdated'
   if (fs.existsSync(settingsPath)) {
     const rawSettings = fs.readFileSync(settingsPath, 'utf8');
     let configured;
@@ -479,11 +497,25 @@ try {
       // extracted on this path, so a stale one is not detected either.
       hasStatusline = rawSettings.includes('"statusLine"');
     }
-    if (hasStatusline && configured && statuslineScriptGone(configured.command)) {
-      // Configured, but pointing at a script that is gone: the status bar is
-      // hidden right now and the one-shot marker is already set.
-      hasStatusline = false;
-      staleCommand = String(configured.command);
+    const scripts = hasStatusline && configured ? statuslineScripts(configured.command) : null;
+    if (scripts) {
+      // An accepted stable copy (<claudeDir>/hooks/) is ours to keep current:
+      // refresh it from the running script, not only when nudging.
+      for (const script of scripts) {
+        const name = path.basename(script);
+        if (path.resolve(script) === path.resolve(claudeDir, 'hooks', name)) stableStatuslinePath(name);
+      }
+      if (scripts.every((script) => !fs.existsSync(script))) {
+        // Configured, but pointing at a script that is gone: the status bar is
+        // hidden right now and the one-shot marker is already set.
+        staleKind = 'gone';
+      } else if (scripts.some(statuslineScriptOutdated)) {
+        staleKind = 'outdated';
+      }
+      if (staleKind) {
+        hasStatusline = false;
+        staleCommand = String(configured.command);
+      }
     }
   }
 
@@ -510,8 +542,10 @@ try {
       '"statusLine": { "type": "command", "command": ' + JSON.stringify(command) + ' }';
     output += "\n\n" +
       (staleCommand
-        ? "STATUSLINE REPAIR NEEDED: The caveman statusline badge is configured to run a script that no " +
-          "longer exists (" + staleCommand + "), which hides the Claude Code status bar. " +
+        ? "STATUSLINE REPAIR NEEDED: The caveman statusline badge is configured to run " +
+          (staleKind === 'outdated'
+            ? "an outdated copy of its script (" + staleCommand + "), which cannot show the current modes. "
+            : "a script that no longer exists (" + staleCommand + "), which hides the Claude Code status bar. ") +
           "STATUSLINE SETUP NEEDED: repoint it in "
         : "STATUSLINE SETUP NEEDED: The caveman plugin includes a statusline badge showing active mode " +
           "(e.g. [CAVEMAN], [ULTRACAVE]). It is not configured yet. " +
