@@ -9,7 +9,7 @@
     "kilocode"
   ],
   "args": [],
-  "install": "npm install -g @kilocode/cli@7.8.1",
+  "install": "npm install -g @kilocode/cli@7.8.3",
   "wire_protocol": "openai-chat",
   "injection": {
     "method": "config-env-content",

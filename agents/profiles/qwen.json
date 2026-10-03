@@ -6,7 +6,7 @@
   "homepage": "https://github.com/QwenLM/qwen-code",
   "binary_names": ["qwen"],
   "args": ["--extensions=none"],
-  "install": "npm i -g @qwen-code/qwen-code@0.24.6",
+  "install": "npm i -g @qwen-code/qwen-code@0.24.7",
   "wire_protocol": "openai-chat",
   "injection": {
     "method": "config-file",

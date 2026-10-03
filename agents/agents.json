@@ -184,7 +184,7 @@
         "kilocode"
       ],
       "args": [],
-      "install": "npm install -g @kilocode/cli@7.8.1",
+      "install": "npm install -g @kilocode/cli@7.8.3",
       "wire_protocol": "openai-chat",
       "injection": {
         "method": "config-env-content",
@@ -464,7 +464,7 @@
       "args": [
         "--extensions=none"
       ],
-      "install": "npm i -g @qwen-code/qwen-code@0.24.6",
+      "install": "npm i -g @qwen-code/qwen-code@0.24.7",
       "wire_protocol": "openai-chat",
       "injection": {
         "method": "config-file",
