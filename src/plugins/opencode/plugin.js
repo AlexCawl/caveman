@@ -88,18 +88,30 @@ const recordModeChange = config.recordModeChange || function () {};
 
 // Displaced-prose-mode memory for the one-shot independent modes (#599),
 // resolved defensively for the same reason recordModeChange is: the installed
-// caveman-config.cjs is a COPY and can predate these exports (#848). Without
-// them the plugin degrades to its previous behavior — a one-shot sticks until
-// the next session — rather than throwing inside a chat hook.
+// caveman-config.cjs is a COPY and can predate these exports (#848).
+//
+// All three or none. No-op stubs are NOT a safe fallback here, unlike
+// recordModeChange's: a stubbed read returns null, the restore path reads that
+// as "caveman was off when the one-shot started" and DELETES the flag, so a
+// single /caveman-commit would deactivate caveman for the rest of the session
+// on an older copy — worse than both the old behavior and the new one. When
+// any helper is missing, one-shot bookkeeping is skipped entirely and the
+// plugin behaves exactly as it did before this feature: the one-shot sticks
+// until the next session.created re-derives the default.
 //
 // opencode has no per-session id to scope by (its flag is one machine-wide
 // file already), so every call passes `null` and the shared helpers fall
 // through to <opencodeDir>/.caveman-active.prev. That is exactly the legacy
 // branch caveman-config documents for a caller with no session id.
-const noPrev = { write: () => {}, read: () => null, clear: () => {} };
-const writeSessionPrev = config.writeSessionPrev || noPrev.write;
-const readSessionPrev = config.readSessionPrev || noPrev.read;
-const clearSessionPrev = config.clearSessionPrev || noPrev.clear;
+const oneShotMemory = typeof config.writeSessionPrev === 'function'
+  && typeof config.readSessionPrev === 'function'
+  && typeof config.clearSessionPrev === 'function'
+  ? {
+    write: (mode) => config.writeSessionPrev(opencodeDir, null, mode),
+    read: () => config.readSessionPrev(opencodeDir, null),
+    clear: () => config.clearSessionPrev(opencodeDir, null),
+  }
+  : null;
 
 // Load the shared mode-change parser (#602) the same way loadConfig() loads
 // caveman-config.js — see the doc comment above loadConfig() for why this
@@ -200,7 +212,7 @@ function applyModeChange(change) {
   if (change.action === 'clear') {
     recordModeChange(opencodeDir, null);
     removeFlag();
-    clearSessionPrev(opencodeDir, null);
+    if (oneShotMemory) oneShotMemory.clear();
     return false;
   }
   if (change.action === 'set' && change.mode) {
@@ -215,9 +227,11 @@ function applyModeChange(change) {
       //     return target from an earlier one-shot cannot switch caveman on.
       // The flag file never holds 'off' on opencode (clear unlinks it), so a
       // null read is exactly "caveman was off".
-      const before = readFlag(flagPath);
-      if (before && !INDEPENDENT_MODES.has(before)) writeSessionPrev(opencodeDir, null, before);
-      else if (!before) writeSessionPrev(opencodeDir, null, 'off');
+      if (oneShotMemory) {
+        const before = readFlag(flagPath);
+        if (before && !INDEPENDENT_MODES.has(before)) oneShotMemory.write(before);
+        else if (!before) oneShotMemory.write('off');
+      }
       recordModeChange(opencodeDir, change.mode);
       safeWriteFlag(flagPath, change.mode);
       return true;
@@ -236,10 +250,14 @@ function applyModeChange(change) {
 // session.created. Claude Code has restored on the next prompt since #599.
 function restoreAfterOneShot(setIndependentThisTurn) {
   if (setIndependentThisTurn) return;
+  // No prev helpers means nothing was ever recorded, so there is no return
+  // target to read — restoring from that absence would read as "caveman was
+  // off" and deactivate. Leave the one-shot in place instead.
+  if (!oneShotMemory) return;
   const active = readFlag(flagPath);
   if (!active || !INDEPENDENT_MODES.has(active)) return;
-  const prev = readSessionPrev(opencodeDir, null);
-  clearSessionPrev(opencodeDir, null);
+  const prev = oneShotMemory.read();
+  oneShotMemory.clear();
   // `prev !== 'off'` is not redundant: 'off' is stored literally, and restoring
   // it as a mode would reinforce "CAVEMAN MODE ACTIVE (off)" for a session that
   // had deliberately turned caveman off.

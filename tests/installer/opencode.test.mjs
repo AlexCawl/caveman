@@ -803,3 +803,60 @@ test('opencode uninstall removes both the mode flag and the one-shot prev file',
     fs.rmSync(shimDir, { recursive: true, force: true });
   }
 });
+
+// ── 11. An older caveman-config.cjs copy must not turn caveman OFF ─────────
+// The installed plugin loads a COPY of caveman-config (#848 plugin-cache
+// drift), which can predate writeSessionPrev/readSessionPrev/clearSessionPrev.
+// With no-op stubs the restore path reads a null return target and falls to its
+// deactivate branch, so a single /caveman-commit deleted the flag on the next
+// prompt — strictly worse than both the old behavior (one-shot sticks until the
+// next session) and the new one. Degrade to the old behavior instead.
+test('opencode plugin does not deactivate caveman when the config copy predates the prev helpers', async () => {
+  const xdg = freshTmpDir();
+  const shimDir = shimOpencode();
+  const origDefault = process.env.CAVEMAN_DEFAULT_MODE;
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  try {
+    const env = { ...process.env, XDG_CONFIG_HOME: xdg, PATH: pathWith(shimDir), NO_COLOR: '1' };
+    const r = runInstaller(['--only', 'opencode'], env);
+    assert.notEqual(r.status, 2, `argv error: ${r.stderr}`);
+
+    const pluginDir = path.join(xdg, 'opencode', 'plugins', 'caveman');
+    const configCjs = path.join(pluginDir, 'caveman-config.cjs');
+    // Simulate the older copy: everything else intact, the three prev exports
+    // absent — exactly what a pre-#599 caveman-config.cjs looks like.
+    fs.appendFileSync(configCjs,
+      '\ndelete module.exports.writeSessionPrev;'
+      + '\ndelete module.exports.readSessionPrev;'
+      + '\ndelete module.exports.clearSessionPrev;\n');
+
+    const flagPath = path.join(xdg, 'opencode', '.caveman-active');
+    process.env.XDG_CONFIG_HOME = xdg;
+    process.env.CAVEMAN_DEFAULT_MODE = 'caveman';
+
+    // Cache-bust: earlier tests in this file already imported plugin.js.
+    const mod = await import(`${pathToFileURL(path.join(pluginDir, 'plugin.js')).href}?legacy-config`);
+    const handlers = await (mod.default || mod.CavemanPlugin)({});
+    const send = (text) => handlers['chat.message']({}, { parts: [{ type: 'text', text }] });
+    const flag = () => (fs.existsSync(flagPath) ? fs.readFileSync(flagPath, 'utf8') : null);
+
+    await send('/ultracave');
+    assert.equal(flag(), 'ultracave');
+    await send('/caveman-commit');
+    assert.equal(flag(), 'commit');
+
+    // The regression: this deleted the flag. Without the prev helpers the
+    // one-shot simply sticks, which is what this plugin did before #599 landed
+    // here — never a silent deactivation.
+    await send('now fix the parser bug');
+    assert.notEqual(flag(), null, 'a one-shot must never deactivate caveman on an older config copy');
+    assert.equal(flag(), 'commit', 'without prev helpers the one-shot sticks, as it did before');
+  } finally {
+    if (origDefault === undefined) delete process.env.CAVEMAN_DEFAULT_MODE;
+    else process.env.CAVEMAN_DEFAULT_MODE = origDefault;
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdg;
+    fs.rmSync(xdg, { recursive: true, force: true });
+    fs.rmSync(shimDir, { recursive: true, force: true });
+  }
+});
