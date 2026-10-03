@@ -120,3 +120,7 @@ is set, in which case add the new id to that list.
 - **Statistical significance** — single run per (prompt, arm) at default
   temperature. The min/max/stdev columns let you eyeball whether a
   number is solid or noisy, but this is not a powered experiment.
+
+## Historical: reminder_run.py
+
+`reminder_run.py` and `snapshots/reminder.json` measured the pre-3.1 per-turn reminder text (`Enforce this reply: ...`), which the mode tracker no longer emits. The snapshot is kept as history; regenerate before citing it.

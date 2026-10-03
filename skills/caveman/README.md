@@ -7,8 +7,7 @@ Talk like smart caveman. Same brain, fewer tokens.
 Makes the model answer first and cut the ceremony: no greeting, hedging,
 filler, recap, or closer. Articles drop when the sentence still reads in one
 pass. Code, commands, paths, numbers, and exact error strings never change.
-Result depends on model and workload; no aggregate reduction or
-quality-equivalence claim is published. Mode persists until changed or stopped.
+Result depends on model and workload. Measured once (`evals/snapshots/results.json`: claude-opus-5-5, ten prompts, single run, output length only, tiktoken o200k approximation): caveman 3% fewer output tokens at the median than a plain `Answer concisely.` control, inside the noise; ultracave 35%; megacave 9%. No quality-equivalence claim is published. Mode persists until changed or stopped.
 
 Caveman is one of three sibling skills:
 
@@ -54,7 +53,7 @@ Normal prose:
 > Your component re-renders because you create a new object reference each render. Wrapping it in `useMemo` will fix the issue.
 
 caveman:
-> New object ref each render. Inline object prop = new ref = re-render. Wrap in `useMemo`.
+> New object ref each render, so React re-renders. Wrap the prop in `useMemo`.
 
 ultracave:
 > Inline object prop, new ref, re-render. `useMemo`.

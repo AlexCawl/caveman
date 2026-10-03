@@ -48,8 +48,8 @@
 
 <table>
 <tr>
-<th width="50%">🗣️ Normal agent · 69 tokens</th>
-<th width="50%"><img src="docs/assets/dancing-rock.svg" width="18" height="18" alt=""> Caveman agent · 19 tokens</th>
+<th width="50%">🗣️ Normal agent · 63 tokens</th>
+<th width="50%"><img src="docs/assets/dancing-rock.svg" width="18" height="18" alt=""> Caveman agent · 20 tokens</th>
 </tr>
 <tr>
 <td valign="top">
@@ -59,7 +59,7 @@
 </td>
 <td valign="top">
 
-> New object ref each render. Inline object prop = new ref = re-render. Wrap in `useMemo`.
+> New object ref each render, so React re-renders. Wrap the prop in `useMemo`.
 
 </td>
 </tr>
@@ -331,8 +331,7 @@ Three skills, one voice, plus a small toolbox. `/caveman` is the voice, `/ultrac
 
 | Skill | Same question: "Why does my React component re-render?" |
 |---|---|
-| **plain** *(no skill)* | Your component re-renders because you create a new object reference each render. Wrap it in `useMemo`. |
-| **caveman** *(default)* | New object ref each render. Inline object prop = new ref = re-render. Wrap in `useMemo`. |
+| **caveman** *(default)* | New object ref each render, so React re-renders. Wrap the prop in `useMemo`. |
 | **ultracave** | Inline object prop, new ref, re-render. `useMemo`. |
 | **megacave** | 每繪新生對象參照，故重繪；以 useMemo 包之則免。 |
 

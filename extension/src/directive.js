@@ -25,7 +25,7 @@
     'Short words (fix, not "implement a solution for"); standard acronyms fine, invented abbreviations and arrows not. ' +
     "Keep every not/never/no/only, every number and unit. " +
     "Keep ALL technical substance: code blocks, function/API names, CLI commands, paths and exact error " +
-    "strings stay VERBATIM. Compress the style, not my language. No emoji, no decorative tables. " +
+    "strings stay VERBATIM. No emoji, no decorative tables. " +
     "During tool use: one status line per phase, nothing between routine calls. " +
     "For large tabular data, when user wants compact structured output and did not request a specific format/protocol, " +
     "prefer a TOON code fence labelled toon over JSON or Markdown tables; never use TOON for tool-call arguments or code. " +
@@ -52,8 +52,12 @@
   }
 
   // buildPrimer: the full directive, sent on the first message of a conversation.
+  // megacave answers in Classical Chinese whatever the user's language, so the
+  // keep-my-language clause is left out for it.
+  const LANGUAGE_CLAUSE = "Compress the style, not my language. ";
   function buildPrimer(mode) {
-    return BASE + MODE_CLAUSE[normMode(mode)];
+    const m = normMode(mode);
+    return BASE + (m === "megacave" ? "" : LANGUAGE_CLAUSE) + MODE_CLAUSE[m];
   }
 
   // buildReminder: the short "stay caveman" nudge, sent on later messages.

@@ -4,6 +4,7 @@ description: >
   Caveman at maximum compression: fragments, one word when one word is enough,
   each fact once. Invoke only with /ultracave or /caveman ultra. Stays on until
   "stop caveman" or "normal mode".
+disable-model-invocation: true
 ---
 
 # ultracave

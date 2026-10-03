@@ -198,13 +198,13 @@ You should see ~30 rows. Detected agents are marked. Anything you wanted but isn
 
 **2. Talk to Claude Code.**
 
-Open Claude Code, type `/caveman`. Response should be terse fragments — "Got it. Caveman mode on." or similar. Try a real question: "What is closures in JS?" — answer should drop articles and read like grunts.
+Open Claude Code, type `/caveman`. The reply should answer first, with no greeting or recap. Try a real question: "What is closures in JS?" — the answer should be short, articles optional, every technical term intact.
 
 **3. Check the flag file.**
 
 ```bash
 cat "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.caveman-active"
-# expected output: full
+# expected output: caveman
 ```
 
 If it's missing or empty, the SessionStart hook didn't fire. See troubleshooting below.
@@ -295,7 +295,7 @@ Still broken? [Open an issue](https://github.com/JuliusBrussee/caveman/issues).
 
 1. Run `node bin/install.js --list` — confirm `claude` is on the detected list. If not, `claude` isn't on `PATH`. Fix that first.
 2. Open `$CLAUDE_CONFIG_DIR/settings.json` (default `~/.claude/settings.json`) and look for `"hooks"` containing `caveman-activate.js` and `caveman-mode-tracker.js`. If missing, re-run with `--force`.
-3. Check `$CLAUDE_CONFIG_DIR/.caveman-active` exists with content `full`. If not, the SessionStart hook silent-failed — check `$CLAUDE_CONFIG_DIR/hooks/` for the JS files and try `node $CLAUDE_CONFIG_DIR/hooks/caveman-activate.js < /dev/null` to see if it errors. Keep the `< /dev/null`: the hook reads its payload from stdin, and a pipe that never closes makes it wait out its 3s watchdog.
+3. Check `$CLAUDE_CONFIG_DIR/.caveman-active` exists with content `caveman`. If not, the SessionStart hook silent-failed — check `$CLAUDE_CONFIG_DIR/hooks/` for the JS files and try `node $CLAUDE_CONFIG_DIR/hooks/caveman-activate.js < /dev/null` to see if it errors. Keep the `< /dev/null`: the hook reads its payload from stdin, and a pipe that never closes makes it wait out its 2s watchdog.
 4. Restart Claude Code. The SessionStart hook only fires on session start, not mid-session.
 
 **"One window is caveman, another isn't."**

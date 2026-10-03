@@ -1,6 +1,6 @@
 # Three skills, one mode model
 
-Status: plan, 2026-10-02. Skills already rewritten on disk (`skills/caveman`, `skills/ultracave`, `skills/megacave`). Everything below is what makes the hooks and the rest of the repo match them.
+Status: implemented in 3.1.0 (2026-10-02). Kept as the design record for the three-skill mode model.
 
 ## Goal
 
@@ -41,8 +41,7 @@ Whitelist new ids plus legacy ids. Render `caveman` as `[CAVEMAN]`, `ultracave` 
 `skills/compile.mjs` already emits CLI embeds from `skills/*/SKILL.md` plus `registry.json`. Extend it:
 - Registry entries for `ultracave` and `megacave` (delivery `cli`, suite `output`).
 - Emit `src/rules/caveman-activate.md` from the caveman skill: thesis line, nine rule headlines as bullets, switch and stop lines. This is the always-on IDE rule and the opencode `AGENTS.md` body.
-- Emit the OpenClaw bootstrap body between its markers, and a `bin/lib/openclaw-bootstrap.generated.js` so the embedded fallback stays byte-equal by construction.
-- Emit `extension/src/directive.generated.js` for the MV3 directive.
+- The OpenClaw bootstrap (`src/rules/caveman-openclaw-bootstrap.md` and the embedded copy in `bin/lib/openclaw.js`) and the MV3 directive (`extension/src/directive.js`) stay hand-synced; `tests/installer/rule-copies.test.mjs` and `extension/test/directive.test.mjs` fail on drift.
 Hand edits that remain: `agents/cavecrew-*.md` ("Caveman-ultra ... No narration" becomes "Ultracave voice. One line in, one line out."), `skills/caveman-help/SKILL.md` card, opencode `commands/` stubs (add `ultracave.md`, `megacave.md`, drop level text from `caveman.md`), README, INSTALL, CLAUDE.md, `skills/caveman/README.md`.
 
 ## Tests
@@ -57,13 +56,6 @@ Regenerate `src/hooks/checksums.sha256`, plugin mirror, `dist/caveman.skill`, `p
 
 `evals/llm_run.py` on a gen-5 model: three skill arms vs the terse arm. Commit the snapshot. README numbers only from that run. One long agentic run checked for silence and level compliance (#1127, #1154, #1125).
 
-## Sequence
-
-0. Finish the maintenance merge (checksums conflict).
-1. PR A: skills, docs naming, registry entries, mirror, ZIP, generated CLI file. Hooks untouched; the new files have no filterable rows, so the SessionStart hook injects them whole already.
-2. PR B: mode model, parser, tracker, activate, statuslines, tests, checksums. Bounded backend work: delegate, Opus review.
-3. PR C: generated copies and the remaining hand edits.
-4. PR D: eval snapshot and README numbers.
 
 ## Risks
 
