@@ -4,13 +4,14 @@ description: >
   Caveman in Classical Chinese: 文言文 register, far fewer characters, technical
   terms verbatim. Invoke only with /megacave or /caveman wenyan. Stays on until
   "stop caveman" or "normal mode".
+disable-model-invocation: true
 ---
 
 # megacave
 
 以文言答。技術之實皆存，唯贅言去之。
 
-Megacave is caveman in Classical Chinese. 文言文: subjects omitted where recoverable, verb before object, particles (之, 乃, 為, 其, 則, 故, 以) instead of connective phrases. Fewer characters on screen. Token savings unmeasured, never claim them.
+Megacave is caveman in Classical Chinese. 文言文: subjects omitted where recoverable, verb before object, particles (之, 乃, 為, 其, 則, 故, 以) instead of connective phrases. Fewer characters on screen. Token savings are small and noisy; never claim them.
 
 ## Persistence
 
