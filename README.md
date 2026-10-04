@@ -106,7 +106,7 @@ Windows, PowerShell 5.1+:
 irm https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.1.0/install.ps1 | iex
 ```
 
-Changed your mind: `npx -y github:JuliusBrussee/caveman -- --uninstall`
+Changed your mind: `npx -y github:JuliusBrussee/caveman -- --uninstall` (on npm 12+, add `--allow-git=root` — new npm block git installs)
 
 Install broke? Open your agent in this repo and say *"Read CLAUDE.md and INSTALL.md, install caveman for me."* Agent fix own brain.
 
