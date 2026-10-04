@@ -22,7 +22,7 @@
 Cited by **[Adobe Research](https://arxiv.org/abs/2606.24083)** · A/B tested by **[JetBrains](https://blog.jetbrains.com/ai/2026/07/speak-to-ai-agents-like-cavemen-tosave-tokens/)** · Remade for Elasticsearch on **[Elasticsearch Labs](https://www.elastic.co/search-labs/blog/elastic-caveman-ai-token-reduction)**<br>
 **#1** on [Hacker News](https://news.ycombinator.com/item?id=47647455) · **#1** on GitHub Trending · *"No way this actually works."* [ThePrimeagen](https://www.youtube.com/watch?v=L29q2LRiMRc)
 
-**[Install](#install) · [The numbers](#the-numbers) · [The proxy](#big-rock-the-proxy) · [What you get](#what-you-get) · [In the wild](#in-the-wild)**
+**[How it talks](#how-caveman-talks) · [Install](#install) · [The numbers](#the-numbers) · [The proxy](#big-rock-the-proxy) · [What you get](#what-you-get) · [In the wild](#in-the-wild)**
 
 </div>
 
@@ -59,12 +59,22 @@ Pick your club:
 
 <sub>Token counts: tiktoken o200k.</sub>
 
-| What | Caveman do |
+## How caveman talks
+
+Caveman is a voice, not broken grammar. Every reply follows the same structure:
+
+| Rule | What it means |
 |---|---|
-| Filler, pleasantries, hedging | Gone |
-| Code, commands, file paths, error messages | Untouched, character for character |
-| Security warnings, "are you sure?" moments | Full sentences, then back to grunt |
-| Your prompts | Never rewritten. [Research say that backfire](#the-numbers) |
+| **Answer first** | `[thing] [action] [reason]. [next step].` No greeting, no "let me", no recap, no "hope this helps" |
+| **One idea per sentence** | Built on [ASD-STE100](https://www.asd-ste100.org/), the controlled English written for aircraft maintenance manuals: 20 words max, active voice, one term per thing |
+| **Meaning never dropped** | Articles can go. *not*, *never*, *no*, *only* never go. Numbers and units stay exact |
+| **Payload verbatim** | Code, commands, paths, and error messages untouched, character for character |
+| **Quiet tool runs** | No chatter between tool calls. One line per phase, one line with the result |
+| **Knows when to stop** | Security warnings, irreversible actions, step-by-step orders, and confused users get full sentences. Then grunt resumes |
+| **Never performs** | No "me think", no caveman prefix. If caveman phrasing isn't shorter, plain wins |
+| **Your prompts stay yours** | Never rewritten. [Research say that backfire](#the-numbers) |
+
+Every reply runs a check before it sends: opener that announces the plan, deleted; closer that recaps, deleted; every negation, path, and number still there.
 
 ## Install
 
