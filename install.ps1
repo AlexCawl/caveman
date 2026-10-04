@@ -73,7 +73,9 @@ caveman: Node.js (>=18) required. Install:
   # npm 12 disables git package fetches by default (EALLOWGIT). Allow only the
   # root package requested here; older npm versions do not understand this
   # config flag.
-  $npxVersion = [string](& npx --version)
+  # 2>$null mirrors install.sh's `2>/dev/null`: npm writes its "does not support
+  # Node.js" notice to stderr, and a contaminated value would floor the major to 0.
+  $npxVersion = [string](& npx --version 2>$null)
   $npxMajor = 0
   if ($npxVersion -match '^(\d+)') {
     $npxMajor = [int]$Matches[1]

@@ -58,7 +58,8 @@ test('#565 install.ps1 invokes its function at the bottom (script still does som
 });
 
 test('npm 12+ opts the root package into git fetching', () => {
-  assert.match(code, /\$npxVersion\s*=\s*\[string\]\(& npx --version\)/i);
+  // stderr is discarded on both shims, so an npm notice cannot floor the major to 0.
+  assert.match(code, /\$npxVersion\s*=\s*\[string\]\(& npx --version 2>\$null\)/i);
   assert.match(
     code,
     /if\s*\(\s*\$npxMajor\s+-ge\s+12\s*\)\s*\{[\s\S]*?& npx --allow-git=root -y/i,
