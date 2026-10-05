@@ -495,10 +495,16 @@ func (b Base) MatchMetadataRoute(method, path string) bool {
 		if path == route {
 			return true
 		}
-		// Exactly one trailing id segment. A bare prefix test would make
-		// /v1/models/{id}/anything a valid proxy surface, which is the same
-		// closed-allowlist violation MatchRoute documents for POST routes.
-		if rest, ok := strings.CutPrefix(path, route+"/"); ok && rest != "" && !strings.Contains(rest, "/") {
+		// Exactly one trailing id segment, and never a ':method' call. A bare
+		// prefix test would make /v1/models/{id}/anything a valid proxy surface,
+		// which is the same closed-allowlist violation MatchRoute documents for
+		// the POST routes. The colon matters because Gemini's INFERENCE routes
+		// live under this very shape — /v1/models/{model}:generateContent — so
+		// on a proxy serving both providers an OpenAI metadata route would
+		// otherwise claim a Gemini method call and forward it to the wrong
+		// upstream.
+		if rest, ok := strings.CutPrefix(path, route+"/"); ok && rest != "" &&
+			!strings.Contains(rest, "/") && !strings.Contains(rest, ":") {
 			return true
 		}
 	}

@@ -141,6 +141,11 @@ func TestMetadataRouteStaysFailClosed(t *testing.T) {
 		{"get an inference route", http.MethodGet, "/v1/chat/completions"},
 		{"get an unknown route", http.MethodGet, "/v1/not/a/route"},
 		{"models prefix collision", http.MethodGet, "/v1/models-secret"},
+		// Gemini's inference routes live under /v1/models/{model}:method. A
+		// method call is not a catalog read, so an OpenAI metadata route must
+		// not swallow one when both adapters are mounted on the same proxy.
+		{"gemini method path", http.MethodGet, "/v1/models/gemini-pro:generateContent"},
+		{"gemini count path", http.MethodGet, "/v1/models/gemini-pro:countTokens"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var reached bool
