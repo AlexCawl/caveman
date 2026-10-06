@@ -15,7 +15,7 @@
 ### What the skill does NOT do
 
 - Does not execute user file content as code
-- Does not make network requests except through the configured LLM provider CLI or SDK
+- Does not make network requests except through the configured LLM provider CLI, SDK, or (for `openai-compat`) the one configured HTTP endpoint
 - Does not read unrelated files outside the path the user provides
 - Does not use shell=True or string interpolation in subprocess calls
 - Does not collect or transmit any data beyond the file being compressed
@@ -25,6 +25,8 @@
 Default path uses Claude. If `ANTHROPIC_API_KEY` is set, the skill uses the Anthropic Python SDK directly (no subprocess). If not set, it falls back to the `claude` CLI, which uses the user's existing Claude desktop authentication.
 
 Set `CAVEMAN_COMPRESS_PROVIDER=opencode` to use `opencode run` instead. Set `CAVEMAN_COMPRESS_MODEL=provider/model` for compress-specific model selection. `CAVEMAN_MODEL` is the fallback when `CAVEMAN_COMPRESS_MODEL` is unset.
+
+Set `CAVEMAN_COMPRESS_PROVIDER=openai-compat` to POST the prompt with Python's standard-library `urllib` (no subprocess, no extra dependency) to `$CAVEMAN_COMPRESS_ENDPOINT/chat/completions`, default `http://localhost:11434/v1` (Ollama). Other local servers: LM Studio `http://localhost:1234/v1`, llama.cpp `http://localhost:8080/v1`, vLLM `http://localhost:8000/v1`. `CAVEMAN_COMPRESS_API_KEY`, if set, is sent as a Bearer token. A non-local `http://` endpoint sends the file and that key in plaintext; use `https://` for anything off the machine.
 
 ### File size limit
 

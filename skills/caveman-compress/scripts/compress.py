@@ -18,6 +18,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -369,15 +371,20 @@ ENV_ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY"
 ENV_COMPRESS_PROVIDER = "CAVEMAN_COMPRESS_PROVIDER"
 ENV_COMPRESS_MODEL = "CAVEMAN_COMPRESS_MODEL"
 ENV_FALLBACK_MODEL = "CAVEMAN_MODEL"
+ENV_COMPRESS_ENDPOINT = "CAVEMAN_COMPRESS_ENDPOINT"
+ENV_COMPRESS_API_KEY = "CAVEMAN_COMPRESS_API_KEY"
 
 PROVIDER_CLAUDE = "claude"
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_OPENCODE = "opencode"
+PROVIDER_OPENAI_COMPAT = "openai-compat"
 SUPPORTED_PROVIDERS = frozenset({
     PROVIDER_CLAUDE,
     PROVIDER_ANTHROPIC,
     PROVIDER_OPENCODE,
+    PROVIDER_OPENAI_COMPAT,
 })
+DEFAULT_OPENAI_COMPAT_ENDPOINT = "http://localhost:11434/v1"  # Ollama
 
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5"
 CLAUDE_CLI = "claude"
@@ -633,13 +640,52 @@ def call_opencode_cli(prompt: str) -> str:
                 )
 
 
+def call_openai_compat(prompt: str) -> str:
+    """POST to any OpenAI-compatible /chat/completions (Ollama, llama.cpp,
+    vLLM, LM Studio). Standard library only, so no new dependency."""
+    model = configured_model()
+    if not model:
+        raise RuntimeError(
+            f"{ENV_COMPRESS_MODEL} is required for provider '{PROVIDER_OPENAI_COMPAT}'"
+        )
+    base = os.environ.get(ENV_COMPRESS_ENDPOINT, DEFAULT_OPENAI_COMPAT_ENDPOINT).rstrip("/")
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get(ENV_COMPRESS_API_KEY)
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
+    request = urllib.request.Request(
+        f"{base}/chat/completions", data=json.dumps(body).encode("utf-8"), headers=headers
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=CLAUDE_CALL_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")[:500]
+        raise RuntimeError(
+            f"{PROVIDER_OPENAI_COMPAT} call failed: HTTP {error.code}: {detail}"
+        ) from error
+    except OSError as error:  # URLError, refused connection, timeout
+        reason = getattr(error, "reason", error)
+        raise RuntimeError(f"{PROVIDER_OPENAI_COMPAT} call to {base} failed: {reason}") from error
+    choice = payload["choices"][0]
+    # Same rule as the SDK path: a truncated body is never returned.
+    if choice.get("finish_reason") == "length":
+        raise RuntimeError(
+            f"{PROVIDER_OPENAI_COMPAT} output hit the server's token cap, so the result is "
+            "incomplete. Split the file into smaller parts and compress each one."
+        )
+    return strip_llm_wrapper((choice["message"].get("content") or "").strip())
+
+
 def call_claude(prompt: str) -> str:
     """Send a prompt to the configured compression provider.
 
     Prefers the Anthropic SDK when ANTHROPIC_API_KEY is set; otherwise falls
     back to the ``claude --print`` CLI (which handles desktop auth). Set
     ``CAVEMAN_COMPRESS_PROVIDER=opencode`` and ``CAVEMAN_COMPRESS_MODEL`` (or
-    ``CAVEMAN_MODEL``) to route compression through opencode instead.
+    ``CAVEMAN_MODEL``) to route compression through opencode instead, or
+    ``openai-compat`` for an OpenAI-compatible server such as local Ollama.
 
     On Windows the CLI subprocess decoding defaults to the system codepage
     (cp1251 / cp1252) and crashes on UTF-8 output — see issue #152. Pinning
@@ -651,6 +697,8 @@ def call_claude(prompt: str) -> str:
     provider = configured_provider()
     if provider == PROVIDER_OPENCODE:
         return call_opencode_cli(prompt)
+    if provider == PROVIDER_OPENAI_COMPAT:
+        return call_openai_compat(prompt)
     if provider == PROVIDER_ANTHROPIC:
         return call_anthropic_sdk(prompt)
     if os.environ.get(ENV_ANTHROPIC_API_KEY):

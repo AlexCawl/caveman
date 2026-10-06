@@ -30,6 +30,8 @@ LLM_ENV_KEYS = (
     "CAVEMAN_PROVIDER",
     "CAVEMAN_COMPRESS_MODEL",
     "CAVEMAN_COMPRESS_PROVIDER",
+    "CAVEMAN_COMPRESS_ENDPOINT",
+    "CAVEMAN_COMPRESS_API_KEY",
 )
 OPENCODE_PROVIDER = "opencode"
 OPENCODE_MODEL = "github-copilot/gpt-4.1"
@@ -707,6 +709,90 @@ class CompressSafetyTests(unittest.TestCase):
         )
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenAICompatProviderTests(unittest.TestCase):
+    """CAVEMAN_COMPRESS_PROVIDER=openai-compat: Ollama, llama.cpp, vLLM, LM Studio (#201)."""
+
+    def _response(self, content="compressed", finish_reason="stop"):
+        body = json.dumps(
+            {"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]}
+        ).encode()
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = body
+        return response
+
+    def test_posts_chat_completion_to_configured_endpoint(self):
+        with llm_env(
+            CAVEMAN_COMPRESS_PROVIDER="openai-compat",
+            CAVEMAN_COMPRESS_ENDPOINT="http://localhost:1234/v1/",
+            CAVEMAN_COMPRESS_MODEL="qwen3:8b",
+            CAVEMAN_COMPRESS_API_KEY="sk-local",
+        ), mock.patch("urllib.request.urlopen", return_value=self._response()) as urlopen:
+            self.assertEqual(compress_mod.call_claude(PROMPT_TEXT), "compressed")
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://localhost:1234/v1/chat/completions")
+        self.assertEqual(request.get_header("Authorization"), "Bearer sk-local")
+        self.assertEqual(
+            json.loads(request.data),
+            {
+                "model": "qwen3:8b",
+                "messages": [{"role": "user", "content": PROMPT_TEXT}],
+                "stream": False,
+            },
+        )
+        self.assertEqual(
+            urlopen.call_args.kwargs["timeout"], compress_mod.CLAUDE_CALL_TIMEOUT_SECONDS
+        )
+
+    def test_defaults_to_local_ollama_without_auth_header(self):
+        with llm_env(CAVEMAN_COMPRESS_PROVIDER="openai-compat", CAVEMAN_COMPRESS_MODEL="m"), \
+             mock.patch("urllib.request.urlopen", return_value=self._response()) as urlopen:
+            compress_mod.call_claude(PROMPT_TEXT)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://localhost:11434/v1/chat/completions")
+        self.assertIsNone(request.get_header("Authorization"))
+
+    def test_missing_model_raises_before_any_network_call(self):
+        with llm_env(CAVEMAN_COMPRESS_PROVIDER="openai-compat"), \
+             mock.patch("urllib.request.urlopen") as urlopen:
+            with self.assertRaisesRegex(RuntimeError, "CAVEMAN_COMPRESS_MODEL is required"):
+                compress_mod.call_claude(PROMPT_TEXT)
+        urlopen.assert_not_called()
+
+    def test_output_at_the_length_cap_raises(self):
+        with llm_env(CAVEMAN_COMPRESS_PROVIDER="openai-compat", CAVEMAN_COMPRESS_MODEL="m"), \
+             mock.patch(
+                 "urllib.request.urlopen",
+                 return_value=self._response("first half", finish_reason="length"),
+             ):
+            with self.assertRaisesRegex(RuntimeError, "cap"):
+                compress_mod.call_claude(PROMPT_TEXT)
+
+    def test_http_error_body_surfaces(self):
+        import urllib.error
+
+        error = urllib.error.HTTPError(
+            "http://localhost:11434/v1/chat/completions", 404, "Not Found", {},
+            io.BytesIO(b'{"error": "model \'m\' not found"}'),
+        )
+        with llm_env(CAVEMAN_COMPRESS_PROVIDER="openai-compat", CAVEMAN_COMPRESS_MODEL="m"), \
+             mock.patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "404.*model 'm' not found"):
+                compress_mod.call_claude(PROMPT_TEXT)
+
+    def test_unreachable_server_is_a_runtime_error(self):
+        import urllib.error
+
+        with llm_env(CAVEMAN_COMPRESS_PROVIDER="openai-compat", CAVEMAN_COMPRESS_MODEL="m"), \
+             mock.patch(
+                 "urllib.request.urlopen",
+                 side_effect=urllib.error.URLError("Connection refused"),
+             ):
+            with self.assertRaisesRegex(RuntimeError, "Connection refused"):
+                compress_mod.call_claude(PROMPT_TEXT)
 
 
 class TestOuterWrapperStripping(unittest.TestCase):

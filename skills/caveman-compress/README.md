@@ -102,6 +102,17 @@ export CAVEMAN_COMPRESS_PROVIDER=opencode
 export CAVEMAN_COMPRESS_MODEL=opencode/big-pickle   # any id from `opencode models`
 ```
 
+To use a local model (or any OpenAI-compatible server) instead:
+
+```bash
+export CAVEMAN_COMPRESS_PROVIDER=openai-compat
+export CAVEMAN_COMPRESS_MODEL=qwen3:8b                         # required
+export CAVEMAN_COMPRESS_ENDPOINT=http://localhost:11434/v1     # default (Ollama)
+# export CAVEMAN_COMPRESS_API_KEY=...                          # optional, sent as Bearer token
+```
+
+Common endpoints: Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`, llama.cpp server `http://localhost:8080/v1`, vLLM `http://localhost:8000/v1`. Nothing leaves your machine with a local server. A non-local `http://` endpoint sends the file in plaintext; use `https://` for remote servers. Small local models get it wrong more often; when they do, validation fails and your file stays untouched.
+
 `CAVEMAN_MODEL` is the fallback when `CAVEMAN_COMPRESS_MODEL` is unset. On the Claude path the model also applies to `claude --print`. The opencode path needs opencode 2.x (it uses `opencode run --standalone`).
 
 ## Usage
