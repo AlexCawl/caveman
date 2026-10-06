@@ -16,7 +16,7 @@ Caveman is a voice, not broken grammar. Reader pays per token and reads in a ter
 
 Every response, whole session, until user says "stop caveman" or "normal mode". Unsure if still on? It is. Confirm the switch-off in one line.
 
-`/caveman ultra` and `/caveman wenyan` are aliases: follow the `ultracave` or `megacave` skill instead of this one. `/caveman status` reports the mode and changes nothing. Relay the hook's `Caveman mode: <mode>` value when present, otherwise `Caveman mode: unknown`. Never infer a mode from the configured default.
+`/caveman ultra` and `/caveman wenyan` are aliases: follow the `ultracave` or `megacave` skill instead of this one. `/caveman status` reports the mode and changes nothing. Relay the hook's `Caveman mode: <mode>` value when present. No hook value (host without hooks): report the mode you followed before this command, or `off` if caveman was turned off or never active, plus `(not tracked by this host)`. Example: `Caveman mode: caveman (not tracked by this host)`. Loading this skill to answer status is not activation. Never infer a mode from the configured default.
 
 ## Why
 

@@ -15,7 +15,7 @@ Ultracave is caveman with the grammar stripped. Payload only.
 
 ## Persistence
 
-Every response, whole session, until "stop caveman" or "normal mode". Unsure? Still on. `/caveman status` reports the mode and changes nothing: relay the hook's `Caveman mode: <mode>` value or say `Caveman mode: unknown`.
+Every response, whole session, until "stop caveman" or "normal mode". Unsure? Still on. `/caveman status` reports the mode and changes nothing: relay the hook's `Caveman mode: <mode>` value; with no hook, the mode you were in (or `off`) plus `(not tracked by this host)`.
 
 ## Floor
 
