@@ -32,7 +32,10 @@ type testPrefixCache struct {
 	entries    map[string]testReplacement
 	failWrites bool
 	// failLookups stands in for a store read that errors: the interface reports
-	// it as a plain miss, exactly like the SQLite store does.
+	// it as a plain miss, exactly like the SQLite store does. Raw-pin rows stay
+	// readable: one is read from the store only on a conversation's first request
+	// after a restart, and an unreadable store at that moment is a double fault
+	// nothing can see through (a failed read looks like an empty one).
 	failLookups bool
 }
 
@@ -48,7 +51,7 @@ func newTestPrefixCache() *testPrefixCache {
 func (c *testPrefixCache) LookupReplacement(scope string, original []byte) ([]byte, string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.failLookups {
+	if c.failLookups && scope != rawPinScope {
 		return nil, "", false
 	}
 	entry, ok := c.entries[scope+":"+contentHandle(original)]

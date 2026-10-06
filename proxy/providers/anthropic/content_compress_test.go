@@ -574,6 +574,9 @@ func TestCachedPrefixComponentsCoverTheMarkedMessage(t *testing.T) {
 	if _, cached, ok := CachedPrefixComponents(automatic); !ok || cached != 5 {
 		t.Fatalf("automatic caching: ok=%v cached=%d, want 5", ok, cached)
 	}
+	if _, cached, ok := CachedPrefixComponents([]byte(`{"model":"m","messages":[` + user(plain("one")) + `]}`)); !ok || cached != 0 {
+		t.Fatalf("no marker anywhere caches nothing: ok=%v cached=%d", ok, cached)
+	}
 	if _, _, ok := CachedPrefixComponents([]byte(`{"messages":"nope"}`)); ok {
 		t.Fatal("a request with no messages array has no cached prefix")
 	}

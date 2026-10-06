@@ -59,8 +59,9 @@ func (a Adapter) FrozenPrefixComponents(body []byte, meta providers.RequestMetad
 // prompt cache keys on — system, tools, then every message, each with
 // cache_control stripped — and reports how many of those components the request
 // caches: through its last marked message, through the last message under
-// top-level automatic caching, or only system and tools when no message is
-// marked. Unlike FrozenPrefixComponents it does not clamp to the live floor:
+// top-level automatic caching, only system and tools when just those are
+// marked, and none when nothing is. Unlike FrozenPrefixComponents it does not
+// clamp to the live floor:
 // the message a client marks on this turn is cached BY this request, so the
 // next request has to reproduce its forwarded bytes as well.
 func CachedPrefixComponents(body []byte) (components [][]byte, cached int, ok bool) {
@@ -81,10 +82,12 @@ func CachedPrefixComponents(body []byte) (components [][]byte, cached int, ok bo
 		var value []byte
 		if span, exists := findObjectField(body, root, name); exists {
 			value = stripCacheControl(body[span.start:span.end])
+			if len(value) != span.end-span.start {
+				cached = 2
+			}
 		}
 		components = append(components, frozenField(name, value))
 	}
-	cached = len(components)
 	for _, span := range messages {
 		raw := body[span.start:span.end]
 		components = append(components, frozenField("message", stripCacheControl(raw)))

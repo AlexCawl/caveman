@@ -268,6 +268,12 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		// exclusively through the live-zone predicate above (which itself requires MCP
 		// recovery), so neither can ever compress with no way back to the elided bytes.
 		markerOnlyAllowed := (s.mcpRecoveryAvailable(body) && authMode != AuthModeOAuth && authMode != AuthModeSubscription) || nonPAYGLiveZone
+		if (markerOnlyAllowed || serverRetrieveAllowed) && s.rawPinned(adapter, meta, body) {
+			// The provider accepted this conversation only raw once (see
+			// raw_pin.go): what it cached is the original bytes, so everything
+			// that extends it goes out exactly as the client sent it.
+			break
+		}
 		if markerOnlyAllowed || serverRetrieveAllowed {
 			// Substitution is never gated: a block the provider cached in replaced
 			// form is re-sent replaced whatever this request's epoch says, because
@@ -353,20 +359,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	transformedHash := sha256.Sum256(transform.Body)
 	evidence.acceptedBody = transform.Body
 	providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown := providerPrefixEvidence(adapter, transform.Body, meta)
-
-	// Observe-only prefix-monotonicity check (issue #133): compare this request's
-	// frozen-prefix component hashes against the previous request in the same
-	// session and flag cache_bust if the new prefix does not extend the prior one.
-	// It never blocks or modifies traffic — the flag is persisted and a Warn names
-	// the first diverging component index. Evaluated once here on the bytes we send
-	// upstream; the byte-safe retry below keeps this verdict rather than re-running
-	// the stateful monitor for the same request.
-	cacheBust, divergingComponentIndex := s.prefixMonitor.observe(evidence.SessionID, providerCacheComponentSHA256)
-	if cacheBust && s.logger != nil {
-		s.logger.Warn("session frozen-cache prefix did not extend prior request; possible cache bust",
-			"request_id", requestID, "session_id", evidence.SessionID,
-			"diverging_component_index", divergingComponentIndex)
-	}
+	cacheBust := false
 
 	upstreamURL, err := adapter.ResolveUpstreamURL(r.Context(), r, providers.RouteContext{})
 	if err != nil {
@@ -430,7 +423,11 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	// (Measured 2026-07-07: Anthropic answers subscription-OAuth requests whose
 	// first system block changed with an opaque 429; any future fingerprint check
 	// lands here too.) The retry claims no optimization and books no savings.
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 && !bytes.Equal(transform.Body, body) {
+	// A 429 that says it is a rate limit is returned instead: raw bytes cannot
+	// beat the limit, and the client's own retry reproduces this request. An
+	// accepted retry pins the conversation raw (pinRaw), because the original
+	// bytes are what the provider cached.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 && !bytes.Equal(transform.Body, body) && !rateLimited(resp) {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
 		if s.logger != nil {
@@ -456,6 +453,9 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 			s.record(start, 0, requestID, traceID, rc, meta, authMode, http.StatusBadGateway, 0, len(body), rawHash, rawHash, "cave_upstream_unavailable", []string{}, providers.UsageObservation{CacheStatus: "unknown"}, nil, "", false, estimate, evidence, providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown, cacheBust, compressionEligible)
 			return
 		}
+		if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
+			s.pinRaw(adapter, meta, body, transform.Body)
+		}
 		resp = retryResp
 		upstreamHeaders = retryHeaders
 		transform = providers.TransformResult{Body: body, OptimizerIDs: []string{}}
@@ -478,6 +478,22 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 			RuntimeMode:   effectiveRuntimeMode,
 			RetryOriginal: true,
 		}, wholeBody(body), wholeBody(body))
+	}
+	// Observe-only prefix-monotonicity check (issue #133): compare this request's
+	// frozen-prefix component hashes against the previous request in the same
+	// session and flag cache_bust if the new prefix does not extend the prior one.
+	// It never blocks or modifies traffic — the flag is persisted and a Warn names
+	// the first diverging component index. It runs once, on the bytes the provider
+	// ACCEPTED: a rejected attempt cached nothing, and anchoring it made the turn
+	// after a raw retry read as a bust.
+	if resp.StatusCode < 400 {
+		var divergingComponentIndex int
+		cacheBust, divergingComponentIndex = s.prefixMonitor.observe(evidence.SessionID, providerCacheComponentSHA256)
+		if cacheBust && s.logger != nil {
+			s.logger.Warn("session frozen-cache prefix did not extend prior request; possible cache bust",
+				"request_id", requestID, "session_id", evidence.SessionID,
+				"diverging_component_index", divergingComponentIndex)
+		}
 	}
 	var retrieveCalls []providers.UsageObservation
 	var retrieved bool
@@ -607,6 +623,24 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		// EOF for an incomplete SSE/gzip body; never replay a partial response.
 		panic(http.ErrAbortHandler)
 	}
+}
+
+// rateLimited reports a 429 that says it is a rate limit: a Retry-After or one
+// of Anthropic's rate-limit headers. The opaque 429 the fail-open retry exists
+// for carries neither.
+func rateLimited(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	if resp.Header.Get("Retry-After") != "" {
+		return true
+	}
+	for name := range resp.Header {
+		if strings.HasPrefix(strings.ToLower(name), "anthropic-ratelimit-") {
+			return true
+		}
+	}
+	return false
 }
 
 func providerHeaderError(w http.ResponseWriter, r *http.Request, err error) {

@@ -199,6 +199,14 @@ type PrefixStabilizer interface {
 	ExtractStabilizable(body []byte, meta providers.RequestMetadata) ([]providers.RewritableBlock, func([][]byte) ([]byte, error), bool)
 }
 
+// CachedPrefixInspector splits a request into the components the provider's
+// prompt cache keys on (cache markers stripped) and reports how many of them
+// this request caches. Adapters without it are treated as caching the whole
+// prompt (see cachedPrefix).
+type CachedPrefixInspector interface {
+	CachedPrefixComponents(body []byte, meta providers.RequestMetadata) ([][]byte, int, bool)
+}
+
 // PrefixEvidenceInspector returns ordered exact provider-wire JSON components
 // that form frozen prefix. Gateway stores only component hashes and aggregate
 // hash. Ordered component hashes prove append-only extension without content.
@@ -334,7 +342,9 @@ type Server struct {
 	// unpersistedRaw remembers blocks that went out raw while prefixCache could
 	// not record it (see rawMemory).
 	unpersistedRaw rawMemory
-	cacheGuard     *cacheguard.Guard
+	// rawPins are conversations the provider accepted only raw (see raw_pin.go).
+	rawPins    rawPins
+	cacheGuard *cacheguard.Guard
 	// prefixMonitor runs the observe-only per-session prefix-monotonicity check
 	// (see prefix_monitor.go). It flags cache_bust when a request's frozen prefix
 	// does not extend the prior request in the same session.

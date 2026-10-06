@@ -99,12 +99,14 @@ func assertCachedPrefixPreserved(t testing.TB, xs []exchange) {
 	}
 }
 
-// rebasedByRawRetry reports whether a raw retry between P (i) and R (j) took
-// over P's range for R: the retry extends P's cached range, and R is that retry
-// or extends the retry's whole cached range. R is then held to the retry.
+// rebasedByRawRetry reports whether a raw retry took over P's (i) range for R
+// (j): the retry covers P's cached range, and R is that retry or extends the
+// retry's whole cached range. R is then held to the raw retry instead — which
+// the provider cached over at least P's range — whether P came before the
+// retry or re-cached a shorter compressed prefix after it.
 func rebasedByRawRetry(xs []exchange, views []prefixView, i, j int) bool {
-	for k := i + 1; k <= j; k++ {
-		if !xs[k].rawRetry || !extendsRange(views[k].client, views[i].client, views[i].cached) {
+	for k := 0; k <= j; k++ {
+		if k == i || !xs[k].rawRetry || !extendsRange(views[k].client, views[i].client, views[i].cached) {
 			continue
 		}
 		if k == j || extendsRange(views[j].client, views[k].client, views[k].cached) {
@@ -392,7 +394,7 @@ func rejectTransformed(status int, header http.Header) respondFunc {
 	}
 }
 
-func rateLimited(attempt int, body []byte) (int, http.Header) {
+func rateLimitResponse(attempt int, body []byte) (int, http.Header) {
 	if attempt == 0 {
 		return http.StatusTooManyRequests, http.Header{"Retry-After": {"7"}, "Anthropic-Ratelimit-Requests-Remaining": {"0"}}
 	}
@@ -534,7 +536,7 @@ func TestCachePrefixInvariant(t *testing.T) {
 			main := newCCConversation("You are Claude Code.", session)
 			h.send(main.user(filler("r1")), sendOpts{})
 			main.user(filler("r2"))
-			status, attempts := h.send(main, sendOpts{respond: rateLimited})
+			status, attempts := h.send(main, sendOpts{respond: rateLimitResponse})
 			if status != http.StatusTooManyRequests || len(attempts) != 1 {
 				t.Fatalf("a rate limit must reach the client unreplayed: status=%d upstream attempts=%d", status, len(attempts))
 			}
@@ -693,6 +695,10 @@ type fuzzWorld struct {
 	next    respondFunc
 	retryOn bool
 	turn    int
+	// unpersisted: a store write failed, so some raw decisions live only in
+	// this process (rawMemory). Restarting on top of that is a double fault the
+	// proxy cannot see through, so the walk stops restarting from then on.
+	unpersisted bool
 }
 
 func newFuzzWorld() *fuzzWorld {
@@ -767,7 +773,9 @@ func (w *fuzzWorld) step(h *invariantHarness, op, arg byte) {
 		}
 		w.send(h, c.user(w.content(arg)))
 	case 8:
-		h.restart("r" + strconv.Itoa(int(arg)))
+		if !w.unpersisted {
+			h.restart("r" + strconv.Itoa(int(arg)))
+		}
 	case 9: // the provider rejects the next transformed request
 		switch arg % 4 {
 		case 0:
@@ -777,9 +785,10 @@ func (w *fuzzWorld) step(h *invariantHarness, op, arg byte) {
 		case 2:
 			w.next = rejectTransformed(http.StatusUnauthorized, nil)
 		case 3:
-			w.next, w.retryOn = rateLimited, true
+			w.next, w.retryOn = rateLimitResponse, true
 		}
 	case 10:
+		w.unpersisted = true
 		h.cache.mu.Lock()
 		h.cache.failWrites = true
 		h.cache.mu.Unlock()
@@ -1023,5 +1032,88 @@ func TestUnpersistedRawDecisionHolds(t *testing.T) {
 
 	if !strings.Contains(string(rt.bodies[1]), t2) || !bytes.Equal(rt.bodies[1], rt.bodies[2]) {
 		t.Fatalf("the re-sent turn must reproduce the bytes the provider accepted:\n%s\n%s", rt.bodies[1], rt.bodies[2])
+	}
+}
+
+// TestRateLimit429IsReturnedNotReplayed: a 429 that says it is a rate limit
+// goes back to the client. Replaying it raw cannot beat the limit, and a raw
+// replay accepted once the window frees caches bytes the next turn will not
+// send. The client's own retry reproduces the transformed request exactly.
+func TestRateLimit429IsReturnedNotReplayed(t *testing.T) {
+	h := newInvariantHarness(t)
+	main := newCCConversation("You are Claude Code.", "sess-429")
+	t1 := filler("turn one")
+	h.send(main.user(t1), sendOpts{})
+	main.user(filler("turn two"))
+
+	status, attempts := h.send(main, sendOpts{respond: rateLimitResponse})
+	if status != http.StatusTooManyRequests || len(attempts) != 1 {
+		t.Fatalf("rate limit: client status %d after %d upstream attempts, want 429 after 1", status, len(attempts))
+	}
+	status, again := h.send(main, sendOpts{})
+	if status != http.StatusOK || len(again) != 1 || !bytes.Equal(again[0].body, attempts[0].body) {
+		t.Fatalf("the client's retry must reproduce the rate-limited bytes (status %d)", status)
+	}
+	if !bytes.Contains(again[0].body, []byte("CMP:"+contentHandle([]byte(t1)))) {
+		t.Fatalf("the retried turn lost turn one's replacement:\n%s", again[0].body)
+	}
+}
+
+// TestAcceptedRawRetryPinsTheConversationRaw: once the provider accepted a
+// request only in its original form, that is what it cached, so every later
+// request extending it goes out raw too. The pin follows the conversation, not
+// the session: a subagent on the same session keeps compressing.
+func TestAcceptedRawRetryPinsTheConversationRaw(t *testing.T) {
+	h := newInvariantHarness(t)
+	main := newCCConversation("You are Claude Code.", "sess-pin")
+	sub := newCCConversation("You are a subagent.", "sess-pin")
+	h.send(main.user(filler("one")), sendOpts{})
+	h.send(sub.user(filler("sub one")), sendOpts{})
+
+	main.user(filler("two"))
+	rawBody := main.body()
+	_, attempts := h.send(main, sendOpts{respond: rejectTransformed(http.StatusBadRequest, nil)})
+	if len(attempts) != 2 || !bytes.Equal(attempts[1].body, rawBody) {
+		t.Fatalf("test setup: want a rejected transformed attempt and an accepted raw retry, got %d attempts", len(attempts))
+	}
+	_, next := h.send(main.user(filler("three")), sendOpts{})
+	if !bytes.Equal(next[0].body, main.body()) {
+		t.Fatalf("the turn after an accepted raw retry must go out raw:\n%s", next[0].body)
+	}
+	_, subNext := h.send(sub.user(filler("sub two")), sendOpts{})
+	if !bytes.Contains(subNext[0].body, []byte("<<ccr:")) {
+		t.Fatalf("a different conversation on the same session must keep compressing:\n%s", subNext[0].body)
+	}
+	h.restart("")
+	_, afterRestart := h.send(main.user(filler("four")), sendOpts{})
+	if !bytes.Equal(afterRestart[0].body, main.body()) {
+		t.Fatalf("the pin must survive a proxy restart:\n%s", afterRestart[0].body)
+	}
+	h.assert()
+}
+
+// TestPrefixMonitorAnchorsAcceptedBytes: the monitor must remember what the
+// provider accepted. Anchoring the rejected transformed attempt of a raw retry
+// made the next (correctly raw) turn read as a bust.
+func TestPrefixMonitorAnchorsAcceptedBytes(t *testing.T) {
+	short := "a first message too short to compress"
+	m2, m3, m4 := turnText(2), turnText(3), turnText(4)
+	rt := &captureTransport{
+		statuses:  []int{200, 200, http.StatusBadRequest, 200, 200},
+		responses: []string{subMessageRespBody, subMessageRespBody, subMessageRespBody, subMessageRespBody, subMessageRespBody},
+	}
+	srv, sink := newPrefixStableServer(&stableCompressor{}, newTestPrefixCache(), rt)
+	headers := withHeaders(subscriptionAgentHeaders, "x-cave-session", "sess-monitor")
+
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(short), headers)
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(short, m2), headers)
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(short, m2, m3), headers) // 400, then raw
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(short, m2, m3, m4), headers)
+
+	if len(rt.bodies) != 5 || !bytes.Equal(rt.bodies[4], []byte(newestMarkedConversation(short, m2, m3, m4))) {
+		t.Fatalf("test setup: want the turn after the raw retry pinned raw, got %d upstream calls", len(rt.bodies))
+	}
+	if row := sink.last(t); row.CacheBust {
+		t.Fatal("the turn that extends the accepted raw request was flagged as a cache bust")
 	}
 }
