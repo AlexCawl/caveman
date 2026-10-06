@@ -407,15 +407,18 @@ type Server struct {
 // rule for non-PAYG traffic is unchanged. Subscription rows it produces are
 // tokens-only: the row's dollar fields stay zero (see record()).
 func (s *Server) liveZoneCompressionAllowed(adapter providers.Adapter, body []byte) bool {
+	return s.liveZoneConfigured(adapter) && s.mcpRecoveryAvailable(body)
+}
+
+// liveZoneConfigured is every live-zone condition except the recovery proof,
+// which a request may carry in its own (possibly still encoded) body.
+func (s *Server) liveZoneConfigured(adapter providers.Adapter) bool {
 	switch s.subscriptionCompress {
 	case "", "live_zone":
 	default:
 		return false
 	}
 	if adapter == nil {
-		return false
-	}
-	if !s.mcpRecoveryAvailable(body) {
 		return false
 	}
 	return s.prefixStabilized(adapter)

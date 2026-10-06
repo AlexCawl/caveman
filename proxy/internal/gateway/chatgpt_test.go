@@ -1041,3 +1041,192 @@ func TestOpenCodeChatGPTSubscriptionDetection(t *testing.T) {
 		})
 	}
 }
+
+// chatgptCompressServer wires the /chatgpt route with live-zone compression
+// available; recovery toggles the out-of-band CAVEMAN_RECOVERY=mcp stamp.
+func chatgptCompressServer(rt http.RoundTripper, recovery bool) (*Server, *captureSink, *bytes.Buffer) {
+	sink := &captureSink{}
+	logs := &bytes.Buffer{}
+	srv := New(Config{
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Sink:            sink,
+		Compressor:      &liveZoneCompressor{},
+		PrefixCache:     newTestPrefixCache(),
+		RecoveryViaMCP:  recovery,
+		ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+		HTTPClient:      &http.Client{Transport: rt},
+		Logger:          slog.New(slog.NewJSONHandler(logs, nil)),
+	})
+	return srv, sink, logs
+}
+
+func chatgptProxyLogLine(t *testing.T, logs *bytes.Buffer) map[string]any {
+	t.Helper()
+	for _, line := range bytes.Split(logs.Bytes(), []byte("\n")) {
+		var entry map[string]any
+		if json.Unmarshal(line, &entry) == nil && entry["msg"] == "chatgpt_proxy" {
+			return entry
+		}
+	}
+	t.Fatalf("no chatgpt_proxy log line in %s", logs.String())
+	return nil
+}
+
+// #1155 widened zstd decoding to every /chatgpt/responses caller, so a Codex
+// CLI zstd body that ends up uncompressed must still reach the backend as the
+// exact original wire bytes with its Content-Encoding. #1053: the log says why.
+func TestChatGPTCodexZstdWithoutCompressionForwardsExactWire(t *testing.T) {
+	compressible := `{"model":"gpt-5.5","input":"` + strings.Repeat("codex cli zstd tool output ", 40) + `"}`
+	for _, tt := range []struct {
+		name         string
+		recovery     bool
+		logical      string
+		wantReason   string
+		wantEligible bool
+	}{
+		{name: "recovery unproven", logical: compressible, wantReason: "recovery_unproven"},
+		{name: "nothing compressible", recovery: true, logical: `{"model":"gpt-5.5","input":[]}`, wantReason: "nothing_compressible", wantEligible: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			wire, ok := encodeChatGPTRequestBody([]byte(tt.logical), chatGPTRequestZstd)
+			if !ok {
+				t.Fatal("zstd encoder unavailable")
+			}
+			rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+			srv, sink, logs := chatgptCompressServer(rt, tt.recovery)
+			req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(wire))
+			req.Header.Set("Authorization", "Bearer codex-oauth-secret")
+			req.Header.Set("ChatGPT-Account-ID", "acct_codex")
+			req.Header.Set("Content-Encoding", "zstd")
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
+				t.Fatalf("status/calls = %d/%d", rec.Code, len(rt.bodies))
+			}
+			if !bytes.Equal(rt.bodies[0], wire) {
+				t.Fatal("uncompressed Codex zstd body must forward the exact original wire bytes")
+			}
+			if got := rt.headers[0].Get("Content-Encoding"); got != "zstd" {
+				t.Fatalf("Content-Encoding = %q, want zstd", got)
+			}
+			if rec.Header().Get("x-caveman-recovery-handle") != "" {
+				t.Fatal("uncompressed request disclosed compression")
+			}
+			if got := chatgptProxyLogLine(t, logs)["skip_reason"]; got != tt.wantReason {
+				t.Fatalf("skip_reason = %v, want %q", got, tt.wantReason)
+			}
+			if row := sink.last(t); row.CompressionEligible != tt.wantEligible || row.CompressionTokensBefore != 0 {
+				t.Fatalf("eligible/before = %v/%d, want %v/0", row.CompressionEligible, row.CompressionTokensBefore, tt.wantEligible)
+			}
+		})
+	}
+}
+
+// #1053: without the CAVEMAN_RECOVERY stamp (a manually started caveman-proxy),
+// the request's own Caveman MCP retrieve tool proves recovery on /chatgpt, as it
+// already does on the generic route — top-level tools or Codex's input[]
+// additional_tools catalog, flat or grouped under an MCP namespace.
+func TestChatGPTInBodyRecoveryToolOpensCompression(t *testing.T) {
+	live := strings.Repeat("codex desktop tool output ", 40)
+	input := `{"type":"message","role":"user","content":[{"type":"input_text","text":"` + live + `"}]}`
+	for _, tt := range []struct {
+		name string
+		body string
+		zstd bool
+	}{
+		{name: "top-level tools", body: `{"model":"gpt-5.5","tools":[{"type":"function","name":"mcp__caveman__caveman_retrieve","parameters":{"type":"object"}}],"input":[` + input + `]}`},
+		{name: "additional_tools flat function", body: `{"model":"gpt-5.5","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"mcp__caveman__caveman_retrieve","parameters":{"type":"object"}}]},` + input + `]}`},
+		{name: "additional_tools MCP namespace", body: `{"model":"gpt-5.5","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"mcp__caveman","description":"","tools":[{"type":"function","name":"caveman_retrieve","parameters":{"type":"object"}}]}]},` + input + `]}`},
+		{name: "zstd additional_tools MCP namespace", zstd: true, body: `{"model":"gpt-5.5","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"mcp__caveman__","description":"","tools":[{"type":"function","name":"caveman_retrieve","parameters":{"type":"object"}}]}]},` + input + `]}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			wire := []byte(tt.body)
+			if tt.zstd {
+				var ok bool
+				if wire, ok = encodeChatGPTRequestBody(wire, chatGPTRequestZstd); !ok {
+					t.Fatal("zstd encoder unavailable")
+				}
+			}
+			rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+			srv, sink, logs := chatgptCompressServer(rt, false)
+			req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(wire))
+			req.Header.Set("Authorization", "Bearer codex-oauth-secret")
+			req.Header.Set("ChatGPT-Account-ID", "acct_codex")
+			if tt.zstd {
+				req.Header.Set("Content-Encoding", "zstd")
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
+				t.Fatalf("status/calls = %d/%d", rec.Code, len(rt.bodies))
+			}
+			upstream, _, ok := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"))
+			if !ok || bytes.Contains(upstream, []byte(live)) || !bytes.Contains(upstream, []byte("<<ccr:")) {
+				t.Fatalf("in-body recovery tool did not open compression: %s", upstream)
+			}
+			row := sink.last(t)
+			if !row.CompressionEligible || row.CompressionTokensBefore <= row.CompressionTokensAfter || row.RecoveryHandle == "" {
+				t.Fatalf("compression accounting missing: %+v", row)
+			}
+			if got, present := chatgptProxyLogLine(t, logs)["skip_reason"]; present && got != "" {
+				t.Fatalf("compressed request logged skip_reason %v", got)
+			}
+		})
+	}
+}
+
+// Only the namespaced Caveman MCP spelling proves recovery. A bare
+// caveman_retrieve (possibly a caller's own tool) or one under another
+// namespace must not, wherever it appears.
+func TestChatGPTUnprovenRecoveryToolsStayExact(t *testing.T) {
+	live := strings.Repeat("must stay exact ", 40)
+	for _, tools := range []string{
+		`[{"type":"function","name":"caveman_retrieve"}]`,
+		`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"caveman_retrieve"}]}]`,
+		`[{"type":"namespace","name":"mcp__other","tools":[{"type":"function","name":"caveman_retrieve"}]}]`,
+		`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"mcp__caveman__caveman_retrieve"}]}]`,
+	} {
+		t.Run(tools, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-5.5","input":[{"type":"additional_tools","role":"developer","tools":` + tools + `},{"type":"message","role":"user","content":[{"type":"input_text","text":"` + live + `"}]}]}`)
+			rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+			srv, sink, logs := chatgptCompressServer(rt, false)
+			req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK || len(rt.bodies) != 1 || !bytes.Equal(rt.bodies[0], body) {
+				t.Fatalf("unproven recovery changed bytes: status=%d body=%s", rec.Code, rt.bodies[0])
+			}
+			if got := chatgptProxyLogLine(t, logs)["skip_reason"]; got != "recovery_unproven" {
+				t.Fatalf("skip_reason = %v, want recovery_unproven", got)
+			}
+			if sink.last(t).CompressionEligible {
+				t.Fatal("unproven recovery recorded as eligible")
+			}
+		})
+	}
+}
+
+// An encoding the proxy cannot decode stays exact pass-through, and the log
+// names the reason instead of reporting an eligible request that shrank nothing.
+func TestChatGPTUndecodableEncodingLogsSkipReason(t *testing.T) {
+	wire := []byte("not a zstd frame")
+	rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+	srv, sink, logs := chatgptCompressServer(rt, true)
+	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(wire))
+	req.Header.Set("Content-Encoding", "zstd")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || len(rt.bodies) != 1 || !bytes.Equal(rt.bodies[0], wire) {
+		t.Fatalf("undecodable body changed: status=%d body=%q", rec.Code, rt.bodies[0])
+	}
+	if got := chatgptProxyLogLine(t, logs)["skip_reason"]; got != "content_encoding_unsupported" {
+		t.Fatalf("skip_reason = %v, want content_encoding_unsupported", got)
+	}
+	if row := sink.last(t); !row.CompressionEligible || row.CompressionTokensBefore != 0 {
+		t.Fatalf("stamped recovery + undecodable body: eligible/before = %v/%d", row.CompressionEligible, row.CompressionTokensBefore)
+	}
+}

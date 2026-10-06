@@ -82,20 +82,36 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	transform := providers.TransformResult{OptimizerIDs: []string{}}
 	var comp *compressionOutcome
 	adapter := openai.New(s.chatGPTUpstream)
-	compressEligible := r.Method == http.MethodPost && rc.RuntimeMode == "compress" && suffix == "/responses" &&
-		// nil body: this route exists only for subscription wrap, which proves
-		// recovery out of band before starting its dedicated proxy.
-		s.compressor != nil && s.liveZoneCompressionAllowed(adapter, nil) && compiledPlanAllowed
-	if compressEligible {
+	// The recovery proof is checked after the read: a manually started proxy has
+	// no CAVEMAN_RECOVERY stamp, and the request's own Caveman MCP retrieve tool
+	// (top-level tools or Codex's input[] additional_tools) then proves it, the
+	// same rule the generic route applies. Eligible means the whole gate passed;
+	// skipReason says why an eligible-looking request was not compressed.
+	compressCandidate := r.Method == http.MethodPost && rc.RuntimeMode == "compress" && suffix == "/responses" &&
+		s.compressor != nil && s.liveZoneConfigured(adapter) && compiledPlanAllowed
+	compressEligible := compressCandidate && s.recoveryViaMCP
+	skipReason := ""
+	if compressCandidate {
 		captured, readErr := io.ReadAll(io.LimitReader(r.Body, chatGPTCaptureLimit+1))
 		if readErr == nil && len(captured) <= chatGPTCaptureLimit {
 			requestBodyFullyRead = true
 			originalBody = captured
 			_, _ = reqHash.Write(originalBody)
 			_, _ = reqCapture.Write(originalBody)
+			// Unless a logical transform succeeds, the original wire bytes go out
+			// untouched — including Pi's or Codex's original zstd frame.
+			transform.Body = originalBody
 
 			logicalBody, requestEncoding, decodable := decodeChatGPTRequestBody(originalBody, r.Header.Get("Content-Encoding"))
-			if decodable {
+			if decodable && !compressEligible {
+				compressEligible = s.mcpRecoveryAvailable(logicalBody)
+			}
+			switch {
+			case !decodable:
+				skipReason = "content_encoding_unsupported"
+			case !compressEligible:
+				skipReason = "recovery_unproven"
+			default:
 				transform.Body = logicalBody
 				headersForInspect := r.Header.Clone()
 				headersForInspect.Del("Content-Encoding")
@@ -104,28 +120,34 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 				if inspectErr == nil {
 					meta.Endpoint = suffix
 					meta.SessionID = evidence.SessionID
-					if s.cacheEpochAllows(r, adapter, meta, logicalBody, evidence.SessionID) {
-						comp = s.compressRequest(adapter, logicalBody, meta, &transform, requestID, lockedRoutes)
+				}
+				switch {
+				case inspectErr != nil:
+					skipReason = "inspect_failed"
+				case !s.cacheEpochAllows(r, adapter, meta, logicalBody, evidence.SessionID):
+					skipReason = "cache_epoch_diverged"
+				default:
+					comp = s.compressRequest(adapter, logicalBody, meta, &transform, requestID, lockedRoutes)
+					if comp == nil {
+						skipReason = "nothing_compressible"
 					}
 				}
-				if comp != nil {
-					if encoded, ok := encodeChatGPTRequestBody(transform.Body, requestEncoding); ok {
-						transform.Body = encoded
-					} else {
-						transform = providers.TransformResult{Body: originalBody, OptimizerIDs: []string{}}
-						comp = nil
-					}
-				} else {
-					// No logical transform means no reason to perturb Pi's
-					// original zstd frame.
+				if comp == nil {
 					transform.Body = originalBody
+				} else if encoded, ok := encodeChatGPTRequestBody(transform.Body, requestEncoding); ok {
+					transform.Body = encoded
+				} else {
+					transform = providers.TransformResult{Body: originalBody, OptimizerIDs: []string{}}
+					comp = nil
+					skipReason = "reencode_failed"
 				}
-			} else {
-				// Unknown or malformed encodings remain exact pass-through.
-				transform.Body = originalBody
 			}
 			reqBody = bytes.NewReader(transform.Body)
 		} else {
+			skipReason = "body_over_limit"
+			if readErr != nil {
+				skipReason = "body_read_failed"
+			}
 			// Reconstruct the consumed prefix and continue the old streaming path.
 			source := io.MultiReader(bytes.NewReader(captured), r.Body)
 			requestBodyTracker = &eofTrackingReader{reader: source}
@@ -221,6 +243,7 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 		resp = retryResp
 		transform = providers.TransformResult{Body: originalBody, OptimizerIDs: []string{}}
 		comp = nil
+		skipReason = "upstream_rejected_transform"
 		// The original bytes served the request; the capture written before
 		// the first attempt describes bytes the upstream rejected. Both
 		// attempts stay on disk, and this one says which served.
@@ -287,7 +310,7 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	if s.logger != nil {
 		s.logger.Info("chatgpt_proxy",
 			"path", suffix, "status", resp.StatusCode,
-			"latency_ms", time.Since(start).Milliseconds(), "stream", stream, "compressed", comp != nil, "error_code", errCode)
+			"latency_ms", time.Since(start).Milliseconds(), "stream", stream, "compressed", comp != nil, "skip_reason", skipReason, "error_code", errCode)
 	}
 	if errCode != "" {
 		// Same contract as the provider proxy: the row is recorded, then framing
