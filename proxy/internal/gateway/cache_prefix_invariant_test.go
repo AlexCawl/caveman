@@ -652,6 +652,19 @@ func TestCachePrefixInvariant(t *testing.T) {
 			h.send(main.user(filler("w4")), sendOpts{})
 			h.send(main.user(filler("w5")), sendOpts{})
 		}},
+		{"a retried turn after a restart re-sends the stored replacement", func(t *testing.T, h *invariantHarness) {
+			// The client re-sends turn 1 (an aborted stream) to a restarted proxy
+			// whose engine now compresses the block differently, and the lookup
+			// fails. The store answers the write with the row on record, and
+			// that row, not this process's own candidate, is what goes out.
+			main := newCCConversation("You are Claude Code.", session).user(filler("retried turn"))
+			h.send(main, sendOpts{})
+			h.restart("v2")
+			h.cache.mu.Lock()
+			h.cache.failLookups = true
+			h.cache.mu.Unlock()
+			h.send(main, sendOpts{})
+		}},
 		{"memo lookup error on one turn", func(t *testing.T, h *invariantHarness) {
 			main := newCCConversation("You are Claude Code.", session)
 			h.send(main.user(filler("l1")), sendOpts{})
