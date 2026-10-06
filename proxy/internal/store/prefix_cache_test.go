@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/JuliusBrussee/caveman/proxy/internal/gateway"
 )
 
 // TestPrefixReplacementRoundTripAndDurability pins the property the whole cross-turn
@@ -140,15 +142,23 @@ func TestPrefixReplacementEviction(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Seed past the cap directly so the test does not have to write 10k blobs.
+	// Seed past the cap directly, in one transaction, so the test does not have
+	// to write a hundred thousand blobs through the hot path.
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
 	for i := 0; i < prefixCacheMaxEntries+5; i++ {
-		key := prefixCacheKey("unlocked", []byte{byte(i / 256), byte(i % 256)})
-		if _, err := s.db.Exec(
+		key := prefixCacheKey("unlocked", []byte{byte(i >> 16), byte(i >> 8), byte(i)})
+		if _, err := tx.Exec(
 			`INSERT INTO prefix_replacements (original_sha256, handle, replacement, created_at, last_used_at) VALUES (?,?,?,?,?)`,
 			key, "ccr_seed", []byte("R"), prefixCacheNow(), prefixCacheNow(),
 		); err != nil {
 			t.Fatalf("seed %d: %v", i, err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed: %v", err)
 	}
 	if _, err := s.RememberReplacement("unlocked", []byte("newest block"), []byte("NEW"), "ccr_new"); err != nil {
 		t.Fatalf("remember: %v", err)
@@ -240,5 +250,43 @@ func TestPrefixReplacementLookupUnderWriteContention(t *testing.T) {
 
 	if misses > 0 {
 		t.Fatalf("%d/%d lookups of a STORED replacement reported a miss under contention — each one flips the upstream prefix back to the client's originals", misses, readers)
+	}
+}
+
+// TestPrefixReplacementRawDecision pins the raw half of first-decision-wins: a
+// block forwarded raw is recorded as such (an empty replacement under the raw
+// handle), reads back as a hit, survives a restart, and outranks a later
+// compression of the same bytes — and a compression recorded first outranks a
+// later raw decision.
+func TestPrefixReplacementRawDecision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caveman.db")
+	s, err := Open(path, nil)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	raw, compressed := []byte("a block that went out raw"), []byte("a block that went out compressed")
+	stored, err := s.RememberReplacement("unlocked", raw, nil, gateway.RawDecisionHandle)
+	if err != nil || stored != nil {
+		t.Fatalf("raw decision: stored=%q err=%v, want nil/nil", stored, err)
+	}
+	if stored, err := s.RememberReplacement("unlocked", raw, []byte("LATER"), "ccr_late"); err != nil || stored != nil {
+		t.Fatalf("a later compression must get the raw decision back: stored=%q err=%v", stored, err)
+	}
+	if _, err := s.RememberReplacement("unlocked", compressed, []byte("FIRST"), "ccr_first"); err != nil {
+		t.Fatalf("remember compressed: %v", err)
+	}
+	if stored, err := s.RememberReplacement("unlocked", compressed, nil, gateway.RawDecisionHandle); err != nil || string(stored) != "FIRST" {
+		t.Fatalf("a later raw decision must get the compression back: stored=%q err=%v", stored, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	s, err = Open(path, nil)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	if replacement, handle, ok := s.LookupReplacement("unlocked", raw); !ok || replacement != nil || handle != gateway.RawDecisionHandle {
+		t.Fatalf("raw decision after restart: %q %q %v", replacement, handle, ok)
 	}
 }

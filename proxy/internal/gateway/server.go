@@ -167,18 +167,27 @@ type Retriever interface {
 // fails OPEN: a miss, an unavailable store, or a write error means the original
 // bytes are forwarded and no new replacement is created — the proxy never emits a
 // rewrite it could not reproduce on the next turn.
+//
+// It records the FIRST forwarding decision for a block, raw included: a block
+// that went out raw is remembered as an empty replacement under
+// RawDecisionHandle, so a later compression of the same bytes in any
+// conversation can never put them on the wire replaced.
 type PrefixCache interface {
 	// LookupReplacement returns the exact replacement bytes previously emitted for
-	// these original bytes plus the CCR handle they disclose. An evicted or absent
-	// entry is a plain miss: the caller forwards the original, which re-syncs the
-	// prefix at a one-time cost and stays stable from then on.
+	// these original bytes plus the CCR handle they disclose, or (nil,
+	// RawDecisionHandle, true) for a block that went out raw. An evicted or absent
+	// entry is a plain miss.
 	LookupReplacement(scope string, original []byte) (replacement []byte, handle string, ok bool)
-	// RememberReplacement durably records original→replacement and returns the
-	// AUTHORITATIVE bytes for that original — the caller must forward what comes
-	// back, not what it passed in. Storage is first-write-wins so two requests that
-	// compressed the same block can never put two different prefixes on the wire.
+	// RememberReplacement durably records original→replacement (nil under
+	// RawDecisionHandle records raw) and returns the AUTHORITATIVE bytes for that
+	// original — nil when raw won. The caller must forward what comes back, not
+	// what it passed in. Storage is first-write-wins so two requests that saw the
+	// same block can never put two different prefixes on the wire.
 	RememberReplacement(scope string, original, replacement []byte, handle string) (stored []byte, err error)
 }
+
+// RawDecisionHandle is the PrefixCache handle of a block forwarded raw.
+const RawDecisionHandle = "raw"
 
 // PrefixStabilizer is the optional adapter capability that exposes the frozen
 // (already-cached) blocks alongside the live zone, so the proxy can substitute a

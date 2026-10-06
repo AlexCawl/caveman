@@ -1084,6 +1084,24 @@ func (s *Server) rewriteRequest(
 	query := extractCompressionQuery(meta.Provider, meta.Endpoint, body)
 	queryComp, queryAware := s.compressor.(QueryAwareCompressor)
 	activeRoutes := make([]bool, len(lockedRoutes))
+	use := func(i int, replacement []byte, handle string) {
+		replacements[i] = replacement
+		handles = append(handles, handle)
+		if len(lockedRoutes) > 0 {
+			activeRoutes[routeByBlock[i]] = true
+		}
+	}
+	// keepRaw records that block i goes out raw. If another request already
+	// decided these bytes (a concurrent fork, a lookup that failed), the store
+	// answers with that decision and it is followed instead.
+	keepRaw := func(i int, scope string) {
+		if s.prefixCache == nil {
+			return
+		}
+		if stored, err := s.prefixCache.RememberReplacement(scope, blocks[i].content, nil, RawDecisionHandle); err == nil && len(stored) > 0 {
+			use(i, stored, ccrHandleOf(stored))
+		}
+	}
 	for i, block := range blocks {
 		if len(lockedRoutes) > 0 && routeByBlock[i] < 0 {
 			continue // unmatched frozen history is never rewritten under this lock.
@@ -1099,18 +1117,19 @@ func (s *Server) rewriteRequest(
 		}
 		if s.prefixCache != nil {
 			if stored, handle, hit := s.prefixCache.LookupReplacement(cacheScope, block.content); hit {
-				replacements[i] = stored
-				handles = append(handles, handle)
-				if len(lockedRoutes) > 0 {
-					activeRoutes[routeByBlock[i]] = true
+				// The first decision wins: replaced bytes are re-sent exactly, and a
+				// block that went out raw stays raw in every conversation.
+				if handle != RawDecisionHandle {
+					use(i, stored, handle)
 				}
 				continue
 			}
 		}
-		// A frozen block the cache does not know was never compressed by us (or its
-		// entry was evicted): forward the client's original bytes. That is the
-		// re-sync path — it costs one prefix rebuild and is stable from then on.
+		// Undecided. A frozen block nobody sent replaced (a --resume history built
+		// without the proxy, an evicted entry) and a live block this request may not
+		// compress both go out raw now, which makes raw their first decision.
 		if !block.live || !allowNew {
+			keepRaw(i, cacheScope)
 			continue
 		}
 		out, tb, ta := []byte(nil), 0, 0
@@ -1131,6 +1150,7 @@ func (s *Server) rewriteRequest(
 			out, tb, ta = s.compressor.CompressSegment(block.content)
 		}
 		if out == nil || tb <= 0 || ta >= tb {
+			keepRaw(i, cacheScope)
 			continue
 		}
 		handle, err := s.compressor.StoreOriginal(block.content)
@@ -1142,6 +1162,7 @@ func (s *Server) rewriteRequest(
 					s.logger.Warn("compress recovery store returned empty handle; keeping block original", "request_id", requestID)
 				}
 			}
+			keepRaw(i, cacheScope)
 			continue
 		}
 		replacement := appendCCRMarker(out, handle)
@@ -1149,11 +1170,14 @@ func (s *Server) rewriteRequest(
 			// A rewrite we cannot re-issue next turn must not go out at all: it would
 			// diverge the prefix on the very next request. Fail open to the original.
 			stored, err := s.prefixCache.RememberReplacement(cacheScope, block.content, replacement, handle)
-			if err != nil || len(stored) == 0 {
+			if err != nil {
 				if s.logger != nil {
 					s.logger.Warn("prefix replacement store failed for block; keeping block original", "error", redact.Error(err), "request_id", requestID)
 				}
 				continue
+			}
+			if len(stored) == 0 {
+				continue // another request sent these bytes raw first
 			}
 			replacement = stored
 		}
@@ -1232,6 +1256,15 @@ func joinRecoveryHandles(handles []string) string {
 	}
 	elided := len(uniq) - recoveryHandleListMax
 	return "+" + strconv.Itoa(elided) + "," + strings.Join(uniq[len(uniq)-recoveryHandleListMax:], ",")
+}
+
+// ccrHandleOf reads the handle back out of a replacement's trailing marker.
+func ccrHandleOf(replacement []byte) string {
+	rest, ok := bytes.CutSuffix(replacement, []byte(">>"))
+	if i := bytes.LastIndex(rest, []byte("<<ccr:")); ok && i >= 0 {
+		return string(rest[i+len("<<ccr:"):])
+	}
+	return ""
 }
 
 func appendCCRMarker(out []byte, handle string) []byte {

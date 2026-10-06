@@ -475,10 +475,11 @@ func TestCachePrefixInvariant(t *testing.T) {
 			h.send(main.toolResult(filler("after restart 2")), sendOpts{})
 		}},
 		{"first-sight decline then accept", func(t *testing.T, h *invariantHarness) {
-			h.comp.declineFirst = true
 			shared := filler("the same file read by two conversations")
 			b := newCCConversation("You are subagent B.", session)
+			h.comp.declineFirst = true // B's first sight of the file is declined
 			h.send(b.toolResult(shared), sendOpts{})
+			h.comp.declineFirst = false
 			a := newCCConversation("You are subagent A.", session)
 			h.send(a.toolResult(shared), sendOpts{})
 			h.send(b.user(filler("b next")), sendOpts{})
@@ -925,5 +926,77 @@ func TestToolSchemaStripIgnoresEpochVeto(t *testing.T) {
 		if !strings.Contains(string(body), `"tools":`+stripped) {
 			t.Fatalf("request %d did not carry the stripped catalog:\n%s", i+1, body)
 		}
+	}
+}
+
+func conversationWithSystem(system string, userTexts ...string) string {
+	body := newestMarkedConversation(userTexts...)
+	return strings.Replace(body, `"text":"You are Claude Code."`, `"text":`+jsonText(system), 1)
+}
+
+// TestMemoNeverFlipsABlockSentRaw: the replacement memo is keyed by content
+// across conversations. A block one conversation already sent raw must never be
+// substituted later because another conversation compressed the same bytes —
+// whatever went out first is what the provider cached.
+func TestMemoNeverFlipsABlockSentRaw(t *testing.T) {
+	x, y := strings.Repeat("the same tool output ", 40), turnText(9)
+	comp := &declineOnceCompressor{target: x}
+	rt := prefixStableTransport(3)
+	srv, _ := newPrefixStableServer(comp, newTestPrefixCache(), rt)
+
+	serveBody(t, srv, "/v1/messages", conversationWithSystem("You are B.", x), subscriptionAgentHeaders)
+	serveBody(t, srv, "/v1/messages", conversationWithSystem("You are A.", x), subscriptionAgentHeaders)
+	serveBody(t, srv, "/v1/messages", conversationWithSystem("You are B.", x, y), subscriptionAgentHeaders)
+
+	for i, body := range rt.bodies {
+		if !strings.Contains(string(body), x) {
+			t.Fatalf("request %d did not send x raw although B sent it raw first:\n%s", i+1, body)
+		}
+	}
+	if !strings.Contains(string(rt.bodies[2]), (&stableCompressor{}).expectedReplacement(t, y)) {
+		t.Fatalf("new content must still compress:\n%s", rt.bodies[2])
+	}
+}
+
+// declineOnceCompressor turns target down the first time it sees it, the way a
+// query-aware compressor or a failed recovery write can, and compresses it (and
+// everything else) afterwards.
+type declineOnceCompressor struct {
+	stableCompressor
+	target   string
+	declined bool
+}
+
+func (c *declineOnceCompressor) CompressSegment(seg []byte) ([]byte, int, int) {
+	c.mu.Lock()
+	decline := string(seg) == c.target && !c.declined
+	c.declined = c.declined || decline
+	c.mu.Unlock()
+	if decline {
+		return nil, 0, 0
+	}
+	return c.stableCompressor.CompressSegment(seg)
+}
+
+// TestResumedHistoryNeverFlips: a block first seen below the cache floor (a
+// --resume history built without the proxy) went out raw, so raw is its
+// decision even when the same bytes later arrive as live content.
+func TestResumedHistoryNeverFlips(t *testing.T) {
+	history, live, next := strings.Repeat("history from before the proxy ", 30), turnText(2), turnText(3)
+	rt := prefixStableTransport(3)
+	comp := &stableCompressor{}
+	srv, _ := newPrefixStableServer(comp, newTestPrefixCache(), rt)
+
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(history, live), subscriptionAgentHeaders)
+	serveBody(t, srv, "/v1/messages", conversationWithSystem("You are a subagent.", history), subscriptionAgentHeaders)
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(history, live, next), subscriptionAgentHeaders)
+
+	for i, body := range rt.bodies {
+		if !strings.Contains(string(body), history) {
+			t.Fatalf("request %d compressed history the resumed conversation sent raw:\n%s", i+1, body)
+		}
+	}
+	if !strings.Contains(string(rt.bodies[2]), comp.expectedReplacement(t, live)) {
+		t.Fatalf("the resumed conversation's own live turn must stay replaced:\n%s", rt.bodies[2])
 	}
 }

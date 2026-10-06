@@ -7,15 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/JuliusBrussee/caveman/proxy/internal/gateway"
 )
 
 // prefixCacheMaxEntries bounds the replacement cache. The store keeps the most
 // recently used entries and drops the rest; an evicted entry is a plain lookup
 // miss, so the gateway forwards that message's original bytes from then on. That
 // costs one prompt-cache rebuild and is byte-stable afterwards — never a
-// half-applied prefix. Live blocks average a few KB, so the cap is a soft ceiling
-// of tens of MB in ~/.caveman/caveman.db.
-const prefixCacheMaxEntries = 10000
+// half-applied prefix. Compressed rows average a few KB and raw decisions carry
+// no replacement at all, so the cap is a soft ceiling of a few hundred MB in
+// ~/.caveman/caveman.db at worst.
+const prefixCacheMaxEntries = 100000
 
 // LookupReplacement returns the replacement bytes this proxy previously emitted
 // for these exact original bytes, plus the CCR handle they disclose. It implements
@@ -39,10 +42,16 @@ func (s *Store) LookupReplacement(scope string, original []byte) ([]byte, string
 // authoritative bytes for that original. Storage is first-write-wins: if another
 // in-flight request already stored a replacement for the same block, that one is
 // returned and the caller forwards it, so two requests can never put two different
-// prefixes on the wire for one logical message.
+// prefixes on the wire for one logical message. A nil replacement under
+// gateway.RawDecisionHandle records that the block went out raw; nil comes back
+// whenever raw is the authoritative decision.
 func (s *Store) RememberReplacement(scope string, original, replacement []byte, handle string) ([]byte, error) {
-	if scope == "" || len(original) == 0 || len(replacement) == 0 || handle == "" {
+	raw := handle == gateway.RawDecisionHandle && len(replacement) == 0
+	if scope == "" || len(original) == 0 || (len(replacement) == 0 && !raw) || handle == "" {
 		return nil, errors.New("prefix replacement: incomplete entry")
+	}
+	if raw {
+		replacement = []byte{} // the column is NOT NULL
 	}
 	key := prefixCacheKey(scope, original)
 	now := prefixCacheNow()
@@ -79,6 +88,9 @@ func (s *Store) readReplacement(key string) ([]byte, string, bool) {
 		}
 		return nil, "", false
 	}
+	if handle == gateway.RawDecisionHandle && len(replacement) == 0 {
+		return nil, handle, true
+	}
 	if handle == "" || len(replacement) == 0 {
 		if s.logger != nil {
 			s.logger.Warn("prefix replacement entry incomplete (treated as a miss)")
@@ -88,13 +100,23 @@ func (s *Store) readReplacement(key string) ([]byte, string, bool) {
 	return replacement, handle, true
 }
 
+// prefixCacheEvictEvery spaces eviction out: it runs on the first write and
+// then once per this many, so the cap is soft by at most that many rows and the
+// hot path does not re-count the table on every write.
+const prefixCacheEvictEvery = 256
+
 // evictPrefixReplacements keeps the table at prefixCacheMaxEntries, dropping the
-// least recently used rows. Eviction failure is logged, never propagated: an
-// oversized cache is a disk-space problem, not a correctness one.
+// least recently used rows through the LRU index. Eviction failure is logged,
+// never propagated: an oversized cache is a disk-space problem, not a
+// correctness one.
 func (s *Store) evictPrefixReplacements() {
+	if (s.prefixWrites.Add(1)-1)%prefixCacheEvictEvery != 0 {
+		return
+	}
 	if _, err := s.db.Exec(
-		`DELETE FROM prefix_replacements WHERE original_sha256 NOT IN (
-		   SELECT original_sha256 FROM prefix_replacements ORDER BY last_used_at DESC, original_sha256 DESC LIMIT ?
+		`DELETE FROM prefix_replacements WHERE original_sha256 IN (
+		   SELECT original_sha256 FROM prefix_replacements ORDER BY last_used_at ASC, original_sha256 ASC
+		   LIMIT max(0, (SELECT COUNT(*) FROM prefix_replacements) - ?)
 		 )`, prefixCacheMaxEntries,
 	); err != nil && s.logger != nil {
 		s.logger.Warn("prefix replacement eviction failed", "error", err)

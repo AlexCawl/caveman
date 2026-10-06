@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/JuliusBrussee/caveman/proxy/internal/gateway"
@@ -33,6 +34,7 @@ type Store struct {
 	logger           *slog.Logger
 	persistent       bool
 	middlewareWriter chan struct{}
+	prefixWrites     atomic.Int64
 }
 
 const schema = `
@@ -224,6 +226,9 @@ CREATE TABLE IF NOT EXISTS prefix_replacements (
   created_at TEXT NOT NULL,
   last_used_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_prefix_replacements_lru
+  ON prefix_replacements(last_used_at, original_sha256);
 
 CREATE TABLE IF NOT EXISTS learn_sinks (
   sink_id TEXT PRIMARY KEY,
