@@ -198,8 +198,10 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	transform := providers.TransformResult{Body: body, OptimizerIDs: []string{}}
 	var comp *compressionOutcome
 	// toolSchemaHandle is the CCR handle of the original tool catalog, set only
-	// when the tool-schema annotation strip actually rewrote it.
+	// when the tool-schema annotation strip actually rewrote it. stripFrozen
+	// says the session's harm tripwire froze a strip that would have run.
 	toolSchemaHandle := ""
+	stripFrozen := false
 	// breakpointPlanned records that the cache-breakpoint planner placed provider
 	// cache metadata on this request. The session ledger needs it to know which
 	// levers were active when it later evaluates the harm tripwire.
@@ -218,6 +220,10 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		// response/telemetry. Record behavior may still simulate an estimate on copies.
 		effectiveRuntimeMode = "record"
 	}
+	// The cache tripwire holds this request only to prefixes accepted before
+	// its forwarding was decided: one still in flight then (a fork's raw retry,
+	// say) may not have been cached, or pinned, yet.
+	sentSeq := s.prefixSeq.Add(1)
 	switch effectiveRuntimeMode {
 	case "record":
 		// always a pure pass-through. When observe-estimate is on, measure — on
@@ -308,8 +314,10 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		// the bytes actually going upstream, and it is skipped under a compiled
 		// Cave Build, whose transform set is locked to what evals approved. No
 		// epoch gate: a pure function of the catalog must not flip per request.
-		if len(lockedRoutes) == 0 && s.toolSchemaStripAllowed(adapter, body, evidence.SessionID) {
-			if stripped, handle, ok := s.stripToolSchema(transform.Body, meta, requestID); ok {
+		if len(lockedRoutes) == 0 && s.toolSchemaStripApplies(adapter, body) {
+			if !s.ledger.LeverAllowed(evidence.SessionID, leverToolSchemaStrip) {
+				stripFrozen = true // the harm tripwire's deliberate rollover (see stripToolSchema)
+			} else if stripped, handle, ok := s.stripToolSchema(transform.Body, meta, requestID); ok {
 				transform.Body = stripped
 				transform.OptimizerIDs = append(transform.OptimizerIDs, toolSchemaStripOptimizerID)
 				toolSchemaHandle = handle
@@ -493,7 +501,9 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		estimateWG.Add(1)
 		go func(meta providers.RequestMetadata, accepted []byte, rawRetried bool, sessionID string) {
 			defer estimateWG.Done()
-			cacheBustCause = s.observeCachedPrefix(adapter, meta, body, accepted, rawRetried, sessionID, requestID)
+			cacheBustCause = s.observeCachedPrefix(adapter, meta, body, accepted, acceptance{
+				rawRetry: rawRetried, stripFrozen: stripFrozen, sent: sentSeq, session: sessionID, requestID: requestID,
+			})
 		}(meta, transform.Body, rawRetried, evidence.SessionID)
 	}
 	var retrieveCalls []providers.UsageObservation

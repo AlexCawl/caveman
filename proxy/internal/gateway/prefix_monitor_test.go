@@ -404,3 +404,40 @@ func TestTripwireFollowsThePinAcrossSessions(t *testing.T) {
 	h.compressedSomething()
 	h.assert()
 }
+
+// TestTripwireLeverFreezeIsNotCavemansBust: the harm tripwire freezing the
+// tool-schema strip for a session is a deliberate one-time rollover of the
+// catalog (see stripToolSchema). The cache tripwire must not count it as a
+// caveman bug: it is not one, and status would raise it as one.
+func TestTripwireLeverFreezeIsNotCavemansBust(t *testing.T) {
+	marked := func(live string) string {
+		return `{"model":"claude-sonnet-4-6","max_tokens":1024,` +
+			`"system":[{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],` +
+			`"tools":` + toolCatalog + `,` +
+			`"messages":[{"role":"user","content":[{"type":"text","text":"` + live + `","cache_control":{"type":"ephemeral"}}]}]}`
+	}
+	responses := []string{
+		planRespBody(1_000),
+		planRespBody(10 * tripwireCacheCreationFloorTokens),
+		planRespBody(10 * tripwireCacheCreationFloorTokens),
+		planRespBody(10 * tripwireCacheCreationFloorTokens),
+		planRespBody(1_000),
+	}
+	rt := &captureTransport{responses: responses}
+	srv, sink := newToolSchemaStripServer(t, &toolSchemaStripCompressor{}, rt, Config{RecoveryViaMCP: true, ToolSchemaStrip: toolSchemaStripMode})
+	headers := withHeaders(subscriptionAgentHeaders, "x-cave-session", "sess-harm")
+	var last string
+	for range responses {
+		last = serveBody(t, srv, "/v1/messages", marked("same turn"), headers).Header().Get("x-caveman-tripwire")
+	}
+	if last != toolSchemaStripOptimizerID+"=frozen" || strings.Contains(string(rt.bodies[len(rt.bodies)-1]), strippedToolCatalog(t)) {
+		t.Fatalf("test setup: want the strip frozen and the last request on the original catalog (tripwire %q)", last)
+	}
+	row := sink.last(t)
+	if row.CacheBustCause == bustCauseCaveman {
+		t.Fatal("the harm tripwire's deliberate rollover was counted as caveman's bust")
+	}
+	if row.CacheBustCause != bustCauseLeverFreeze {
+		t.Fatalf("the rollover must be recorded as %q, got %q", bustCauseLeverFreeze, row.CacheBustCause)
+	}
+}

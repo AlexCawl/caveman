@@ -351,8 +351,10 @@ type Server struct {
 	cacheGuard *cacheguard.Guard
 	// prefixMonitor is the observe-only cache tripwire (see prefix_monitor.go). It
 	// flags cache_bust when a request does not extend what its session cached,
-	// and says whether the client or caveman changed the bytes.
+	// and says whether the client or caveman changed the bytes. prefixSeq orders
+	// sends and acceptances for it.
 	prefixMonitor *prefixMonitor
+	prefixSeq     atomic.Uint64
 	// recoveryViaMCP records that the wrapped agent fulfills caveman_retrieve itself
 	// (via the caveman MCP server, sharing the CCR store) — set by `caveman wrap`
 	// when it installed that tool. When true, compress mode reshapes streaming and

@@ -136,16 +136,21 @@ func rawAnchor(xs []exchange, views []prefixView, k int) bool {
 
 // followsRawLineage reports whether R (j) is held to the raw form: the longest
 // raw anchor it extends is at least as long as the longest prefix it extends
-// that went out replaced.
+// that went out replaced. A request in flight with R counts only as far as R
+// followed it: the provider may have accepted it before or after R's bytes
+// were decided, and either is right.
 func followsRawLineage(xs []exchange, views []prefixView, j int) bool {
 	rawLen, repLen := 0, 0
-	for k := 0; k < j; k++ {
-		if sameGroup(xs, k, j) || views[k].cached < conversationComponents || !extendsRange(views[j].client, views[k].client, views[k].cached) {
+	for k := range xs {
+		concurrent := sameGroup(xs, k, j)
+		if k == j || (k > j && !concurrent) || views[k].cached < conversationComponents || !extendsRange(views[j].client, views[k].client, views[k].cached) {
 			continue
 		}
-		if xs[k].rawRetry {
+		followed := extendsRange(views[j].forwarded, views[k].forwarded, views[k].cached)
+		switch {
+		case xs[k].rawRetry && (!concurrent || followed):
 			rawLen = max(rawLen, views[k].cached)
-		} else if replacedForm(views[k]) {
+		case !xs[k].rawRetry && replacedForm(views[k]) && (!concurrent || followed):
 			repLen = max(repLen, views[k].cached)
 		}
 	}
@@ -153,7 +158,8 @@ func followsRawLineage(xs []exchange, views []prefixView, j int) bool {
 }
 
 // inRawLineage reports whether P (i) went out in the raw form of a range a raw
-// retry split: it is a raw retry, or it went out raw extending a raw anchor.
+// retry split: it is a raw retry, or it went out raw extending a raw anchor
+// (one in flight with it only if it followed it, as in followsRawLineage).
 func inRawLineage(xs []exchange, views []prefixView, i int) bool {
 	if xs[i].rawRetry {
 		return true
@@ -161,8 +167,12 @@ func inRawLineage(xs []exchange, views []prefixView, i int) bool {
 	if replacedForm(views[i]) {
 		return false
 	}
-	for k := 0; k < i; k++ {
-		if rawAnchor(xs, views, k) && !sameGroup(xs, k, i) && extendsRange(views[i].client, views[k].client, views[k].cached) {
+	for k := range xs {
+		concurrent := sameGroup(xs, k, i)
+		if k == i || (k > i && !concurrent) || !rawAnchor(xs, views, k) || !extendsRange(views[i].client, views[k].client, views[k].cached) {
+			continue
+		}
+		if !concurrent || extendsRange(views[i].forwarded, views[k].forwarded, views[k].cached) {
 			return true
 		}
 	}
@@ -316,11 +326,30 @@ type invariantTransport struct {
 	mu       sync.Mutex
 	attempts map[int][]upstreamAttempt
 	respond  map[int]respondFunc
+	holds    map[int]*upstreamHold
+}
+
+// upstreamHold parks a request's first upstream attempt: entered closes when
+// it reaches the provider, and the provider answers once release is closed.
+type upstreamHold struct {
+	entered, release chan struct{}
+}
+
+func newUpstreamHold() *upstreamHold {
+	return &upstreamHold{entered: make(chan struct{}), release: make(chan struct{})}
 }
 
 func (t *invariantTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	body, _ := io.ReadAll(r.Body)
 	tag, _ := r.Context().Value(invariantTagKey{}).(int)
+	t.mu.Lock()
+	hold := t.holds[tag]
+	delete(t.holds, tag)
+	t.mu.Unlock()
+	if hold != nil {
+		close(hold.entered)
+		<-hold.release
+	}
 	t.mu.Lock()
 	attempt := len(t.attempts[tag])
 	status, header := http.StatusOK, http.Header{}
@@ -361,7 +390,7 @@ func newInvariantHarness(t testing.TB) *invariantHarness {
 		t:     t,
 		comp:  &invariantCompressor{},
 		cache: newTestPrefixCache(),
-		rt:    &invariantTransport{attempts: map[int][]upstreamAttempt{}, respond: map[int]respondFunc{}},
+		rt:    &invariantTransport{attempts: map[int][]upstreamAttempt{}, respond: map[int]respondFunc{}, holds: map[int]*upstreamHold{}},
 		sink:  &captureSink{},
 	}
 	h.restart("")
@@ -394,6 +423,7 @@ func (h *invariantHarness) restart(nonce string) {
 type sendOpts struct {
 	respond respondFunc
 	group   int
+	hold    *upstreamHold
 }
 
 // send serves one client request and records it if the provider accepted it.
@@ -407,11 +437,14 @@ func (h *invariantHarness) sendBody(body []byte, session string, o sendOpts) (in
 	tag := h.tag
 	srv := h.srv
 	h.mu.Unlock()
+	h.rt.mu.Lock()
 	if o.respond != nil {
-		h.rt.mu.Lock()
 		h.rt.respond[tag] = o.respond
-		h.rt.mu.Unlock()
 	}
+	if o.hold != nil {
+		h.rt.holds[tag] = o.hold
+	}
+	h.rt.mu.Unlock()
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	req = req.WithContext(context.WithValue(req.Context(), invariantTagKey{}, tag))
 	for k, v := range subscriptionAgentHeaders {
@@ -684,6 +717,29 @@ func TestCachePrefixInvariant(t *testing.T) {
 				wg.Wait()
 			}
 			h.send(main.user(filler("after the race")), sendOpts{})
+		}},
+		{"raw retry while a fork of the same turn is in flight", func(t *testing.T, h *invariantHarness) {
+			main := newCCConversation("You are Claude Code.", session)
+			h.send(main.user(filler("f1")), sendOpts{})
+			h.send(main.toolResult(filler("f2")), sendOpts{})
+			main.toolResult(filler("f3"))
+			fork := main.clone().user(filler("suggest the next prompt"))
+			// The fork reaches the provider compressed, then main's turn is
+			// rejected transformed and accepted raw, and only then is the fork
+			// answered: the fork was sent before the raw retry existed.
+			hold := newUpstreamHold()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				h.send(fork, sendOpts{group: 1, hold: hold})
+			}()
+			<-hold.entered
+			if _, attempts := h.send(main, sendOpts{group: 1, respond: rejectTransformed(http.StatusBadRequest, nil)}); len(attempts) != 2 {
+				t.Fatalf("test setup: main's turn should have taken the raw retry, attempts=%d", len(attempts))
+			}
+			close(hold.release)
+			<-done
+			h.send(main.user(filler("f4")), sendOpts{})
 		}},
 		{"subagents with identical first messages", func(t *testing.T, h *invariantHarness) {
 			task := filler("explore the repository and report")
@@ -1378,5 +1434,34 @@ func TestLateSpliceFailureKeepsSubstitutions(t *testing.T) {
 		if i > 0 && !strings.Contains(body, y) {
 			t.Fatalf("request %d did not keep y raw as it first went out:\n%s", i+1, body)
 		}
+	}
+}
+
+// TestCachePrefixInvariantRawRetryRacingAFork races a turn that takes the raw
+// retry against a fork of it, with no ordering imposed: the fork may be
+// decided before the pin, between the pin and the tripwire seeing the retry,
+// or after both. Each order is legitimate, and neither the invariant nor the
+// tripwire may call any of them caveman's bust.
+func TestCachePrefixInvariantRawRetryRacingAFork(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		h := newInvariantHarness(t)
+		main := newCCConversation("You are Claude Code.", "sess-race")
+		h.send(main.user(filler("r1")), sendOpts{})
+		h.send(main.toolResult(filler("r2")), sendOpts{})
+		main.toolResult(filler("r3 " + strconv.Itoa(round)))
+		fork := main.clone().user(filler("suggest the next prompt"))
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			h.send(main, sendOpts{group: 1, respond: rejectTransformed(http.StatusBadRequest, nil)})
+		}()
+		go func() {
+			defer wg.Done()
+			h.send(fork, sendOpts{group: 1})
+		}()
+		wg.Wait()
+		h.send(main.user(filler("r4")), sendOpts{})
+		h.assert()
 	}
 }

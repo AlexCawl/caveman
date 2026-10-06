@@ -21,6 +21,9 @@ import (
 //     Flagged on the row and logged at DEBUG; nearly every old warning was one.
 //   - caveman: the client's bytes are unchanged and the forwarded bytes are not.
 //     That is a caveman bug: logged at ERROR, counted by stats and status.
+//   - lever_freeze: the session's harm tripwire froze the tool-schema strip, and
+//     the request after it goes out with the original catalog: a deliberate,
+//     one-time rollover (see stripToolSchema), logged at WARN.
 //   - raw_retry: the provider rejected the transformed request and accepted the
 //     original bytes, the invariant's one exception. Requests extending it are
 //     held to the raw request: the raw pin that records it (raw_pin.go) exempts
@@ -44,16 +47,19 @@ type prefixMonitor struct {
 }
 
 // prefixAnchor is one accepted request's cached prefix as component digests.
-// raw marks a request that went out raw because of a raw retry or a pin.
+// raw marks a request that went out raw because of a raw retry or a pin, and
+// seq orders its acceptance against later sends (Server.prefixSeq).
 type prefixAnchor struct {
 	client, forwarded [][32]byte
 	raw               bool
+	seq               uint64
 }
 
 const (
-	bustCauseClient   = "client"
-	bustCauseCaveman  = "caveman"
-	bustCauseRawRetry = "raw_retry"
+	bustCauseClient      = "client"
+	bustCauseCaveman     = "caveman"
+	bustCauseRawRetry    = "raw_retry"
+	bustCauseLeverFreeze = "lever_freeze"
 )
 
 // defaultPrefixMonitorCap bounds retained sessions. An evicted session's next
@@ -94,6 +100,14 @@ type observation struct {
 	// replaced past its longest raw anchor: such a request follows that lineage,
 	// not the shorter raw one (raw_pin.go).
 	pinned, followed int
+	// rollover is how many leading components a deliberate rollover may have
+	// changed: the agent-wide ones when the harm tripwire froze the
+	// tool-schema strip this request would have taken, 0 otherwise.
+	rollover int
+	// sent and accepted order the request: only anchors accepted before its
+	// forwarding was decided bind it, since one still in flight then may not
+	// have been cached yet.
+	sent, accepted uint64
 }
 
 // observe checks one accepted request against the anchors of its session and
@@ -113,7 +127,7 @@ func (m *prefixMonitor) observe(session string, o observation) (cause string, in
 	if m == nil || session == "" || len(client) == 0 || len(forwarded) != len(client) || cached < 0 || cached > len(client) {
 		return "", -1
 	}
-	cur := prefixAnchor{client: digestEach(client), forwarded: digestEach(forwarded), raw: rawRetry || pinned > 0}
+	cur := prefixAnchor{client: digestEach(client), forwarded: digestEach(forwarded), raw: rawRetry || pinned > 0, seq: o.accepted}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	anchors := m.last[session]
@@ -121,6 +135,10 @@ func (m *prefixMonitor) observe(session string, o observation) (cause string, in
 	closest, closestRepeated := -1, false
 	var kept []prefixAnchor
 	for _, a := range anchors {
+		if a.seq > o.sent && o.sent > 0 {
+			kept = append(kept, a) // accepted while this request was in flight
+			continue
+		}
 		n := commonPrefixLen(a.client, cur.client)
 		repeats := n == len(a.client)
 		if n > closest || (n == closest && repeats && !closestRepeated) {
@@ -134,8 +152,11 @@ func (m *prefixMonitor) observe(session string, o observation) (cause string, in
 		diverged := preserved < len(a.forwarded) && (rawRetry || pinned < len(a.forwarded)) && !(a.raw && o.followed > len(a.client))
 		if diverged && (index < 0 || preserved < index) {
 			cause, index = bustCauseCaveman, preserved
-			if rawRetry {
+			switch {
+			case rawRetry:
 				cause = bustCauseRawRetry
+			case preserved < o.rollover:
+				cause = bustCauseLeverFreeze
 			}
 		}
 		// The request takes over an anchor it repeats when it caches at least as
@@ -184,12 +205,27 @@ func (m *prefixMonitor) longestRawAnchor(session string, client [][]byte) int {
 	return n
 }
 
+// acceptance is what the request path knows about an accepted request that
+// the tripwire needs.
+type acceptance struct {
+	// rawRetry: the provider accepted only the client's original bytes.
+	rawRetry bool
+	// stripFrozen: the harm tripwire froze a tool-schema strip that would
+	// otherwise have run on this request.
+	stripFrozen bool
+	// sent is the Server.prefixSeq value taken before the request's forwarding
+	// was decided.
+	sent               uint64
+	session, requestID string
+}
+
 // observeCachedPrefix runs once per accepted request — body as the client sent
 // it, accepted as it went upstream. It records the request's lineage when its
 // cached prefix went out replaced (raw_pin.go), then runs the tripwire, logs
 // what it found and returns the cause. A provider caches per model, so the
 // model is part of the tripwire's key.
-func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.RequestMetadata, body, accepted []byte, rawRetry bool, sessionID, requestID string) string {
+func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.RequestMetadata, body, accepted []byte, a acceptance) string {
+	rawRetry, sessionID, requestID := a.rawRetry, a.session, a.requestID
 	sent := bytes.Equal(accepted, body)
 	if sent && sessionID == "" {
 		return "" // raw bytes record no lineage, and the tripwire needs a session
@@ -199,7 +235,10 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 		return ""
 	}
 	key := sessionID + "\x00" + meta.Model
-	o := observation{client: client, forwarded: client, cached: cached, rawRetry: rawRetry}
+	o := observation{client: client, forwarded: client, cached: cached, rawRetry: rawRetry, sent: a.sent, accepted: s.prefixSeq.Add(1)}
+	if a.stripFrozen {
+		o.rollover = sharedComponents(adapter)
+	}
 	if sent {
 		// Only a request that went out as sent can be one held to a raw pin.
 		o.pinned = s.rawPinCoverage(adapter, newPrefixDigests(client))
@@ -230,6 +269,8 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 			s.logger.Error("caveman changed bytes the provider already cached", attrs...)
 		case bustCauseRawRetry:
 			s.logger.Warn("provider accepted only the original bytes; its cached prefix restarts here", attrs...)
+		case bustCauseLeverFreeze:
+			s.logger.Warn("the harm tripwire froze the tool-schema strip; the cached prefix restarts here", attrs...)
 		case bustCauseClient:
 			s.logger.Debug("client changed bytes the provider already cached", attrs...)
 		}

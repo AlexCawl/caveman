@@ -44,13 +44,16 @@ const toolSchemaStripVersion = "v1"
 // this strip ran loses the strip for the rest of that session, and falls open to
 // forwarding the catalog unchanged.
 func (s *Server) toolSchemaStripAllowed(adapter providers.Adapter, body []byte, sessionID string) bool {
+	return s.toolSchemaStripApplies(adapter, body) && s.ledger.LeverAllowed(sessionID, leverToolSchemaStrip)
+}
+
+// toolSchemaStripApplies is toolSchemaStripAllowed without the ledger: the
+// strip would run here if the session's harm tripwire had not frozen it.
+func (s *Server) toolSchemaStripApplies(adapter providers.Adapter, body []byte) bool {
 	if s.toolSchemaStrip != toolSchemaStripMode || s.compressor == nil {
 		return false
 	}
 	if _, ok := s.compressor.(ToolSchemaStripper); !ok {
-		return false
-	}
-	if !s.ledger.LeverAllowed(sessionID, leverToolSchemaStrip) {
 		return false
 	}
 	return s.liveZoneCompressionAllowed(adapter, body)
