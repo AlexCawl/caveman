@@ -40,7 +40,20 @@
     if (textarea) send.dataset.composerSubmit = "";
     else send.dataset.testid = "send-button";
   }
-  form.append(editor, send);
+  if (location.search.includes("detached")) {
+    // Editor nested inside its form, send control in a sibling toolbar outside
+    // it: the layout where stopping the search at the form left Enter inert.
+    let wrap = editor;
+    for (let i = 0; i < 3; i++) { const d = document.createElement("div"); d.append(wrap); wrap = d; }
+    const shell = document.createElement("div");
+    const toolbar = document.createElement("div");
+    form.replaceWith(shell);
+    form.append(wrap);
+    toolbar.append(send);
+    shell.append(form, toolbar);
+  } else {
+    form.append(editor, send);
+  }
   const store = { enabled: true, level: "caveman", sites: {} };
   const listeners = [];
   window.chrome = {
