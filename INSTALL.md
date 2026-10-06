@@ -69,7 +69,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Droid (Factory)** | `npx skills add JuliusBrussee/caveman -a droid -g` | No |
 | **ForgeCode** | `npx skills add JuliusBrussee/caveman -a forgecode -g` | No |
 | **Block Goose** | `npx skills add JuliusBrussee/caveman -a goose -g` | No |
-| **Grok Build** | `npx -y github:JuliusBrussee/caveman -- --only grok` | Yes (`~/.grok/AGENTS.md` block) |
+| **Grok Build** | `npx -y github:JuliusBrussee/caveman -- --only grok` | Yes, per xAI docs (`~/.grok/AGENTS.md` block; not yet tested live) |
 | **iFlow CLI** | `npx -y github:JuliusBrussee/caveman -- --only iflow` | No |
 | **Kiro (IDE + CLI)** | `npx skills add JuliusBrussee/caveman -a kiro-cli -g` | No ([always-on steering](#kiro-ide-and-cli)) |
 | **Mistral Vibe** | `npx skills add JuliusBrussee/caveman -a mistral-vibe -g` | No |
@@ -108,7 +108,7 @@ Scripted Claude Code runs (`claude -p` and the Agent SDK) start with caveman off
 - **opencode**: subagents get the always-on caveman rules from `AGENTS.md` (checked on opencode 2.0.22). Those rules are fixed text, so "stop caveman" does not switch them off for subagents.
 - **Hermes Agent**: not verified. If a delegated task comes back wordy, ask for the caveman skill in that task.
 
-Continue needs physical skill directories because its current loader skips per-skill symlinks. The unified installer copies into `CONTINUE_GLOBAL_DIR/skills` (default `~/.continue/skills`) and follows AiderDesk's `AIDER_DESK_HOME_DIR` / `AIDER_DESK_DIR` overrides. It also honors `IFLOW_HOME`, Crush's exact `CRUSH_SKILLS_DIR`, and `GROK_HOME` (Grok Build reads `GROK_HOME/skills`, default `~/.grok/skills`). For Grok Build it also adds a marker-fenced caveman ruleset block to `GROK_HOME/AGENTS.md`, the global rules file Grok loads every session; your own text in that file stays. Use the same environment when uninstalling — for a relative override, that means the same working directory too, since the path resolves against `cwd`. Existing unowned skill directories or symlinks produce a conflict rather than being silently replaced. See the [vendor discovery matrix](docs/technical/installer-provider-discovery.md) for sources and product limits.
+Continue needs physical skill directories because its current loader skips per-skill symlinks. The unified installer copies into `CONTINUE_GLOBAL_DIR/skills` (default `~/.continue/skills`) and follows AiderDesk's `AIDER_DESK_HOME_DIR` / `AIDER_DESK_DIR` overrides. It also honors `IFLOW_HOME`, Crush's exact `CRUSH_SKILLS_DIR`, and `GROK_HOME` (Grok Build reads `GROK_HOME/skills`, default `~/.grok/skills`). For Grok Build it also adds a marker-fenced caveman ruleset block to `GROK_HOME/AGENTS.md`, the global rules file Grok loads every session according to xAI's docs (we have not tested this against a real Grok binary yet); your own text in that file stays. Use the same environment when uninstalling — for a relative override, that means the same working directory too, since the path resolves against `cwd`. Existing unowned skill directories or symlinks produce a conflict rather than being silently replaced. See the [vendor discovery matrix](docs/technical/installer-provider-discovery.md) for sources and product limits.
 
 Antigravity IDE reads `~/.gemini/antigravity/skills`; Antigravity 2.0 reads `~/.gemini/config/skills`. Select the matching product. Each command copies only into that product's directory.
 
