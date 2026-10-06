@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -103,9 +104,11 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 			// untouched — including Pi's or Codex's original zstd frame.
 			transform.Body = originalBody
 
-			logicalBody, requestEncoding, decodable := decodeChatGPTRequestBody(originalBody, r.Header.Get("Content-Encoding"))
+			logicalBody, requestEncoding, decodeErr := decodeChatGPTRequestBody(originalBody, r.Header.Get("Content-Encoding"))
 			switch {
-			case !decodable:
+			case errors.Is(decodeErr, errChatGPTBodyOverLimit):
+				skipReason = "body_over_limit"
+			case decodeErr != nil:
 				skipReason = "content_encoding_unsupported"
 			case !s.mcpRecoveryAvailable(logicalBody):
 				skipReason = "recovery_unproven"
@@ -338,7 +341,7 @@ func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, tr
 	}
 	var originalLogicalBody []byte
 	if requestHashComplete && reqCapture != nil && !reqCapture.truncated {
-		if decoded, _, ok := decodeChatGPTRequestBody(reqCapture.buf.Bytes(), r.Header.Get("Content-Encoding")); ok {
+		if decoded, _, err := decodeChatGPTRequestBody(reqCapture.buf.Bytes(), r.Header.Get("Content-Encoding")); err == nil {
 			originalLogicalBody = decoded
 		}
 	}
@@ -428,7 +431,7 @@ func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, tr
 	var acceptedLogicalBody []byte
 	if acceptedBody == nil {
 		acceptedLogicalBody = originalLogicalBody
-	} else if decoded, _, ok := decodeChatGPTRequestBody(acceptedBody, r.Header.Get("Content-Encoding")); ok {
+	} else if decoded, _, err := decodeChatGPTRequestBody(acceptedBody, r.Header.Get("Content-Encoding")); err == nil {
 		acceptedLogicalBody = decoded
 	}
 	requestAccounting(&row, meta, usage, originalLogicalBody, acceptedLogicalBody, false)
@@ -462,8 +465,8 @@ func chatGPTRequestWantsStream(wire []byte, contentEncoding string, truncated, c
 	if truncated || !complete {
 		return false
 	}
-	decoded, _, ok := decodeChatGPTRequestBody(wire, contentEncoding)
-	if !ok {
+	decoded, _, err := decodeChatGPTRequestBody(wire, contentEncoding)
+	if err != nil {
 		return false
 	}
 	var request struct {

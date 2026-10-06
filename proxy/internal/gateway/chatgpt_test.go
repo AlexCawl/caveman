@@ -134,9 +134,9 @@ func TestPiChatGPTOAuthZstdRoutesAndCompresses(t *testing.T) {
 	if got := rt.headers[0].Get("x-cave-agent"); got != "" {
 		t.Fatalf("proxy-private agent header reached upstream: %q", got)
 	}
-	decoded, encoding, ok := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"))
-	if !ok || encoding != chatGPTRequestZstd {
-		t.Fatalf("transformed upstream body is not valid zstd: encoding=%q ok=%v", encoding, ok)
+	decoded, encoding, decodeErr := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"))
+	if decodeErr != nil || encoding != chatGPTRequestZstd {
+		t.Fatalf("transformed upstream body is not valid zstd: encoding=%q err=%v", encoding, decodeErr)
 	}
 	if bytes.Contains(decoded, []byte(live)) || !bytes.Contains(decoded, []byte("<<ccr:")) {
 		t.Fatalf("decoded upstream body was not Caveman-compressed: %s", decoded)
@@ -1162,8 +1162,8 @@ func TestChatGPTInBodyRecoveryToolOpensCompression(t *testing.T) {
 			if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
 				t.Fatalf("status/calls = %d/%d", rec.Code, len(rt.bodies))
 			}
-			upstream, _, ok := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"))
-			if !ok || bytes.Contains(upstream, []byte(live)) || !bytes.Contains(upstream, []byte("<<ccr:")) {
+			upstream, _, decodeErr := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"))
+			if decodeErr != nil || bytes.Contains(upstream, []byte(live)) || !bytes.Contains(upstream, []byte("<<ccr:")) {
 				t.Fatalf("in-body recovery tool did not open compression: %s", upstream)
 			}
 			row := sink.last(t)
@@ -1214,7 +1214,18 @@ func TestChatGPTUnprovenRecoveryToolsStayExact(t *testing.T) {
 // means the request reached compressRequest, the generic route's denominator.
 func TestChatGPTSkippedStampedRequestIsNotEligible(t *testing.T) {
 	compressible := `{"model":"gpt-5.5","input":"` + strings.Repeat("codex desktop tool output ", 40) + `"}`
+	// Decodes past the 4 MiB logical cap an identity body on this route gets,
+	// while the zstd frame itself stays far under the wire cap.
 	bigLogical := []byte(`{"model":"gpt-5.5","input":"` + strings.Repeat("a", chatGPTCaptureLimit) + `"}`)
+	bigZstd, ok := encodeChatGPTRequestBody(bigLogical, chatGPTRequestZstd)
+	if !ok || len(bigZstd) > chatGPTCaptureLimit {
+		t.Fatalf("zstd fixture: ok=%v len=%d", ok, len(bigZstd))
+	}
+	// Past the decoder's memory ceiling, which DecodeAll refuses with its own error.
+	hugeZstd, ok := encodeChatGPTRequestBody(bytes.Repeat([]byte("a"), chatGPTCaptureLimit*8+1), chatGPTRequestZstd)
+	if !ok || len(hugeZstd) > chatGPTCaptureLimit {
+		t.Fatalf("zstd fixture: ok=%v len=%d", ok, len(hugeZstd))
+	}
 	for _, tt := range []struct {
 		name     string
 		wire     []byte
@@ -1224,6 +1235,8 @@ func TestChatGPTSkippedStampedRequestIsNotEligible(t *testing.T) {
 	}{
 		{name: "undecodable zstd", wire: []byte("not a zstd frame"), encoding: "zstd", reason: "content_encoding_unsupported"},
 		{name: "gzip forwards as sent", wire: []byte("\x1f\x8bgzip bytes"), encoding: "gzip", reason: "content_encoding_unsupported"},
+		{name: "zstd decodes past the cap", wire: bigZstd, encoding: "zstd", reason: "body_over_limit"},
+		{name: "zstd past the decoder ceiling", wire: hugeZstd, encoding: "zstd", reason: "body_over_limit"},
 		{name: "identity over the wire cap", wire: bigLogical, reason: "body_over_limit"},
 		{name: "cache epoch without digest", wire: []byte(compressible), headers: map[string]string{"x-cave-cache-epoch": "epoch-without-digest"}, reason: "cache_epoch_diverged"},
 	} {

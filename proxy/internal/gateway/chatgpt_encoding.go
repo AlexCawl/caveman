@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
@@ -13,10 +14,18 @@ const (
 	chatGPTRequestZstd     chatGPTRequestEncoding = "zstd"
 )
 
-func decodeChatGPTRequestBody(wire []byte, contentEncoding string) ([]byte, chatGPTRequestEncoding, bool) {
+var (
+	// errChatGPTBodyOverLimit: the body decodes past chatGPTCaptureLimit, the
+	// same logical cap an identity body on this route gets. ponytail: one cap
+	// for both; raise them together if large Codex contexts need compressing.
+	errChatGPTBodyOverLimit = errors.New("decoded request body exceeds the capture limit")
+	errChatGPTUndecodable   = errors.New("request content encoding cannot be decoded")
+)
+
+func decodeChatGPTRequestBody(wire []byte, contentEncoding string) ([]byte, chatGPTRequestEncoding, error) {
 	switch encoding := chatGPTRequestEncoding(strings.ToLower(strings.TrimSpace(contentEncoding))); encoding {
 	case chatGPTRequestIdentity, "identity":
-		return wire, chatGPTRequestIdentity, true
+		return wire, chatGPTRequestIdentity, nil
 	case chatGPTRequestZstd:
 		decoder, err := zstd.NewReader(
 			nil,
@@ -25,16 +34,19 @@ func decodeChatGPTRequestBody(wire []byte, contentEncoding string) ([]byte, chat
 			zstd.WithDecoderMaxMemory(uint64(chatGPTCaptureLimit*8)),
 		)
 		if err != nil {
-			return nil, encoding, false
+			return nil, encoding, errChatGPTUndecodable
 		}
 		defer decoder.Close()
 		decoded, err := decoder.DecodeAll(wire, nil)
-		if err != nil || len(decoded) > chatGPTCaptureLimit {
-			return nil, encoding, false
+		switch {
+		case errors.Is(err, zstd.ErrDecoderSizeExceeded) || (err == nil && len(decoded) > chatGPTCaptureLimit):
+			return nil, encoding, errChatGPTBodyOverLimit
+		case err != nil:
+			return nil, encoding, errChatGPTUndecodable
 		}
-		return decoded, encoding, true
+		return decoded, encoding, nil
 	default:
-		return nil, encoding, false
+		return nil, encoding, errChatGPTUndecodable
 	}
 }
 
