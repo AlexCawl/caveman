@@ -15,6 +15,11 @@ This is the source-of-truth generator. It calls a real LLM and produces
 evals/snapshots/results.json. Run it locally when SKILL.md files change.
 The CI-side `measure.py` only reads the snapshot and counts tokens.
 
+Each call runs with `--output-format json`, so next to every text output the
+snapshot keeps the usage Claude Code reports for that call (input, output,
+cache-creation and cache-read tokens, total_cost_usd) under "usage", in the
+same arm/prompt layout as "arms".
+
 Every call is isolated from the machine running it: user settings are not
 loaded (so no installed plugins or their SessionStart hooks), no MCP servers,
 no installed skills, and the cwd is an empty temp dir so no CLAUDE.md is
@@ -85,6 +90,12 @@ SNAPSHOT = EVALS / "snapshots" / (
 
 CALL_TIMEOUT = float(os.environ.get("CAVEMAN_EVAL_TIMEOUT", "300"))
 RETRY_DELAYS = (5, 20)
+USAGE_TOKENS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
 
 
 def claude_bin() -> str:
@@ -94,10 +105,28 @@ def claude_bin() -> str:
     return shutil.which("claude") or "claude"
 
 
-def run_claude(prompt: str, cwd: str, system_file: Path | None = None) -> str:
+def parse_result(cmd: list[str], out: subprocess.CompletedProcess) -> tuple[str, dict]:
+    """Text and usage from one `--output-format json` result. Anything else,
+    including an error result printed on exit 0, counts as a failed call."""
+    try:
+        data = json.loads(out.stdout)
+        if data.get("is_error") or not isinstance(data["result"], str):
+            raise ValueError("error result")
+        usage = {key: data["usage"][key] for key in USAGE_TOKENS}
+        usage["total_cost_usd"] = data["total_cost_usd"]
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        raise subprocess.CalledProcessError(
+            out.returncode, cmd, out.stdout, f"unusable result ({error}): {out.stdout}"
+        ) from error
+    return data["result"].strip(), usage
+
+
+def run_claude(
+    prompt: str, cwd: str, system_file: Path | None = None
+) -> tuple[str, dict]:
     cmd = [claude_bin(), "-p", "--setting-sources", "project",
            "--strict-mcp-config", "--disable-slash-commands",
-           "--no-session-persistence"]
+           "--no-session-persistence", "--output-format", "json"]
     # The skill arm's system prompt is a multi-line SKILL.md with quotes,
     # backticks and `&`. On Windows the CLI is claude.CMD, which cmd.exe
     # re-parses, and that mangles such an argument into an empty prompt
@@ -115,7 +144,7 @@ def run_claude(prompt: str, cwd: str, system_file: Path | None = None) -> str:
                 encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
                 timeout=CALL_TIMEOUT,
             )
-            return out.stdout.strip()
+            return parse_result(cmd, out)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             if delay is None:
                 raise
@@ -172,6 +201,7 @@ def main() -> None:
         },
         "prompts": prompts,
         "arms": {},
+        "usage": {},
     }
 
     # System prompts get their own temp dir so the cwd stays empty.
@@ -194,11 +224,14 @@ def main() -> None:
         # contract rejects, so a partial file can never be reported from.
         for arm, _, _ in plan:
             snapshot["arms"][arm] = [None] * len(prompts)
+            snapshot["usage"][arm] = [None] * len(prompts)
         try:
             for arm, system_file, label in plan:
                 print(label, flush=True)
                 for i, prompt in enumerate(prompts):
-                    snapshot["arms"][arm][i] = run_claude(prompt, cwd, system_file)
+                    text, usage = run_claude(prompt, cwd, system_file)
+                    snapshot["arms"][arm][i] = text
+                    snapshot["usage"][arm][i] = usage
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             # Auth, quota or a bad model would fail every remaining call
             # too, so stop rather than burn through them.

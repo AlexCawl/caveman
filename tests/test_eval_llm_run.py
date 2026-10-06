@@ -31,12 +31,25 @@ def load(name: str, env: dict[str, str] | None = None):
 snapshot_contract = load("snapshot_contract")
 
 
+def usage_for(system: str | None) -> dict:
+    """Deterministic per-arm usage: input grows with the system prompt."""
+    return {
+        "input_tokens": 10,
+        "cache_creation_input_tokens": 1000 + len(system or ""),
+        "cache_read_input_tokens": 0,
+        "output_tokens": 50 - len(system or "") % 7,
+    }
+
+
 class FakeClaude:
     """Stands in for subprocess.run. `fail(cell)` returns True when that
-    call should fail; a cell is (system prompt text or None, prompt)."""
+    call should fail; a cell is (system prompt text or None, prompt).
+    Successful calls answer in `claude -p --output-format json` shape;
+    `is_error(cell)` makes the CLI report an error result instead."""
 
-    def __init__(self, fail=lambda cell, attempt: False):
+    def __init__(self, fail=lambda cell, attempt: False, is_error=lambda cell: False):
         self.fail = fail
+        self.is_error = is_error
         self.calls: list[list[str]] = []
         self.kwargs: list[dict] = []
         self.attempts: dict = {}
@@ -55,7 +68,16 @@ class FakeClaude:
         attempt = self.attempts[cell] = self.attempts.get(cell, 0) + 1
         if self.fail(cell, attempt):
             raise subprocess.CalledProcessError(1, cmd, "", "quota exceeded")
-        return subprocess.CompletedProcess(cmd, 0, f"answer to {cmd[-1]}\n", "")
+        result = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": self.is_error(cell),
+            "result": f"answer to {cmd[-1]}\n",
+            "total_cost_usd": 0.0125,
+            "usage": {**usage_for(system), "service_tier": "standard",
+                      "output_tokens_details": {"thinking_tokens": 3}},
+        }
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(result), "")
 
 
 class LlmRunTests(unittest.TestCase):
@@ -94,6 +116,7 @@ class LlmRunTests(unittest.TestCase):
         self.assertEqual(len(fake.calls), 6)
         for cmd in fake.calls:
             self.assertIn("--no-session-persistence", cmd)
+            self.assertEqual(cmd[cmd.index("--output-format") + 1], "json")
             self.assertNotIn("--system-prompt", cmd)
         self.assertEqual(sum("--system-prompt-file" in c for c in fake.calls), 4)
         self.assertEqual(
@@ -104,6 +127,33 @@ class LlmRunTests(unittest.TestCase):
         )
         self.assertTrue(all(k["timeout"] == llm_run.CALL_TIMEOUT for k in fake.kwargs))
         self.assertFalse(llm_run.SNAPSHOT.with_suffix(".partial.json").exists())
+
+    # Proves Claude's own usage report is stored next to each text output,
+    # in a parallel structure that leaves the arms contract unchanged.
+    def test_usage_is_stored_alongside_text(self) -> None:
+        llm_run = self.run_main(FakeClaude())
+
+        data = json.loads(llm_run.SNAPSHOT.read_text(encoding="utf-8"))
+        snapshot_contract.validate_snapshot(data)
+        self.assertEqual(set(data["usage"]), set(data["arms"]))
+        skill = "Answer concisely.\n\nBe caveman."
+        self.assertEqual(
+            data["usage"]["caveman"][1], {**usage_for(skill), "total_cost_usd": 0.0125}
+        )
+        self.assertEqual(data["usage"]["__baseline__"][0]["cache_creation_input_tokens"], 1000)
+
+    # Proves an error result reported on exit 0 is not stored as an answer.
+    def test_error_result_is_a_failure(self) -> None:
+        fake = FakeClaude(is_error=lambda cell: cell == (None, "q1"))
+        with self.assertRaises(SystemExit):
+            self.run_main(fake)
+
+        data = json.loads(
+            (self.root / "snapshots" / "results.partial.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(data["arms"]["__baseline__"], [None, None])
+        self.assertEqual(data["usage"]["__baseline__"], [None, None])
+        self.assertIn("__baseline__ prompt 0", data["metadata"]["error"])
 
     # Proves one transient failure is retried instead of discarding the run.
     def test_transient_failure_is_retried(self) -> None:

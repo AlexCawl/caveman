@@ -10,6 +10,9 @@ Tokenizer note: tiktoken o200k_base is OpenAI's tokenizer and is only an
 approximation of Claude's BPE. The ratios are still meaningful for
 comparing skills against each other, but the absolute numbers should be
 read as "approximate output-length reduction", not "exact Claude tokens".
+When the snapshot carries the usage Claude Code reported for each call
+(`usage`, written by llm_run.py), a second table gives billed output tokens
+and the input tokens the skill adds, both against the terse control.
 
 Run: uv run --with tiktoken python evals/measure.py [snapshot.json]
 
@@ -130,7 +133,47 @@ def main() -> None:
 
     print()
     print("_Savings = `1 - skill_tokens / terse_tokens` per prompt._")
+    if "usage" in data:
+        print_usage(data["usage"])
     print(f"_Source: {SNAPSHOT.name}. Refresh with `python evals/llm_run.py`._")
+
+
+def billed_input(cell: dict) -> int:
+    return (
+        cell["input_tokens"]
+        + cell["cache_creation_input_tokens"]
+        + cell["cache_read_input_tokens"]
+    )
+
+
+def print_usage(usage: dict) -> None:
+    terse = usage["__terse__"]
+    print()
+    print("**Claude-reported usage (`claude -p --output-format json`), against the terse control:**")
+    print()
+    print("| Skill | Billed output, median | Billed output, mean | Output tokens (skill / terse) | Input added by skill, median |")
+    print("|-------|-----------------------|---------------------|-------------------------------|------------------------------|")
+    rows = []
+    for skill, cells in usage.items():
+        if skill in ("__baseline__", "__terse__"):
+            continue
+        out_s = [c["output_tokens"] for c in cells]
+        out_t = [c["output_tokens"] for c in terse]
+        savings = [1 - (s / t) if t else 0.0 for s, t in zip(out_s, out_t)]
+        added = [billed_input(s) - billed_input(t) for s, t in zip(cells, terse)]
+        rows.append((skill, statistics.median(savings), statistics.mean(savings),
+                     sum(out_s), sum(out_t), statistics.median(added)))
+    for skill, med, mean, st, tt, added in sorted(rows, key=lambda r: -r[1]):
+        print(
+            f"| **{skill}** | {fmt_pct(med)} | {fmt_pct(mean)} | {st} / {tt} | {added:+.0f} |"
+        )
+    print()
+    print(
+        "_Billed output includes any thinking tokens. Input added = per-prompt "
+        "(input + cache-creation + cache-read tokens) of the skill arm minus the "
+        "terse arm; the baseline arm runs Claude Code's default system prompt, "
+        "so its input is not comparable._"
+    )
 
 
 if __name__ == "__main__":

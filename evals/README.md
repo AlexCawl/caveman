@@ -56,12 +56,19 @@ installed could reach every arm. `llm_run.py` now isolates each call
 - `prompts/<lang>.txt` — fixed list of dev questions, one per line.
   `en.txt` is the default; `pt.txt` is Brazilian Portuguese; `fr.txt`
   is French and mirrors `en.txt` line for line.
-- `llm_run.py` — runs `claude -p --system-prompt-file …` per (prompt, arm),
-  captures real LLM output, writes `snapshots/results.json` along with
-  metadata (model, CLI version, language, generation timestamp).
+- `llm_run.py` — runs `claude -p --output-format json --system-prompt-file …`
+  per (prompt, arm), captures real LLM output, writes
+  `snapshots/results.json` along with metadata (model, CLI version,
+  language, generation timestamp). Next to the text it stores the usage
+  Claude Code reports for each call under `usage` (same arm/prompt layout
+  as `arms`): input, output, cache-creation and cache-read tokens plus
+  `total_cost_usd`.
 - `measure.py` — reads the snapshot, counts tokens with tiktoken
   `o200k_base`, prints a markdown table with median / mean / min / max /
-  stdev across prompts.
+  stdev across prompts. When the snapshot has `usage`, a second table
+  gives Claude's own output-token counts against the terse control and
+  the median input tokens the skill adds per call (skill arm minus terse
+  arm, cache tokens included).
 - `snapshot_contract.py` — rejects incomplete or malformed snapshot matrices
   before `measure.py` reports metrics.
 - `snapshots/results.json` — committed source of truth, regenerated only
@@ -125,7 +132,8 @@ uv run --with tiktoken python evals/measure.py
 
 Reporting fails closed unless the snapshot has both control arms, at least one
 skill arm, exactly one string output per prompt in every arm, and metadata whose
-`n_prompts` matches the prompt list.
+`n_prompts` matches the prompt list. A `usage` block, when present, must
+cover the same arms and prompts with non-negative token counts.
 
 ## Adding a prompt
 
@@ -149,13 +157,18 @@ is set, in which case add the new id to that list.
 - **Fidelity** — does the compressed answer preserve the technical
   claims? A skill that replies `k` to everything would score −99% and
   "win". A future v2 could add a judge-model rubric.
-- **Latency or cost** — out of scope. Note that skills add input tokens
+- **Latency or cost** — latency is out of scope. Skills add input tokens
   on every call, so output savings are not the full economic picture.
+  Snapshots with `usage` record that input cost per call; the committed
+  `results.json` predates usage capture, so it has none.
 - **Cross-model behavior** — only the model used to generate the
   snapshot is measured.
-- **Exact Claude tokens** — `tiktoken o200k_base` is OpenAI's BPE and is
-  only an approximation of Claude's tokenizer. Ratios between arms are
-  meaningful; absolute numbers are approximate.
+- **Exact Claude tokens, from the tiktoken table** — `tiktoken
+  o200k_base` is OpenAI's BPE and is only an approximation of Claude's
+  tokenizer. Ratios between arms are meaningful; absolute numbers are
+  approximate. The usage table uses Claude's own counts instead, but
+  Claude's output count includes thinking tokens, which the user never
+  reads.
 - **Statistical significance** — single run per (prompt, arm) at default
   temperature. The min/max/stdev columns let you eyeball whether a
   number is solid or noisy, but this is not a powered experiment.
