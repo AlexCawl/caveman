@@ -134,7 +134,7 @@ func TestPiChatGPTOAuthZstdRoutesAndCompresses(t *testing.T) {
 	if got := rt.headers[0].Get("x-cave-agent"); got != "" {
 		t.Fatalf("proxy-private agent header reached upstream: %q", got)
 	}
-	decoded, encoding, decodeErr := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"))
+	decoded, encoding, decodeErr := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"), chatGPTCaptureLimit)
 	if decodeErr != nil || encoding != chatGPTRequestZstd {
 		t.Fatalf("transformed upstream body is not valid zstd: encoding=%q err=%v", encoding, decodeErr)
 	}
@@ -1162,7 +1162,7 @@ func TestChatGPTInBodyRecoveryToolOpensCompression(t *testing.T) {
 			if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
 				t.Fatalf("status/calls = %d/%d", rec.Code, len(rt.bodies))
 			}
-			upstream, _, decodeErr := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"))
+			upstream, _, decodeErr := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"), chatGPTCaptureLimit)
 			if decodeErr != nil || bytes.Contains(upstream, []byte(live)) || !bytes.Contains(upstream, []byte("<<ccr:")) {
 				t.Fatalf("in-body recovery tool did not open compression: %s", upstream)
 			}
@@ -1214,14 +1214,17 @@ func TestChatGPTUnprovenRecoveryToolsStayExact(t *testing.T) {
 // means the request reached compressRequest, the generic route's denominator.
 func TestChatGPTSkippedStampedRequestIsNotEligible(t *testing.T) {
 	compressible := `{"model":"gpt-5.5","input":"` + strings.Repeat("codex desktop tool output ", 40) + `"}`
-	// Decodes past the 4 MiB logical cap an identity body on this route gets,
-	// while the zstd frame itself stays far under the wire cap.
+	// The route reads and decodes up to CAVE_MAX_REQUEST_BYTES (32 MiB by
+	// default); pin it at 4 MiB so the fixtures stay small.
+	t.Setenv("CAVE_MAX_REQUEST_BYTES", strconv.Itoa(chatGPTCaptureLimit))
+	// Decodes past the logical cap an identity body on this route gets, while
+	// the zstd frame itself stays far under the wire cap.
 	bigLogical := []byte(`{"model":"gpt-5.5","input":"` + strings.Repeat("a", chatGPTCaptureLimit) + `"}`)
 	bigZstd, ok := encodeChatGPTRequestBody(bigLogical, chatGPTRequestZstd)
 	if !ok || len(bigZstd) > chatGPTCaptureLimit {
 		t.Fatalf("zstd fixture: ok=%v len=%d", ok, len(bigZstd))
 	}
-	// Past the decoder's memory ceiling, which DecodeAll refuses with its own error.
+	// Far past the decoder's memory ceiling, which DecodeAll refuses with its own error.
 	hugeZstd, ok := encodeChatGPTRequestBody(bytes.Repeat([]byte("a"), chatGPTCaptureLimit*8+1), chatGPTRequestZstd)
 	if !ok || len(hugeZstd) > chatGPTCaptureLimit {
 		t.Fatalf("zstd fixture: ok=%v len=%d", ok, len(hugeZstd))
@@ -1290,4 +1293,223 @@ func TestChatGPTExplicitIdentityEncodingCompresses(t *testing.T) {
 	if row := sink.last(t); !row.CompressionEligible || row.CompressionTokensBefore <= row.CompressionTokensAfter {
 		t.Fatalf("compression accounting missing: %+v", row)
 	}
+}
+
+func chatGPTCompressServer(transport http.RoundTripper) *Server {
+	return New(Config{
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Sink:            &captureSink{},
+		Compressor:      &liveZoneCompressor{},
+		PrefixCache:     newTestPrefixCache(),
+		RecoveryViaMCP:  true,
+		ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+		HTTPClient:      &http.Client{Transport: transport},
+	})
+}
+
+func chatGPTTurn(texts ...string) string {
+	items := make([]string, 0, len(texts))
+	for _, text := range texts {
+		items = append(items, `{"type":"message","role":"user","content":[{"type":"input_text","text":"`+text+`"}]}`)
+	}
+	return `{"model":"gpt-5.5","input":[` + strings.Join(items, ",") + `]}`
+}
+
+func serveChatGPT(srv *Server, body string, headers ...string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", strings.NewReader(body))
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Set(headers[i], headers[i+1])
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// TestChatGPTRateLimit429IsReturnedNotReplayed: raw bytes cannot beat a rate
+// limit, and replaying them sends the provider a raw prefix in place of the
+// compressed one it cached.
+func TestChatGPTRateLimit429IsReturnedNotReplayed(t *testing.T) {
+	var calls int
+	srv := chatGPTCompressServer(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"30"}},
+			Body: io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)), Request: r}, nil
+	}))
+	rec := serveChatGPT(srv, chatGPTTurn(strings.Repeat("codex tool output ", 40)))
+	if rec.Code != http.StatusTooManyRequests || calls != 1 {
+		t.Fatalf("status/calls = %d/%d, want the rate limit returned after one call", rec.Code, calls)
+	}
+}
+
+// TestChatGPTAcceptedRawRetryPinsTheConversation: once the backend accepted a
+// conversation only as raw bytes, that is what it cached, so the next turn goes
+// out raw instead of re-substituting the replacements.
+func TestChatGPTAcceptedRawRetryPinsTheConversation(t *testing.T) {
+	first, second, third := strings.Repeat("codex first output ", 40), strings.Repeat("codex second output ", 40), strings.Repeat("codex third output ", 40)
+	rt := &captureTransport{statuses: []int{http.StatusOK, http.StatusBadRequest, http.StatusOK, http.StatusOK}}
+	srv := chatGPTCompressServer(rt)
+	serveChatGPT(srv, chatGPTTurn(first))
+	serveChatGPT(srv, chatGPTTurn(first, second))
+	serveChatGPT(srv, chatGPTTurn(first, second, third))
+
+	if len(rt.bodies) != 4 || !bytes.Equal(rt.bodies[2], []byte(chatGPTTurn(first, second))) {
+		t.Fatalf("test setup: want a rejected transformed turn 2 and its accepted raw retry, got %d calls", len(rt.bodies))
+	}
+	if !bytes.Equal(rt.bodies[3], []byte(chatGPTTurn(first, second, third))) {
+		t.Fatalf("the turn after an accepted raw retry must go out raw:\n%s", rt.bodies[3])
+	}
+}
+
+// TestChatGPTEpochVetoKeepsSubstitutions: a declared epoch that drifted may
+// veto new compression only; the replacement an earlier turn was cached with
+// is still re-sent.
+func TestChatGPTEpochVetoKeepsSubstitutions(t *testing.T) {
+	first, second := strings.Repeat("codex first output ", 40), strings.Repeat("codex second output ", 40)
+	rt := &captureTransport{}
+	srv := chatGPTCompressServer(rt)
+	epoch := func(digest string) []string {
+		return []string{"x-cave-cache-epoch", "epoch-1", "x-cave-cache-prefix-sha256", strings.Repeat(digest, 64)}
+	}
+	serveChatGPT(srv, chatGPTTurn(first), epoch("a")...)
+	serveChatGPT(srv, chatGPTTurn(first, second), epoch("b")...)
+
+	if len(rt.bodies) != 2 || strings.Contains(string(rt.bodies[0]), first) {
+		t.Fatal("test setup: want turn 1 compressed")
+	}
+	if strings.Contains(string(rt.bodies[1]), first) {
+		t.Fatalf("an epoch veto dropped turn 1's cached replacement:\n%s", rt.bodies[1])
+	}
+	if !strings.Contains(string(rt.bodies[1]), second) {
+		t.Fatalf("an epoch veto must still stop new compression:\n%s", rt.bodies[1])
+	}
+}
+
+// TestChatGPTTripwireRecordsCavemansBust: the /chatgpt route takes the same
+// compression path as the generic one, so it is held to the same rule on live
+// traffic: a turn that re-sends bytes the backend cached replaced as raw (here
+// the memo row was lost between turns) is caveman's bust, on the row too.
+func TestChatGPTTripwireRecordsCavemansBust(t *testing.T) {
+	first, second := strings.Repeat("codex first output ", 40), strings.Repeat("codex second output ", 40)
+	rt := &captureTransport{}
+	sink := &captureSink{}
+	cache := newTestPrefixCache()
+	srv := New(Config{
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Sink:            sink,
+		Compressor:      &liveZoneCompressor{},
+		PrefixCache:     cache,
+		RecoveryViaMCP:  true,
+		ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+		HTTPClient:      &http.Client{Transport: rt},
+	})
+	serveChatGPT(srv, chatGPTTurn(first), "x-cave-session", "sess-codex")
+	cache.mu.Lock()
+	cache.entries = map[string]testReplacement{}
+	cache.mu.Unlock()
+	serveChatGPT(srv, chatGPTTurn(first, second), "x-cave-session", "sess-codex")
+
+	if len(rt.bodies) != 2 || strings.Contains(string(rt.bodies[0]), first) || !strings.Contains(string(rt.bodies[1]), first) {
+		t.Fatal("test setup: want turn 1 compressed and turn 2 re-sending it raw")
+	}
+	if row := sink.last(t); !row.CacheBust || row.CacheBustCause != bustCauseCaveman {
+		t.Fatalf("the /chatgpt row of a caveman bust: bust=%v cause=%q", row.CacheBust, row.CacheBustCause)
+	}
+}
+
+// TestChatGPTOverCaptureLimitKeepsSubstitutions: a Codex session's body
+// crosses the 4 MiB capture limit as screenshots and reasoning items pile up.
+// That turn still extends the prefix earlier turns cached replaced, so it is
+// still read whole (up to the route's request limit) and substituted.
+func TestChatGPTOverCaptureLimitKeepsSubstitutions(t *testing.T) {
+	first := strings.Repeat("codex first output ", 40)
+	huge := strings.Repeat("x", chatGPTCaptureLimit)
+	rt := &captureTransport{}
+	srv := chatGPTCompressServer(rt)
+	serveChatGPT(srv, chatGPTTurn(first))
+	serveChatGPT(srv, chatGPTTurn(first, huge))
+
+	if len(rt.bodies) != 2 || strings.Contains(string(rt.bodies[0]), first) {
+		t.Fatal("test setup: want turn 1 compressed")
+	}
+	if strings.Contains(string(rt.bodies[1]), first) {
+		t.Fatalf("turn 2 re-sent turn 1's message raw although turn 1 cached it compressed (body %d bytes)", len(rt.bodies[1]))
+	}
+}
+
+// TestChatGPTZstdKeepsTheCacheInvariant: Pi and Codex send zstd bodies, so the
+// raw pin, the tripwire and the request-size limit all work on the decoded
+// request, not on the compressed frame.
+func TestChatGPTZstdKeepsTheCacheInvariant(t *testing.T) {
+	first, second, third := strings.Repeat("codex first output ", 40), strings.Repeat("codex second output ", 40), strings.Repeat("codex third output ", 40)
+	zstdTurn := func(texts ...string) string {
+		wire, ok := encodeChatGPTRequestBody([]byte(chatGPTTurn(texts...)), chatGPTRequestZstd)
+		if !ok {
+			t.Fatal("zstd fixture")
+		}
+		return string(wire)
+	}
+	decoded := func(wire []byte) string {
+		logical, _, err := decodeChatGPTRequestBody(wire, "zstd", 64<<20)
+		if err != nil {
+			t.Fatalf("upstream body is not zstd: %v", err)
+		}
+		return string(logical)
+	}
+
+	t.Run("an accepted raw retry pins the conversation", func(t *testing.T) {
+		rt := &captureTransport{statuses: []int{http.StatusOK, http.StatusBadRequest, http.StatusOK, http.StatusOK}}
+		srv := chatGPTCompressServer(rt)
+		serveChatGPT(srv, zstdTurn(first), "Content-Encoding", "zstd")
+		serveChatGPT(srv, zstdTurn(first, second), "Content-Encoding", "zstd")
+		last := zstdTurn(first, second, third)
+		serveChatGPT(srv, last, "Content-Encoding", "zstd")
+		if len(rt.bodies) != 4 || strings.Contains(decoded(rt.bodies[0]), first) || strings.Contains(decoded(rt.bodies[1]), first) || !bytes.Equal(rt.bodies[2], []byte(zstdTurn(first, second))) {
+			t.Fatalf("test setup: want turn 1 compressed and turn 2 retried raw, got %d calls", len(rt.bodies))
+		}
+		if !bytes.Equal(rt.bodies[3], []byte(last)) {
+			t.Fatalf("the turn after an accepted raw retry must go out as sent:\n%s", decoded(rt.bodies[3]))
+		}
+	})
+
+	t.Run("a body decoding past the capture limit keeps substitutions", func(t *testing.T) {
+		rt := &captureTransport{}
+		srv := chatGPTCompressServer(rt)
+		serveChatGPT(srv, zstdTurn(first), "Content-Encoding", "zstd")
+		serveChatGPT(srv, zstdTurn(first, strings.Repeat("x", chatGPTCaptureLimit)), "Content-Encoding", "zstd")
+		if len(rt.bodies) != 2 || strings.Contains(decoded(rt.bodies[0]), first) {
+			t.Fatal("test setup: want turn 1 compressed")
+		}
+		if strings.Contains(decoded(rt.bodies[1]), first) {
+			t.Fatal("turn 2 re-sent turn 1's message raw although turn 1 cached it compressed")
+		}
+	})
+
+	t.Run("the tripwire compares decoded bytes", func(t *testing.T) {
+		rt := &captureTransport{}
+		sink := &captureSink{}
+		cache := newTestPrefixCache()
+		srv := New(Config{
+			Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+			Sink:            sink,
+			Compressor:      &liveZoneCompressor{},
+			PrefixCache:     cache,
+			RecoveryViaMCP:  true,
+			ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+			HTTPClient:      &http.Client{Transport: rt},
+		})
+		serveChatGPT(srv, zstdTurn(first), "Content-Encoding", "zstd", "x-cave-session", "sess-codex")
+		if row := sink.last(t); row.CacheBust {
+			t.Fatalf("a first turn is no bust: cause=%q", row.CacheBustCause)
+		}
+		cache.mu.Lock()
+		cache.entries = map[string]testReplacement{}
+		cache.mu.Unlock()
+		serveChatGPT(srv, zstdTurn(first, second), "Content-Encoding", "zstd", "x-cave-session", "sess-codex")
+		if len(rt.bodies) != 2 || !strings.Contains(decoded(rt.bodies[1]), first) {
+			t.Fatal("test setup: want turn 2 re-sending turn 1 raw")
+		}
+		if row := sink.last(t); !row.CacheBust || row.CacheBustCause != bustCauseCaveman {
+			t.Fatalf("the /chatgpt row of a caveman bust: bust=%v cause=%q", row.CacheBust, row.CacheBustCause)
+		}
+	})
 }

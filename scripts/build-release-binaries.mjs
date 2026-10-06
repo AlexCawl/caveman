@@ -47,10 +47,15 @@ const ZIG_TARGETS = Object.freeze({
 });
 
 // The go build environment and flags for one release artifact.
-export function releaseGoBuild(name, goos, arch, { zig = "zig", darwinStubs = "" } = {}) {
+export function releaseGoBuild(name, goos, arch, { zig = "zig", darwinStubs = "", version = "" } = {}) {
   const env = { CGO_ENABLED: "0", GOOS: goos, GOARCH: arch };
   const args = ["-trimpath"];
-  if (!CGO_RELEASE_BINARIES.includes(name)) return { env, args };
+  // -X main.version stamps the release tag over main.go's "dev" default.
+  const stamp = version ? [`-X main.version=${version}`] : [];
+  if (!CGO_RELEASE_BINARIES.includes(name)) {
+    if (stamp.length) args.push("-ldflags", stamp.join(" "));
+    return { env, args };
+  }
   env.CGO_ENABLED = "1";
   // Go splits CC on spaces but honors quotes, so a ZIG path with a space works.
   env.CC = `'${zig}' cc -target ${ZIG_TARGETS[`${goos}/${arch}`]}`;
@@ -63,7 +68,7 @@ export function releaseGoBuild(name, goos, arch, { zig = "zig", darwinStubs = ""
   // the pure-Go ones. An externally linked build ID hashes link inputs that vary
   // between machines and Go caches (the stub directory below among them), and
   // -w also keeps Go from merging DWARF with the build machine's own dsymutil.
-  const ldflags = ["-buildid=", "-w"];
+  const ldflags = [...stamp, "-buildid=", "-w"];
   // musl, fully static: one Linux binary for any glibc age and for Alpine.
   if (goos === "linux") ldflags.push("-linkmode external -extldflags '-static -s'");
   // zig's Mach-O UUID hashes the paths and mtimes of the objects in its debug
@@ -196,6 +201,9 @@ function testReleaseShape(out, [goos, arch], options) {
 
 function build({ out, targets, test }) {
   mkdirSync(out, { recursive: true });
+  // The pinned release tag, so a released binary's `version` names its
+  // release instead of the "dev" default in main.go.
+  const version = readFileSync(join(root, "packages", "cli", "BINARY_RELEASE"), "utf8").trim();
   const zig = process.env.ZIG || "zig";
   requireZig(zig);
   const darwinStubs = mkdtempSync(join(tmpdir(), "caveman-darwin-stubs-"));
@@ -205,7 +213,7 @@ function build({ out, targets, test }) {
     for (const [goos, arch] of targets) {
       for (const [name, packagePath] of RELEASE_BINARIES) {
         const artifact = releaseArtifactName(name, goos, arch);
-        const { env, args } = releaseGoBuild(name, goos, arch, { zig, darwinStubs });
+        const { env, args } = releaseGoBuild(name, goos, arch, { zig, darwinStubs, version });
         process.stderr.write(`build ${artifact}${env.CGO_ENABLED === "1" ? " (cgo)" : ""}\n`);
         if (!run("go", ["build", ...args, "-o", join(out, artifact), packagePath], env)) {
           throw new Error(`go build failed for ${artifact}`);

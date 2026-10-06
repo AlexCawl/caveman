@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   CGO_RELEASE_BINARIES,
@@ -95,6 +97,37 @@ test("darwin link stubs name every non-libSystem library the Go toolchain import
   } finally {
     rmSync(goroot, { recursive: true, force: true });
     rmSync(stubs, { recursive: true, force: true });
+  }
+});
+
+// Released binaries reported version "dev": the build passed no -ldflags, so
+// `var version` in main.go kept its default. A stub `go` records each build;
+// a stub `zig` and an empty GOROOT satisfy the cgo build's preflight.
+test("release binaries are stamped with the pinned release tag", { skip: process.platform === "win32" }, () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const dir = mkdtempSync(join(tmpdir(), "release-stamp-"));
+  try {
+    const log = join(dir, "go-args.log");
+    const goroot = join(dir, "goroot");
+    mkdirSync(join(goroot, "src"), { recursive: true });
+    writeFileSync(join(dir, "go"), `#!/bin/sh
+if [ "$1" = "env" ]; then echo "${goroot}"; exit 0; fi
+printf '%s\\n' "$*" >> "${log}"
+while [ $# -gt 0 ]; do if [ "$1" = "-o" ]; then shift; : > "$1"; fi; shift; done
+`, { mode: 0o755 });
+    writeFileSync(join(dir, "zig"), `#!/bin/sh\necho ${RELEASE_ZIG_VERSION}\n`, { mode: 0o755 });
+    const result = spawnSync(process.execPath, ["scripts/build-release-binaries.mjs", "--target", "linux/amd64", "--out", join(dir, "out")], {
+      cwd: root,
+      env: { ...process.env, PATH: `${dir}${delimiter}${process.env.PATH}`, ZIG: join(dir, "zig") },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const tag = readFileSync(join(root, "packages", "cli", "BINARY_RELEASE"), "utf8").trim();
+    const builds = readFileSync(log, "utf8").trim().split("\n");
+    assert.equal(builds.length, 6);
+    for (const args of builds) assert.ok(args.includes(`-ldflags -X main.version=${tag} `), args);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

@@ -15,14 +15,14 @@ const (
 )
 
 var (
-	// errChatGPTBodyOverLimit: the body decodes past chatGPTCaptureLimit, the
-	// same logical cap an identity body on this route gets. ponytail: one cap
-	// for both; raise them together if large Codex contexts need compressing.
-	errChatGPTBodyOverLimit = errors.New("decoded request body exceeds the capture limit")
+	// errChatGPTBodyOverLimit: the body decodes past the caller's limit. The
+	// compress path passes the same CAVE_MAX_REQUEST_BYTES an identity body is
+	// read to; metering passes chatGPTCaptureLimit.
+	errChatGPTBodyOverLimit = errors.New("decoded request body exceeds the limit")
 	errChatGPTUndecodable   = errors.New("request content encoding cannot be decoded")
 )
 
-func decodeChatGPTRequestBody(wire []byte, contentEncoding string) ([]byte, chatGPTRequestEncoding, error) {
+func decodeChatGPTRequestBody(wire []byte, contentEncoding string, limit int) ([]byte, chatGPTRequestEncoding, error) {
 	switch encoding := chatGPTRequestEncoding(strings.ToLower(strings.TrimSpace(contentEncoding))); encoding {
 	case chatGPTRequestIdentity, "identity":
 		return wire, chatGPTRequestIdentity, nil
@@ -31,7 +31,9 @@ func decodeChatGPTRequestBody(wire []byte, contentEncoding string) ([]byte, chat
 			nil,
 			zstd.WithDecoderConcurrency(1),
 			zstd.WithDecoderMaxWindow(uint64(chatGPTCaptureLimit*2)),
-			zstd.WithDecoderMaxMemory(uint64(chatGPTCaptureLimit*8)),
+			// klauspost caps the window at this too; keep it at least the window
+			// cap so a small limit reads as over-limit, not as undecodable.
+			zstd.WithDecoderMaxMemory(uint64(max(limit, chatGPTCaptureLimit*2))),
 		)
 		if err != nil {
 			return nil, encoding, errChatGPTUndecodable
@@ -39,7 +41,7 @@ func decodeChatGPTRequestBody(wire []byte, contentEncoding string) ([]byte, chat
 		defer decoder.Close()
 		decoded, err := decoder.DecodeAll(wire, nil)
 		switch {
-		case errors.Is(err, zstd.ErrDecoderSizeExceeded) || (err == nil && len(decoded) > chatGPTCaptureLimit):
+		case errors.Is(err, zstd.ErrDecoderSizeExceeded) || (err == nil && len(decoded) > limit):
 			return nil, encoding, errChatGPTBodyOverLimit
 		case err != nil:
 			return nil, encoding, errChatGPTUndecodable

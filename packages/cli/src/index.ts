@@ -3913,7 +3913,8 @@ type OffStateID =
   | "download-unreachable"
   | "download-stalled"
   | "unsupported-platform"
-  | "refresh-offline";
+  | "refresh-offline"
+  | "cache-bust";
 
 export type OffState = { id: OffStateID; line: string; fix?: string };
 
@@ -4007,6 +4008,13 @@ export const OFF_STATES = {
   zdr: {
     line: "ZDR org — wrap telemetry excluded by your data policy; local numbers only",
   },
+  // The proxy's cache tripwire: the client re-sent bytes the provider had
+  // cached and caveman forwarded them differently. Never expected; a bug.
+  cavemanCacheBust: (count: number): OffState => ({
+    id: "cache-bust",
+    line: `caveman changed bytes the provider had already cached on ${count} request${count === 1 ? "" : "s"} today — those turns paid to re-cache their prompt; this is a caveman bug`,
+    fix: "report it with ~/.caveman/proxy.log at github.com/JuliusBrussee/caveman/issues",
+  }),
 } as const;
 
 const OFF_STATE_PRECEDENCE: OffStateID[] = [
@@ -4020,6 +4028,7 @@ const OFF_STATE_PRECEDENCE: OffStateID[] = [
   "mem-missing",
   "zdr",
   "stale-binary",
+  "cache-bust",
 ];
 
 function fixedOffState(id: OffStateID, item: { line: string; fix?: string }): OffState {
@@ -4519,6 +4528,8 @@ type ProxyObserveSummary = {
   cache_creation_input_tokens?: number;
   headline_compression_refused?: boolean;
   cache_bust_requests?: number;
+  // The subset of cache_bust_requests caveman caused. Older proxies omit it.
+  caveman_cache_bust_requests?: number;
 };
 
 type EngineSessionMeasurementMode = "observe" | "compress";
@@ -18641,6 +18652,8 @@ async function status(argv: string[]) {
   if (refreshOffline()) states.push(fixedOffState("refresh-offline", OFF_STATES.refreshOffline));
 
   const today = versionInfo ? readProxyObserveSummary(localMidnightRFC3339()) : null;
+  const cavemanBusts = Number(today?.caveman_cache_bust_requests ?? 0);
+  if (Number.isSafeInteger(cavemanBusts) && cavemanBusts > 0) states.push(OFF_STATES.cavemanCacheBust(cavemanBusts));
   const runningMode = runtime.owner !== "unknown" && runtime.mode ? runtime.mode : null;
   const resolvedMode = gate.mode;
   const snapshot = readLearnSnapshot();

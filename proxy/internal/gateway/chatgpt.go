@@ -15,6 +15,7 @@ import (
 
 	"github.com/JuliusBrussee/caveman/proxy/providers"
 	"github.com/JuliusBrussee/caveman/proxy/providers/openai"
+	"github.com/JuliusBrussee/caveman/shared/platform/env"
 	"github.com/JuliusBrussee/caveman/shared/platform/httpx"
 	"github.com/JuliusBrussee/caveman/shared/platform/id"
 )
@@ -24,8 +25,11 @@ import (
 // model_provider with requires_openai_auth=true and base_url .../chatgpt.
 const DefaultChatGPTUpstream = "https://chatgpt.com/backend-api/codex"
 
-// chatGPTCaptureLimit caps request transformation and opportunistic response
-// parsing. Bigger bodies stream through byte-exact and record no invented counts.
+// chatGPTCaptureLimit caps opportunistic request and response parsing for
+// metering. Bigger bodies record no invented counts. A compress-eligible
+// request is read whole up to CAVE_MAX_REQUEST_BYTES instead, like the generic
+// route: a Codex session crosses 4 MiB as screenshots and reasoning items pile
+// up, and that turn must still re-send the replacements earlier turns cached.
 const chatGPTCaptureLimit = 4 << 20
 
 // chatgpt is the ChatGPT-subscription Codex route. It preserves the agent's OAuth
@@ -82,20 +86,30 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	var requestBodyTracker *eofTrackingReader
 	transform := providers.TransformResult{OptimizerIDs: []string{}}
 	var comp *compressionOutcome
+	var meta providers.RequestMetadata
 	adapter := openai.New(s.chatGPTUpstream)
 	// The recovery proof is checked after the read: a manually started proxy has
 	// no CAVEMAN_RECOVERY stamp, and the request's own Caveman MCP retrieve tool
 	// (top-level tools or Codex's input[] additional_tools) then proves it, the
 	// same rule the generic route applies. Eligible means the request reached
-	// compressRequest (the generic route's denominator), whether or not it shrank;
-	// skipReason says why a candidate was not compressed.
+	// the compressor with new compression allowed (the generic route's
+	// denominator), whether or not it shrank; skipReason says why a candidate
+	// was not compressed.
 	compressCandidate := r.Method == http.MethodPost && rc.RuntimeMode == "compress" && suffix == "/responses" &&
 		s.compressor != nil && s.liveZoneConfigured(adapter) && compiledPlanAllowed
 	compressEligible := false
 	skipReason := ""
+	// As in proxy.go: the tripwire holds this request only to prefixes accepted
+	// before its forwarding was decided.
+	sentSeq := s.prefixSeq.Add(1)
+	rawRetried := false
+	// The decoded (logical) request and what of it went upstream, which the
+	// raw pin and the tripwire compare; nil when the body was never decoded.
+	var logicalBody, logicalSent []byte
 	if compressCandidate {
-		captured, readErr := io.ReadAll(io.LimitReader(r.Body, chatGPTCaptureLimit+1))
-		if readErr == nil && len(captured) <= chatGPTCaptureLimit {
+		maxBytes := env.Int("CAVE_MAX_REQUEST_BYTES", 33554432)
+		captured, readErr := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+1))
+		if readErr == nil && len(captured) <= maxBytes {
 			requestBodyFullyRead = true
 			originalBody = captured
 			_, _ = reqHash.Write(originalBody)
@@ -104,7 +118,22 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 			// untouched — including Pi's or Codex's original zstd frame.
 			transform.Body = originalBody
 
-			logicalBody, requestEncoding, decodeErr := decodeChatGPTRequestBody(originalBody, r.Header.Get("Content-Encoding"))
+			// A zstd body decodes up to the same request limit an identity body
+			// is read to, so a large Codex or Pi turn still re-sends what
+			// earlier turns cached replaced.
+			decoded, requestEncoding, decodeErr := decodeChatGPTRequestBody(originalBody, r.Header.Get("Content-Encoding"), maxBytes)
+			inspectErr := decodeErr
+			if decodeErr == nil {
+				logicalBody, logicalSent = decoded, decoded
+				headersForInspect := r.Header.Clone()
+				headersForInspect.Del("Content-Encoding")
+				headersForInspect.Set("x-cave-route-path", suffix)
+				meta, inspectErr = adapter.InspectRequest(r.Context(), bytes.NewReader(logicalBody), headersForInspect)
+				if inspectErr == nil {
+					meta.Endpoint = suffix
+					meta.SessionID = evidence.SessionID
+				}
+			}
 			switch {
 			case errors.Is(decodeErr, errChatGPTBodyOverLimit):
 				skipReason = "body_over_limit"
@@ -112,31 +141,25 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 				skipReason = "content_encoding_unsupported"
 			case !s.mcpRecoveryAvailable(logicalBody):
 				skipReason = "recovery_unproven"
+			case inspectErr != nil:
+				skipReason = "inspect_failed"
+			case s.rawPinned(adapter, meta, logicalBody):
+				// As in proxy.go: a conversation pinned raw goes out as sent.
+				skipReason = "raw_pinned"
 			default:
+				// An epoch veto stops only new compression, never a substitution.
+				allowNew := s.cacheEpochAllows(r, adapter, meta, logicalBody, evidence.SessionID)
+				compressEligible = allowNew
 				transform.Body = logicalBody
-				headersForInspect := r.Header.Clone()
-				headersForInspect.Del("Content-Encoding")
-				headersForInspect.Set("x-cave-route-path", suffix)
-				meta, inspectErr := adapter.InspectRequest(r.Context(), bytes.NewReader(logicalBody), headersForInspect)
-				if inspectErr == nil {
-					meta.Endpoint = suffix
-					meta.SessionID = evidence.SessionID
-				}
-				switch {
-				case inspectErr != nil:
-					skipReason = "inspect_failed"
-				case !s.cacheEpochAllows(r, adapter, meta, logicalBody, evidence.SessionID):
-					skipReason = "cache_epoch_diverged"
-				default:
-					compressEligible = true
-					comp = s.compressRequest(adapter, logicalBody, meta, &transform, requestID, lockedRoutes)
-					if comp == nil {
-						skipReason = "nothing_compressible"
-					}
-				}
+				comp = s.rewriteRequest(adapter, logicalBody, meta, &transform, requestID, lockedRoutes, allowNew)
 				if comp == nil {
+					skipReason = "nothing_compressible"
+					if !allowNew {
+						skipReason = "cache_epoch_diverged"
+					}
 					transform.Body = originalBody
 				} else if encoded, ok := encodeChatGPTRequestBody(transform.Body, requestEncoding); ok {
+					logicalSent = transform.Body
 					transform.Body = encoded
 				} else {
 					transform = providers.TransformResult{Body: originalBody, OptimizerIDs: []string{}}
@@ -220,12 +243,14 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, r, http.StatusBadGateway, "cave_upstream_unreachable", "ChatGPT upstream is unreachable.")
 		requestHashComplete := chatGPTRequestHashComplete(requestBodyFullyRead, r.ContentLength, reqCapture, requestBodyTracker)
-		s.recordChatGPT(rc, r, requestID, traceID, suffix, start, 0, "cave_upstream_unreachable", reqCapture, reqHash.Sum(nil), transformedChatGPTHash(reqHash.Sum(nil), transform.Body), requestHashComplete, nil, 0, false, transform.OptimizerIDs, comp, compressEligible, transform.Body)
+		s.recordChatGPT(rc, r, requestID, traceID, suffix, start, 0, "cave_upstream_unreachable", reqCapture, reqHash.Sum(nil), transformedChatGPTHash(reqHash.Sum(nil), transform.Body), requestHashComplete, nil, 0, false, transform.OptimizerIDs, comp, compressEligible, transform.Body, "")
 		return
 	}
 	// OAuth backends can reject byte-modified requests for undocumented reasons.
 	// Retry once with exact original bytes, then disclose/record no optimization.
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 && comp != nil && originalBody != nil {
+	// A rate-limit 429 is returned instead, and an accepted retry pins the
+	// conversation raw, as in proxy.go.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 && comp != nil && originalBody != nil && !rateLimited(resp) {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
 		retryResp, doErr := s.doUpstream(r.Context(), func() (*http.Request, error) {
@@ -239,9 +264,14 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 		})
 		if doErr != nil {
 			httpx.Error(w, r, http.StatusBadGateway, "cave_upstream_unreachable", "ChatGPT upstream is unreachable.")
-			s.recordChatGPT(rc, r, requestID, traceID, suffix, start, 0, "cave_upstream_unreachable", reqCapture, reqHash.Sum(nil), reqHash.Sum(nil), true, nil, 0, false, nil, nil, compressEligible, originalBody)
+			s.recordChatGPT(rc, r, requestID, traceID, suffix, start, 0, "cave_upstream_unreachable", reqCapture, reqHash.Sum(nil), reqHash.Sum(nil), true, nil, 0, false, nil, nil, compressEligible, originalBody, "")
 			return
 		}
+		if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
+			s.pinRaw(adapter, meta, logicalBody, logicalSent)
+		}
+		rawRetried = true
+		logicalSent = logicalBody
 		resp = retryResp
 		transform = providers.TransformResult{Body: originalBody, OptimizerIDs: []string{}}
 		comp = nil
@@ -305,7 +335,15 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestHashComplete := chatGPTRequestHashComplete(requestBodyFullyRead, r.ContentLength, reqCapture, requestBodyTracker)
-	s.recordChatGPT(rc, r, requestID, traceID, suffix, start, resp.StatusCode, errCode, reqCapture, reqHash.Sum(nil), transformedChatGPTHash(reqHash.Sum(nil), transform.Body), requestHashComplete, respCapture, respBytes, stream, transform.OptimizerIDs, comp, compressEligible, transform.Body)
+	// The cache tripwire, as on the generic route (prefix_monitor.go). Only a
+	// body this route read whole and decoded can be compared.
+	cacheBustCause := ""
+	if logicalBody != nil && resp.StatusCode < 400 {
+		cacheBustCause = s.observeCachedPrefix(adapter, meta, logicalBody, logicalSent, acceptance{
+			rawRetry: rawRetried, sent: sentSeq, session: evidence.SessionID, requestID: requestID,
+		})
+	}
+	s.recordChatGPT(rc, r, requestID, traceID, suffix, start, resp.StatusCode, errCode, reqCapture, reqHash.Sum(nil), transformedChatGPTHash(reqHash.Sum(nil), transform.Body), requestHashComplete, respCapture, respBytes, stream, transform.OptimizerIDs, comp, compressEligible, transform.Body, cacheBustCause)
 
 	// Path, status, and timing only — request headers carry the operator's
 	// OAuth credential and are never logged on this route.
@@ -329,7 +367,7 @@ func transformedChatGPTHash(raw []byte, transformed []byte) []byte {
 	return sum[:]
 }
 
-func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, traceID, endpoint string, start time.Time, status int, errCode string, reqCapture *cappedBuffer, reqHash, transformedHash []byte, requestHashComplete bool, respCapture *cappedBuffer, respBytes int64, stream bool, optimizers []string, comp *compressionOutcome, compressionEligible bool, acceptedBody []byte) {
+func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, traceID, endpoint string, start time.Time, status int, errCode string, reqCapture *cappedBuffer, reqHash, transformedHash []byte, requestHashComplete bool, respCapture *cappedBuffer, respBytes int64, stream bool, optimizers []string, comp *compressionOutcome, compressionEligible bool, acceptedBody []byte, cacheBustCause string) {
 	if s.sink == nil {
 		return
 	}
@@ -341,7 +379,7 @@ func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, tr
 	}
 	var originalLogicalBody []byte
 	if requestHashComplete && reqCapture != nil && !reqCapture.truncated {
-		if decoded, _, err := decodeChatGPTRequestBody(reqCapture.buf.Bytes(), r.Header.Get("Content-Encoding")); err == nil {
+		if decoded, _, err := decodeChatGPTRequestBody(reqCapture.buf.Bytes(), r.Header.Get("Content-Encoding"), chatGPTCaptureLimit); err == nil {
 			originalLogicalBody = decoded
 		}
 	}
@@ -377,6 +415,8 @@ func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, tr
 		// bytes shrank, so the CLI can tell "routing never applied" from "nothing
 		// to compress" (the generic route records the same denominator).
 		CompressionEligible:      compressionEligible,
+		CacheBust:                cacheBustCause != "",
+		CacheBustCause:           cacheBustCause,
 		RequestID:                requestID,
 		TraceID:                  traceID,
 		Label:                    labelOrDefault(rc.Label, "local"),
@@ -431,7 +471,7 @@ func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, tr
 	var acceptedLogicalBody []byte
 	if acceptedBody == nil {
 		acceptedLogicalBody = originalLogicalBody
-	} else if decoded, _, err := decodeChatGPTRequestBody(acceptedBody, r.Header.Get("Content-Encoding")); err == nil {
+	} else if decoded, _, err := decodeChatGPTRequestBody(acceptedBody, r.Header.Get("Content-Encoding"), chatGPTCaptureLimit); err == nil {
 		acceptedLogicalBody = decoded
 	}
 	requestAccounting(&row, meta, usage, originalLogicalBody, acceptedLogicalBody, false)
@@ -465,7 +505,7 @@ func chatGPTRequestWantsStream(wire []byte, contentEncoding string, truncated, c
 	if truncated || !complete {
 		return false
 	}
-	decoded, _, err := decodeChatGPTRequestBody(wire, contentEncoding)
+	decoded, _, err := decodeChatGPTRequestBody(wire, contentEncoding, chatGPTCaptureLimit)
 	if err != nil {
 		return false
 	}
