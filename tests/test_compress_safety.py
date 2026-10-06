@@ -546,13 +546,20 @@ class CompressSafetyTests(unittest.TestCase):
 
     def test_provider_specific_environment_takes_precedence(self):
         with llm_env(
-            CAVEMAN_PROVIDER="anthropic",
             CAVEMAN_COMPRESS_PROVIDER=OPENCODE_PROVIDER,
             CAVEMAN_MODEL="fallback/model",
             CAVEMAN_COMPRESS_MODEL=OPENCODE_MODEL,
         ):
             self.assertEqual(compress_mod.configured_provider(), OPENCODE_PROVIDER)
             self.assertEqual(compress_mod.configured_model(), OPENCODE_MODEL)
+        with llm_env(CAVEMAN_MODEL="fallback/model"):
+            self.assertEqual(compress_mod.configured_model(), "fallback/model")
+
+    def test_generic_caveman_provider_is_not_read(self):
+        # Only CAVEMAN_COMPRESS_PROVIDER picks the provider; a generic
+        # CAVEMAN_PROVIDER would collide with CLI/proxy configuration.
+        with llm_env(CAVEMAN_PROVIDER=OPENCODE_PROVIDER):
+            self.assertEqual(compress_mod.configured_provider(), "claude")
 
     def test_explicit_anthropic_provider_requires_api_key(self):
         with llm_env(CAVEMAN_COMPRESS_PROVIDER="anthropic"):

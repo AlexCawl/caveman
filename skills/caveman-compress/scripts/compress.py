@@ -367,7 +367,6 @@ MAX_FILE_SIZE_LABEL = "500KB"
 
 ENV_ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY"
 ENV_COMPRESS_PROVIDER = "CAVEMAN_COMPRESS_PROVIDER"
-ENV_FALLBACK_PROVIDER = "CAVEMAN_PROVIDER"
 ENV_COMPRESS_MODEL = "CAVEMAN_COMPRESS_MODEL"
 ENV_FALLBACK_MODEL = "CAVEMAN_MODEL"
 
@@ -473,9 +472,7 @@ class AnthropicSdkUnavailable(RuntimeError):
 
 def configured_provider() -> str:
     provider = (
-        os.environ.get(ENV_COMPRESS_PROVIDER)
-        or os.environ.get(ENV_FALLBACK_PROVIDER)
-        or PROVIDER_CLAUDE
+        os.environ.get(ENV_COMPRESS_PROVIDER) or PROVIDER_CLAUDE
     ).strip().lower()
     if provider not in SUPPORTED_PROVIDERS:
         supported = ", ".join(sorted(SUPPORTED_PROVIDERS))
@@ -528,7 +525,8 @@ def run_cli(
     except subprocess.TimeoutExpired as error:
         raise RuntimeError(
             f"{binary_name} CLI call timed out after "
-            f"{CLAUDE_CALL_TIMEOUT_SECONDS}s"
+            f"{CLAUDE_CALL_TIMEOUT_SECONDS}s "
+            "(stalled network, or an auth prompt with no TTY to answer it)"
         ) from error
 
 

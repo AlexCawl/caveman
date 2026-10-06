@@ -95,14 +95,14 @@ Requires Python 3.10 or newer.
 
 Default path uses Claude: `ANTHROPIC_API_KEY` + Anthropic SDK when set, else `claude --print`.
 
-To use opencode instead:
+To use opencode instead (any model opencode can reach, free ones included):
 
 ```bash
 export CAVEMAN_COMPRESS_PROVIDER=opencode
-export CAVEMAN_COMPRESS_MODEL=github-copilot/gpt-4.1
+export CAVEMAN_COMPRESS_MODEL=opencode/big-pickle   # any id from `opencode models`
 ```
 
-`CAVEMAN_PROVIDER` and `CAVEMAN_MODEL` are fallback env vars when compress-specific values are unset.
+`CAVEMAN_MODEL` is the fallback when `CAVEMAN_COMPRESS_MODEL` is unset. On the Claude path the model also applies to `claude --print`. The opencode path needs opencode 2.x (it uses `opencode run --standalone`).
 
 ## Usage
 
@@ -137,13 +137,13 @@ acquire cross-session lock on the file  (waits up to 15 min if another run holds
         ↓
 detect file type        (no tokens)
         ↓
-configured provider compresses       (tokens — one call)
+configured provider compresses       (tokens: one call)
         ↓
 validate output         (no tokens)
   checks: headings, code blocks, URLs, file paths, bullets
         ↓
-if errors: configured provider fixes cherry-picked issues only   (tokens — targeted fix)
-  does NOT recompress — only patches broken parts
+if errors: configured provider fixes cherry-picked issues only   (tokens: targeted fix)
+  does NOT recompress; only patches broken parts
         ↓
 retry up to 2 times
         ↓

@@ -24,7 +24,7 @@
 
 Default path uses Claude. If `ANTHROPIC_API_KEY` is set, the skill uses the Anthropic Python SDK directly (no subprocess). If not set, it falls back to the `claude` CLI, which uses the user's existing Claude desktop authentication.
 
-Set `CAVEMAN_COMPRESS_PROVIDER=opencode` to use `opencode run` instead. Set `CAVEMAN_COMPRESS_MODEL=provider/model` for compress-specific model selection. `CAVEMAN_PROVIDER` and `CAVEMAN_MODEL` are fallback env vars when compress-specific values are unset.
+Set `CAVEMAN_COMPRESS_PROVIDER=opencode` to use `opencode run` instead. Set `CAVEMAN_COMPRESS_MODEL=provider/model` for compress-specific model selection. `CAVEMAN_MODEL` is the fallback when `CAVEMAN_COMPRESS_MODEL` is unset.
 
 ### File size limit
 
