@@ -445,10 +445,11 @@ class CompressSafetyTests(unittest.TestCase):
             backup = compress_mod.backup_dir_for(path) / "task.original.md"
             self.assertEqual(backup.read_bytes(), raw)
             backup.unlink()
+
     def test_opencode_provider_uses_configured_model(self):
         def run_opencode(command, **kwargs):
             prompt_path = Path(command[command.index(OPENCODE_FILE_ARG) + 1])
-            self.assertEqual(prompt_path.read_text(), PROMPT_TEXT)
+            self.assertEqual(prompt_path.read_text(encoding="utf-8"), PROMPT_TEXT)
             return mock.Mock(stdout=OPENCODE_OUTPUT)
 
         with llm_env(
@@ -708,8 +709,6 @@ class CompressSafetyTests(unittest.TestCase):
         print_message.assert_any_call(
             "❌ Fix attempt aborted: opencode returned an empty response."
         )
-if __name__ == "__main__":
-    unittest.main()
 
 
 class NocompressRegionTests(unittest.TestCase):
@@ -953,3 +952,7 @@ class FirstTextBlockTests(unittest.TestCase):
         # contract, so the caller's "Claude returned an empty response"
         # message applies instead of an unhandled AttributeError traceback.
         self.assertEqual(self._run([mock.Mock(type="tool_use", id="toolu_1")]), "")
+
+
+if __name__ == "__main__":
+    unittest.main()
