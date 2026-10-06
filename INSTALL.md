@@ -315,6 +315,10 @@ resume. If you still see it, check whether `CAVEMAN_DEFAULT_MODE` or a repo-loca
 `.caveman.json` is re-arming it on a genuinely new session, or whether you ran
 `/clear` — that is a deliberate reset, and intended.
 
+**"OpenCode works, but Caveman sees no traffic."**
+
+`caveman enable opencode` and `caveman opencode` send only OpenCode's `openai`, `anthropic` and `opencode-go` providers through Caveman. Every other provider talks to its service directly, with nothing compressed or counted. That includes a GitHub Copilot sign-in and OpenCode Zen (`opencode/...` models). `caveman doctor opencode` and `caveman status` warn when your active OpenCode model uses one of those providers.
+
 **"Hooks failing on Windows."**
 
 - Use `install.ps1`, not `install.sh`. Git Bash works for the shell version, but the hook side wires PowerShell counterparts (`caveman-statusline.ps1`).

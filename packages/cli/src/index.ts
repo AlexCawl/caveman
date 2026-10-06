@@ -8006,6 +8006,31 @@ function opencodeNativeRoutes(gw: string): Record<string, string> {
   };
 }
 
+// Only the journaled providers reach the proxy. Anything else (GitHub Copilot,
+// Zen) goes direct while the install reads healthy (#1190), so name it. Global
+// config only, the same file enable edits; a project opencode.json can still
+// pick another model.
+function opencodeUnroutedActiveProvider(routed: string[]): string | null {
+  for (const name of ["opencode.jsonc", "opencode.json"]) {
+    try {
+      const model = (parseJsonc(readFileSync(join(homedir(), ".config", "opencode", name), "utf8")) as Record<string, unknown> | null)?.model;
+      if (typeof model === "string" && model.includes("/")) {
+        const provider = model.slice(0, model.indexOf("/"));
+        return routed.includes(provider) ? null : provider;
+      }
+    } catch { /* missing or unreadable: try the next source */ }
+  }
+  // No model pinned: OpenCode picks among signed-in providers, so only a
+  // sign-in set with no routed provider at all is a sure miss.
+  try {
+    const dataRoot = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+    const signedIn = Object.keys(JSON.parse(readFileSync(join(dataRoot, "opencode", "auth.json"), "utf8")) ?? {});
+    return signedIn.length > 0 && !signedIn.some((id) => routed.includes(id)) ? signedIn[0]! : null;
+  } catch {
+    return null;
+  }
+}
+
 function opencodeNativeMutations(gw: string, mcpBinary: string): NativeMutation[] {
   const configPath = join(homedir(), ".config", "opencode", "opencode.json");
   const before = fileBytes(configPath);
@@ -9358,6 +9383,12 @@ function nativeIntegrationStatus(agent: NativeAgent) {
 	const coreActive = agent === "aider"
 	  ? ownedHealthy
 	  : coreSupported && nativeCoreRuntimeState().active;
+  const warnings: string[] = [];
+  if (agent === "opencode" && installed) {
+    const routed = Object.keys((routeOperation?.owned?.routes as Record<string, unknown> | undefined) ?? {});
+    const unrouted = opencodeUnroutedActiveProvider(routed);
+    if (unrouted) warnings.push(`OpenCode's active provider "${unrouted}" is not routed through Caveman; its requests go direct and are not compressed or counted (routed: ${routed.join(", ")})`);
+  }
   const fileText = checks.map((check) => fileBytes(check.file)?.toString("utf8") ?? "").join("\n");
   const components: NativeComponents = {
     routing: routeHealthy && proxyHealthy && (agent === "claude" ? fileText.includes("ANTHROPIC_BASE_URL") : agent === "codex" ? fileText.includes("model_providers.caveman") : agent === "hermes" ? fileText.includes(HERMES_NATIVE_ROUTE_BEGIN) : agent === "gemini" ? fileText.includes(GEMINI_NATIVE_ENV_BEGIN) : agent === "opencode" ? fileText.includes("caveman:native-opencode") : agent === "pi" ? fileText.includes("caveman:native-pi") : fileText.includes(AIDER_NATIVE_ROUTE_BEGIN)),
@@ -9409,6 +9440,7 @@ function nativeIntegrationStatus(agent: NativeAgent) {
     pack_current: packCurrent,
     drifted,
     components,
+    warnings,
     capabilities: nativeCapabilityReport(agent, components, versionStatus),
     files: checks,
   };
@@ -18663,6 +18695,7 @@ async function status(argv: string[]) {
     const active = Object.entries(integration.capabilities).filter(([, value]) => value.active).map(([name]) => name);
     process.stdout.write(statusRow(integration.agent, `${integration.state} · ${integration.version_status} · ${active.join(", ") || "proxy-only/none active"}`) + "\n");
   }
+  for (const warning of native.flatMap((integration) => integration.warnings)) process.stdout.write(`${mark("warn")} ${warning}\n`);
   const degraded = native.find((integration) => integration.state === "degraded");
   const available = native.find((integration) => integration.state === "available" && integration.components.shared_runtime);
   const needsRuntime = native.find((integration) => integration.state === "available" && !integration.components.shared_runtime);

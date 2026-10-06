@@ -1258,6 +1258,39 @@ test("status keeps native OpenCode MCP recovery when provider routing drifts", a
   assert.doesNotMatch(output, /MCP recovery missing/);
 });
 
+test("doctor and status warn when OpenCode's active provider is not routed (#1190)", async () => {
+  const fx = fixture();
+  const env = { ...fx.env, XDG_DATA_HOME: join(fx.home, ".local", "share") };
+  const configDir = join(fx.home, ".config", "opencode");
+  mkdirSync(configDir, { recursive: true });
+  const configPath = join(configDir, "opencode.json");
+  writeFileSync(configPath, JSON.stringify({ model: "github-copilot/gpt-5" }) + "\n");
+  assert.equal((await run(["enable", "opencode"], env)).code, 0);
+  const warning = /OpenCode's active provider "github-copilot" is not routed through Caveman/;
+
+  const doctor = JSON.parse((await run(["doctor", "opencode"], env)).stdout);
+  assert.equal(doctor.state, "installed", "an unrouted provider is a warning, not a broken install");
+  assert.match(doctor.warnings.join("\n"), warning);
+  const status = await run(["status"], env);
+  assert.equal(status.code, 0, status.stderr);
+  assert.match(status.stdout, warning);
+
+  // No model set: a Copilot-only sign-in is the active provider.
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  delete config.model;
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  mkdirSync(join(fx.home, ".local", "share", "opencode"), { recursive: true });
+  writeFileSync(join(fx.home, ".local", "share", "opencode", "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth" } }));
+  assert.match(JSON.parse((await run(["doctor", "opencode"], env)).stdout).warnings.join("\n"), warning);
+
+  config.model = "openai/gpt-5";
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  assert.deepEqual(JSON.parse((await run(["doctor", "opencode"], env)).stdout).warnings, []);
+  config.model = "opencode-go/glm-5.2";
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  assert.deepEqual(JSON.parse((await run(["doctor", "opencode"], env)).stdout).warnings, []);
+});
+
 test("status recognizes native OpenCode MCP recovery when the config rewrites key order", async () => {
   const fx = fixture();
   const configDir = join(fx.home, ".config", "opencode");
