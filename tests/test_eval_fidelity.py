@@ -129,7 +129,7 @@ class FidelityCaseSetTests(unittest.TestCase):
         self.assertEqual(len(prompts), len(set(prompts)))
         for case in self.cases:
             with self.subTest(case=case["id"]):
-                self.assertEqual(set(case), {"id", "category", "prompt", "checks"})
+                self.assertEqual(set(case) - {"examples"}, {"id", "category", "prompt", "checks"})
                 self.assertIn(case["category"], score_fidelity.CATEGORIES)
                 self.assertTrue(case["prompt"].strip())
                 self.assertFalse(case["prompt"].startswith("/"))
@@ -139,6 +139,18 @@ class FidelityCaseSetTests(unittest.TestCase):
                 self.assertTrue(patterns)
                 for pattern in patterns:
                     re.compile(pattern)
+
+    # Proves each case's checks accept its known-good answers and reject its
+    # known-bad ones, so a miscalibrated regex fails here, not after a paid run.
+    def test_examples_match_checks(self) -> None:
+        for case in self.cases:
+            examples = case.get("examples", {})
+            for output in examples.get("pass", []):
+                with self.subTest(case=case["id"], expect="pass", output=output):
+                    self.assertEqual(score_fidelity.check(output, case["checks"]), [])
+            for output in examples.get("fail", []):
+                with self.subTest(case=case["id"], expect="fail", output=output):
+                    self.assertNotEqual(score_fidelity.check(output, case["checks"]), [])
 
     # Proves the six cases salvaged from #1061 stay in the set.
     def test_seed_cases_present(self) -> None:

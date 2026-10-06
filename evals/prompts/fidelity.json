@@ -159,8 +159,18 @@
       "prompt": "In Python 3, what does `round(2.5)` return, and why?",
       "checks": {
         "must_include": [
-          "\\b2\\b",
+          "(?<![\\d.])2(?!\\.?\\d)",
           "banker|half[- ]to[- ]even|nearest even|round(s|ing)? to even|even (number|integer)"
+        ]
+      },
+      "examples": {
+        "pass": [
+          "`round(2.5)` returns `2`. Python 3 uses banker's rounding: ties go to the nearest even number.",
+          "`round(2.5)` returns 2. Ties round to even, so 3.5 rounds to 4."
+        ],
+        "fail": [
+          "`round(2.5)` returns 3 because Python uses banker's rounding.",
+          "`round(2.5)` returns 2 because floats are imprecise."
         ]
       }
     },
