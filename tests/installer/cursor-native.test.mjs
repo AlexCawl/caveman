@@ -120,3 +120,13 @@ test('a user-owned agent file is never overwritten', (t) => {
   assert.match(r.stderr, /ownership conflict/);
   assert.equal(fs.readFileSync(mine, 'utf8'), 'mine\n');
 });
+
+test('a hooks.json with comments is left byte-identical rather than rewritten without them', (t) => {
+  const { root, run } = fixture(t);
+  fs.mkdirSync(root, { recursive: true });
+  const original = '{\n  // my hooks\n  "version": 1,\n  "hooks": {}\n}\n';
+  fs.writeFileSync(path.join(root, 'hooks.json'), original);
+  const r = run('--only', 'cursor');
+  assert.match(r.stderr, /hooks\.json has comments/);
+  assert.equal(fs.readFileSync(path.join(root, 'hooks.json'), 'utf8'), original);
+});

@@ -46,9 +46,14 @@ function hooksJsonPath(root) {
 }
 
 function readHooksJson(file) {
-  const config = SETTINGS.readSettings(file);
+  const meta = {};
+  const config = SETTINGS.readSettings(file, meta);
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new Error(`${file} is not a JSON object; left untouched`);
+  }
+  // writeSettings emits plain JSON, which would silently drop the comments.
+  if (meta.jsonc) {
+    throw new Error(`${file} has comments; left untouched. Add or remove caveman's sessionStart entry by hand`);
   }
   if (config.version !== undefined && config.version !== 1) {
     throw new Error(`${file} has unsupported version ${JSON.stringify(config.version)}; left untouched`);
