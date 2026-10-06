@@ -34,6 +34,12 @@ Environment:
   CAVEMAN_EVAL_SKILLS  optional comma-separated skill ids (e.g.
                        caveman,ultracave,megacave) restricting the skill arms;
                        default runs every skills/*/SKILL.md. Unknown ids abort.
+  CAVEMAN_EVAL_TIMEOUT seconds before one claude call is abandoned (default
+                       300). A failed or timed-out call is retried twice
+                       (after 5s, then 20s). If it still fails the run stops,
+                       writes the finished cells to results.partial.json
+                       (unfinished cells null), leaves results.json alone and
+                       exits 1.
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # Windows consoles and piped stdout default to the ANSI code page (cp1252),
@@ -76,6 +83,9 @@ SNAPSHOT = EVALS / "snapshots" / (
     "results.json" if LANG == "en" else f"results.{LANG}.json"
 )
 
+CALL_TIMEOUT = float(os.environ.get("CAVEMAN_EVAL_TIMEOUT", "300"))
+RETRY_DELAYS = (5, 20)
+
 
 def claude_bin() -> str:
     """Resolve the CLI through PATHEXT. npm installs it as claude.CMD on
@@ -98,11 +108,18 @@ def run_claude(prompt: str, cwd: str, system_file: Path | None = None) -> str:
     if model := os.environ.get("CAVEMAN_EVAL_MODEL"):
         cmd += ["--model", model]
     cmd.append(prompt)
-    out = subprocess.run(
-        cmd, capture_output=True, text=True, check=True, cwd=cwd,
-        encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
-    )
-    return out.stdout.strip()
+    for delay in (*RETRY_DELAYS, None):
+        try:
+            out = subprocess.run(
+                cmd, capture_output=True, text=True, check=True, cwd=cwd,
+                encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
+                timeout=CALL_TIMEOUT,
+            )
+            return out.stdout.strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            if delay is None:
+                raise
+            time.sleep(delay)
 
 
 def claude_version() -> str:
@@ -160,24 +177,45 @@ def main() -> None:
     # System prompts get their own temp dir so the cwd stays empty.
     with tempfile.TemporaryDirectory(prefix="caveman-eval-") as cwd, \
             tempfile.TemporaryDirectory(prefix="caveman-eval-sys-") as sysdir:
-        print("baseline (no system prompt)", flush=True)
-        snapshot["arms"]["__baseline__"] = [run_claude(p, cwd) for p in prompts]
-
-        print("terse (control: terse instruction only, no skill)", flush=True)
         terse_file = Path(sysdir) / "terse.md"
         terse_file.write_text(terse_prefix, encoding="utf-8")
-        snapshot["arms"]["__terse__"] = [
-            run_claude(p, cwd, terse_file) for p in prompts
+        plan = [
+            ("__baseline__", None, "baseline (no system prompt)"),
+            ("__terse__", terse_file, "terse (control: terse instruction only, no skill)"),
         ]
-
         for skill in skills:
             skill_md = (SKILLS / skill / "SKILL.md").read_text(encoding="utf-8")
             skill_file = Path(sysdir) / f"{skill}.md"
             skill_file.write_text(f"{terse_prefix}\n\n{skill_md}", encoding="utf-8")
-            print(f"  {skill}", flush=True)
-            snapshot["arms"][skill] = [
-                run_claude(p, cwd, skill_file) for p in prompts
-            ]
+            plan.append((skill, skill_file, f"  {skill}"))
+
+        # Filled cell by cell, so a hard failure still has every finished
+        # call to save. Unfinished cells stay None, which the snapshot
+        # contract rejects, so a partial file can never be reported from.
+        for arm, _, _ in plan:
+            snapshot["arms"][arm] = [None] * len(prompts)
+        try:
+            for arm, system_file, label in plan:
+                print(label, flush=True)
+                for i, prompt in enumerate(prompts):
+                    snapshot["arms"][arm][i] = run_claude(prompt, cwd, system_file)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            # Auth, quota or a bad model would fail every remaining call
+            # too, so stop rather than burn through them.
+            stderr = error.stderr or ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "replace")
+            snapshot["metadata"]["error"] = (
+                f"{arm} prompt {i}: {error} {stderr[-500:]}".strip()
+            )
+            partial = SNAPSHOT.with_suffix(".partial.json")
+            partial.parent.mkdir(parents=True, exist_ok=True)
+            partial.write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            print(f"\n{snapshot['metadata']['error']}", file=sys.stderr)
+            print(f"Wrote {partial}; {SNAPSHOT} left untouched.", file=sys.stderr)
+            raise SystemExit(1) from error
 
     SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
     SNAPSHOT.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")

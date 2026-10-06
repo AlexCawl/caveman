@@ -89,6 +89,14 @@ before any call:
 CAVEMAN_EVAL_SKILLS=caveman,ultracave,megacave uv run python evals/llm_run.py
 ```
 
+Each call times out after `CAVEMAN_EVAL_TIMEOUT` seconds (default 300). A
+failed or timed-out call is retried twice, after 5 s and then 20 s. If it
+still fails, the run stops (auth, quota or a bad model name would fail
+every remaining call too), writes the finished calls to
+`snapshots/results.partial.json` with the unfinished cells set to `null`
+and the error in `metadata.error`, leaves `results.json` untouched and
+exits 1. `measure.py` refuses a partial file; it is gitignored.
+
 ### Other languages
 
 ```bash
