@@ -288,8 +288,8 @@ def verify_synced_files() -> None:
     # "source": "./"), so a tracked top-level bin/ ships inside the plugin:
     # the CLI puts it on every plugin user's PATH, and claude.ai-hosted
     # marketplaces reject the plugin outright (#1035). Tracked files only —
-    # the gitignored local build outputs (bin/cave, bin/caveman-*) never
-    # reach a marketplace clone.
+    # gitignored files never reach a marketplace clone, and
+    # scripts/install-local-cli.sh writes its shim to .local-bin/ instead.
     ensure(
         not run(["git", "ls-files", "--", "bin"]).stdout.strip(),
         "top-level bin/ ships inside the Claude plugin (plugin root = repo root) "
