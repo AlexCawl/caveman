@@ -2379,6 +2379,7 @@ FLAGS
   --with-hooks          Claude Code: install SessionStart/SubagentStart/
                         UserPromptSubmit/SessionEnd hooks + statusline badge.
                         Codex: SessionStart hook in \$CODEX_HOME/hooks.json.
+                        Cursor sessionStart hook, Copilot CLI session hook.
                         (Default ON.)
   --no-hooks            Skip the hooks installer.
   --with-init           Write per-repo IDE rule files into \$PWD.
