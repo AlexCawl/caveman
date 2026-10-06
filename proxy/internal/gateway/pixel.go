@@ -65,8 +65,8 @@ type pixelReplacement struct {
 	imageBytes int
 }
 
-// pixelHandle marks a PrefixCache row holding rendered image parts.
-const pixelHandle = "pixel"
+// PixelHandle marks a PrefixCache row holding rendered image parts.
+const PixelHandle = "pixel"
 
 // pixelFamily is one provider's image wire shape: render turns text into the
 // comma-joined image parts that provider reads.
@@ -145,7 +145,7 @@ func (d pixelDecider) add(reps *[]pixelReplacement, body []byte, text, replace g
 	if live && !d.s.unpersistedRaw.has(scope, original) {
 		rep, ok = render()
 	}
-	parts, handle := rep.raw, pixelHandle
+	parts, handle := rep.raw, PixelHandle
 	if !ok {
 		parts, handle = nil, RawDecisionHandle // going out as text: that is its decision
 	}

@@ -231,6 +231,9 @@ CREATE TABLE IF NOT EXISTS prefix_replacements (
 CREATE INDEX IF NOT EXISTS idx_prefix_replacements_lru
   ON prefix_replacements(last_used_at, original_sha256);
 
+CREATE INDEX IF NOT EXISTS idx_prefix_replacements_handle_lru
+  ON prefix_replacements(handle, last_used_at, original_sha256);
+
 CREATE TABLE IF NOT EXISTS learn_sinks (
   sink_id TEXT PRIMARY KEY,
   title TEXT NOT NULL,

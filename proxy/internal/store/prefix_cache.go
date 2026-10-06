@@ -16,14 +16,20 @@ import (
 // miss, so the gateway forwards that message's original bytes from then on. That
 // costs one prompt-cache rebuild and is byte-stable afterwards — never a
 // half-applied prefix. Compressed rows average a few KB and raw decisions carry
-// no replacement at all, so the cap is a soft ceiling of a few hundred MB in
-// ~/.caveman/caveman.db at worst.
+// no replacement at all; pixel rows hold base64 PNG parts, larger than the text
+// they replace, and have their own cap below. Together that is a soft ceiling of
+// a few hundred MB in ~/.caveman/caveman.db for text, plus at most
+// prefixCachePixelMaxEntries pixel rows (tens of KB each).
 const prefixCacheMaxEntries = 100000
 
 // prefixCacheTouchInterval is how stale a row's last_used_at may get before a
 // lookup hit refreshes it: eviction needs recency to the interval, not to the
 // request.
 const prefixCacheTouchInterval = 10 * time.Minute
+
+// prefixCachePixelMaxEntries bounds the pixel rows inside that cap, least
+// recently used first like the rest. One rendered block is one row.
+const prefixCachePixelMaxEntries = 4096
 
 // LookupReplacement returns the replacement bytes this proxy previously emitted
 // for these exact original bytes, plus the CCR handle they disclose. It implements
@@ -129,6 +135,15 @@ func (s *Store) evictPrefixReplacements() {
 		 )`, prefixCacheMaxEntries,
 	); err != nil && s.logger != nil {
 		s.logger.Warn("prefix replacement eviction failed", "error", err)
+	}
+	if _, err := s.db.Exec(
+		`DELETE FROM prefix_replacements WHERE original_sha256 IN (
+		   SELECT original_sha256 FROM prefix_replacements WHERE handle = ?1
+		   ORDER BY last_used_at ASC, original_sha256 ASC
+		   LIMIT max(0, (SELECT COUNT(*) FROM prefix_replacements WHERE handle = ?1) - ?2)
+		 )`, gateway.PixelHandle, prefixCachePixelMaxEntries,
+	); err != nil && s.logger != nil {
+		s.logger.Warn("prefix replacement pixel eviction failed", "error", err)
 	}
 }
 

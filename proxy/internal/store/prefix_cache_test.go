@@ -341,3 +341,63 @@ func TestPrefixReplacementLookupTouchesOnlyStaleRows(t *testing.T) {
 		t.Fatalf("a hit on a stale row did not refresh it for the LRU (%s -> %s)", stale, got)
 	}
 }
+
+// TestPrefixReplacementPixelRowsHaveTheirOwnCap: a pixel row holds base64 PNG
+// parts, larger than the text it replaces (a 13.6 KB tool result made a 21 KB
+// row), so 100k of them is gigabytes. Pixel rows are trimmed to their own cap,
+// least recently used first, and the trim leaves every other row alone.
+func TestPrefixReplacementPixelRowsHaveTheirOwnCap(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "caveman.db"), nil)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	old := time.Now().UTC().Add(-time.Hour).Format(storeTSLayout)
+	for i := 0; i < prefixCachePixelMaxEntries+5; i++ {
+		key := prefixCacheKey("pixel:anthropic:claude-fable-5", []byte(fmt.Sprintf("rendered text %d", i)))
+		if _, err := tx.Exec(
+			`INSERT INTO prefix_replacements (original_sha256, handle, replacement, created_at, last_used_at) VALUES (?,?,?,?,?)`,
+			key, gateway.PixelHandle, []byte("PNG"), old, old,
+		); err != nil {
+			t.Fatalf("seed pixel row %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		key := prefixCacheKey("unlocked", []byte(fmt.Sprintf("text row %d", i)))
+		if _, err := tx.Exec(
+			`INSERT INTO prefix_replacements (original_sha256, handle, replacement, created_at, last_used_at) VALUES (?,?,?,?,?)`,
+			key, "ccr_text", []byte("R"), old, old,
+		); err != nil {
+			t.Fatalf("seed text row %d: %v", i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+	newest := []byte("the newest rendered text")
+	if _, err := s.RememberReplacement("pixel:anthropic:claude-fable-5", newest, []byte("PNG"), gateway.PixelHandle); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	count := func(where string) int {
+		t.Helper()
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM prefix_replacements WHERE ` + where).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+	if n := count(`handle = '` + gateway.PixelHandle + `'`); n > prefixCachePixelMaxEntries {
+		t.Fatalf("pixel rows = %d, want <= %d", n, prefixCachePixelMaxEntries)
+	}
+	if n := count(`handle = 'ccr_text'`); n != 10 {
+		t.Fatalf("the pixel trim evicted text rows: %d of 10 left", n)
+	}
+	if _, _, ok := s.LookupReplacement("pixel:anthropic:claude-fable-5", newest); !ok {
+		t.Fatal("the pixel trim must keep the most recently used row")
+	}
+}
