@@ -160,7 +160,7 @@ VS Code can install plugins in Claude's format, and this repo is one.
 2. Open the Command Palette, run **Chat: Install Plugin From Source**, and paste `https://github.com/JuliusBrussee/caveman`.
 3. In Copilot Chat, pick `caveman` from the `/` menu or say "caveman mode".
 
-Expect skills only, and no auto-start: VS Code reads a Claude plugin's hooks from a file caveman does not ship. We have not tested this path yet. For caveman on every Copilot reply in one repo, add the rule file instead: `npx -y github:JuliusBrussee/caveman -- --only copilot --with-init`.
+Expect skills only, and no auto-start: VS Code reads a Claude plugin's hooks from a file caveman does not ship. We have not tested this path yet. For caveman on every Copilot reply in one repo, run `npx -y github:JuliusBrussee/caveman -- --only copilot --with-init` at the repo root. It writes Copilot's rule file, `.github/copilot-instructions.md`, and also adds rule files for Cursor, Windsurf, Cline and `AGENTS.md`.
 
 ### Kiro (IDE and CLI)
 
