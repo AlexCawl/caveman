@@ -126,7 +126,7 @@ test('isolated Claude install and uninstall complete without network or real use
     }
     const settings = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8'));
     assert.ok(SETTINGS.hasCavemanHook(settings, 'SessionStart', 'caveman-activate'));
-    assert.ok(SETTINGS.hasCavemanHook(settings, 'SubagentStart', 'caveman-activate.js" "--subagent"'));
+    assert.ok(SETTINGS.hasCavemanHook(settings, 'SubagentStart', 'caveman-activate.js" --subagent'));
     assert.ok(SETTINGS.hasCavemanHook(settings, 'UserPromptSubmit', 'caveman-mode-tracker'));
     assert.match(getStatuslineCommand(settings), /caveman-statusline/);
 
@@ -902,7 +902,7 @@ test('claude plugin install success reports SessionEnd manifest coverage', {
   try {
     const r = runInstaller(['--only', 'claude'], configDir, isolatedInstallEnv(dir));
     assert.equal(r.status, 0, `install failed:\n${r.stdout}\n${r.stderr}`);
-    assert.match(r.stdout, /plugin manifest handles SessionStart \+ UserPromptSubmit \+ SessionEnd/);
+    assert.match(r.stdout, /plugin manifest handles SessionStart \+ SubagentStart \+ UserPromptSubmit \+ SessionEnd/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
