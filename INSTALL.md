@@ -300,6 +300,10 @@ Still broken? [Open an issue](https://github.com/JuliusBrussee/caveman/issues).
 3. Check `$CLAUDE_CONFIG_DIR/.caveman-active` exists with content `caveman`. If not, the SessionStart hook silent-failed — check `$CLAUDE_CONFIG_DIR/hooks/` for the JS files and try `node $CLAUDE_CONFIG_DIR/hooks/caveman-activate.js < /dev/null` to see if it errors. Keep the `< /dev/null`: the hook reads its payload from stdin, and a pipe that never closes makes it wait out its 2s watchdog.
 4. Restart Claude Code. The SessionStart hook only fires on session start, not mid-session.
 
+**"There is no `node` on this machine."**
+
+Caveman turns itself on through small Node.js scripts, so auto-activation needs Node.js 18 or newer on `PATH`. Without it the plugin steps aside quietly (no hook errors) and caveman starts only when you type `/caveman` in a session. Install Node from [nodejs.org](https://nodejs.org) to get auto-activation back. Standalone hooks remember the `node` path they were installed with; if you moved or removed that Node, re-run the installer.
+
 **"One window is caveman, another isn't."**
 
 That's intended. Mode is per window. Say `/caveman` in the window you want it in.

@@ -47,8 +47,33 @@ function resolvedNodeArg(shell, command, claudePluginRoot) {
   }
 }
 
+// Resolve a tool against the caller's PATH, so a test can hand the hook a PATH
+// that lacks node without also losing the shell that runs it.
+function which(tool) {
+  return spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+}
+
 for (const hookName of ['SessionStart', 'UserPromptSubmit']) {
   for (const shell of SHELLS) {
+    // #489: Claude Code installs natively now, so node is not a given. Without
+    // it every hook run errored ("node: not found", exit 127) on every session
+    // start and every prompt. Hooks must silent-fail instead.
+    test(`${hookName} hook exits 0 silently when node is not on PATH under ${shell}`, () => {
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caveman-nonode-'));
+      try {
+        fs.symlinkSync(which('sed'), path.join(binDir, 'sed'));
+        const result = spawnSync(which(shell), ['-c', hookCommand(hookName)], {
+          env: { ...process.env, PATH: binDir, CLAUDE_PLUGIN_ROOT: '/home/testuser/.claude/plugins/caveman' },
+          encoding: 'utf8',
+        });
+        assert.equal(result.status, 0, `${shell} exited ${result.status}: ${result.stderr}`);
+        assert.equal(result.stderr, '');
+        assert.equal(result.stdout, '');
+      } finally {
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
     test(`${hookName} hook converts an MSYS-style CLAUDE_PLUGIN_ROOT to a Windows drive path under ${shell}`, () => {
       const command = hookCommand(hookName);
       const arg = resolvedNodeArg(shell, command, '/c/Users/testuser/.claude/plugins/marketplaces/caveman');
