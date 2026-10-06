@@ -1154,3 +1154,54 @@ func TestPrefixMonitorAnchorsAcceptedBytes(t *testing.T) {
 		t.Fatal("the turn that extends the accepted raw request was flagged as a cache bust")
 	}
 }
+
+// poisonSpliceAdapter fails reassembly whenever the poison block is replaced.
+type poisonSpliceAdapter struct {
+	anthropic.Adapter
+	poison string
+}
+
+func (a poisonSpliceAdapter) ExtractStabilizable(body []byte, meta providers.RequestMetadata) ([]providers.RewritableBlock, func([][]byte) ([]byte, error), bool) {
+	blocks, reassemble, ok := a.Adapter.ExtractStabilizable(body, meta)
+	return blocks, func(reps [][]byte) ([]byte, error) {
+		for i, rep := range reps {
+			if rep != nil && string(blocks[i].Content) == a.poison {
+				return nil, errTestPrefixCacheDown
+			}
+		}
+		return reassemble(reps)
+	}, ok
+}
+
+// TestLateSpliceFailureKeepsSubstitutions: when assembling this turn's new
+// compression fails, the request must still re-send the replacements earlier
+// turns were cached with, and the new block — which goes out raw — must not be
+// left on record as compressed.
+func TestLateSpliceFailureKeepsSubstitutions(t *testing.T) {
+	x, y, z := turnText(1), turnText(2), turnText(3)
+	rt := prefixStableTransport(3)
+	comp := &stableCompressor{}
+	srv := New(Config{
+		Adapters:       []providers.Adapter{poisonSpliceAdapter{Adapter: anthropic.New("https://upstream.test").(anthropic.Adapter), poison: y}},
+		Auth:           stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Creds:          passthroughTestCreds{},
+		Compressor:     comp,
+		PrefixCache:    newTestPrefixCache(),
+		HTTPClient:     &http.Client{Transport: rt},
+		RecoveryViaMCP: true,
+	})
+
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(x), subscriptionAgentHeaders)
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(x, y), subscriptionAgentHeaders)
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(x, y, z), subscriptionAgentHeaders)
+
+	for i := 0; i < 3; i++ {
+		body := string(rt.bodies[i])
+		if !strings.Contains(body, comp.expectedReplacement(t, x)) {
+			t.Fatalf("request %d dropped x's cached replacement:\n%s", i+1, body)
+		}
+		if i > 0 && !strings.Contains(body, y) {
+			t.Fatalf("request %d did not keep y raw as it first went out:\n%s", i+1, body)
+		}
+	}
+}

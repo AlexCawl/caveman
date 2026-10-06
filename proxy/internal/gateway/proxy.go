@@ -1115,6 +1115,13 @@ func (s *Server) rewriteRequest(
 	replacements := make([][]byte, len(blocks))
 	var before, after int
 	var handles []string
+	// fresh holds this request's new compressions until the splice proves them.
+	type freshBlock struct {
+		i             int
+		scope, handle string
+		before, after int
+	}
+	var fresh []freshBlock
 	query := extractCompressionQuery(meta.Provider, meta.Endpoint, body)
 	queryComp, queryAware := s.compressor.(QueryAwareCompressor)
 	activeRoutes := make([]bool, len(lockedRoutes))
@@ -1181,9 +1188,6 @@ func (s *Server) rewriteRequest(
 			route := lockedRoutes[routeIndex]
 			typed := s.compressor.(TypedCompressor)
 			out, tb, ta = typed.CompressSegmentType(block.content, route.ContentType)
-			if out != nil && tb > 0 && ta < tb {
-				activeRoutes[routeIndex] = true
-			}
 		} else if queryAware && query != "" {
 			out, tb, ta = queryComp.CompressSegmentQuery(block.content, query)
 		} else {
@@ -1205,48 +1209,75 @@ func (s *Server) rewriteRequest(
 			keepRaw(i, cacheScope)
 			continue
 		}
-		replacement := appendCCRMarker(out, handle)
+		replacements[i] = appendCCRMarker(out, handle)
+		fresh = append(fresh, freshBlock{i: i, scope: cacheScope, handle: handle, before: tb, after: ta})
+	}
+	if len(handles) == 0 && len(fresh) == 0 {
+		return nil // nothing rewritten — pass through, claim nothing.
+	}
+	splice := func() ([]byte, bool) {
+		out, err := reassemble(replacements)
+		if err == nil && len(out) > 0 && json.Valid(out) {
+			return out, true
+		}
+		if s.logger != nil {
+			s.logger.Warn("compress splice failed", "error", redact.Error(err), "request_id", requestID)
+		}
+		return nil, false
+	}
+	// A new replacement is remembered only once the request carrying it is known
+	// to assemble: a row recorded for a request that then went out raw would be
+	// re-sent next turn in place of bytes the provider cached raw. If the new
+	// compression cannot be spliced, those blocks go out raw and the replacements
+	// earlier turns were cached with are still re-sent.
+	newBody, ok := splice()
+	if !ok && len(fresh) > 0 {
+		for _, f := range fresh {
+			replacements[f.i] = nil
+			keepRaw(f.i, f.scope)
+		}
+		fresh = nil
+		newBody, ok = splice()
+	}
+	if !ok {
+		// ponytail: the memo rows assembled when first sent, so only a
+		// non-deterministic splice gets here; that turn goes out raw.
+		return nil
+	}
+	resplice := false
+	for _, f := range fresh {
+		candidate := replacements[f.i]
 		if s.prefixCache != nil {
-			// A rewrite we cannot re-issue next turn must not go out at all: it would
-			// diverge the prefix on the very next request. Fail open to the original.
-			stored, err := s.prefixCache.RememberReplacement(cacheScope, block.content, replacement, handle)
+			stored, err := s.prefixCache.RememberReplacement(f.scope, blocks[f.i].content, candidate, f.handle)
 			if err != nil {
+				// A rewrite we cannot re-issue next turn must not go out at all: it
+				// would diverge the prefix on the very next request.
 				if s.logger != nil {
 					s.logger.Warn("prefix replacement store failed for block; keeping block original", "error", redact.Error(err), "request_id", requestID)
 				}
-				s.unpersistedRaw.add(cacheScope, block.content)
+				s.unpersistedRaw.add(f.scope, blocks[f.i].content)
+				replacements[f.i], resplice = nil, true
 				continue
 			}
-			if len(stored) == 0 {
-				continue // another request sent these bytes raw first
+			if !bytes.Equal(stored, candidate) {
+				// Another request decided these bytes first; its decision is re-sent.
+				replacements[f.i], resplice = nil, true
+				if len(stored) > 0 {
+					use(f.i, stored, ccrHandleOf(stored))
+				}
+				continue
 			}
-			replacement = stored
 		}
-		replacements[i] = replacement
-		before += tb
-		after += ta
-		handles = append(handles, handle)
+		use(f.i, candidate, f.handle)
+		before += f.before
+		after += f.after
 	}
-	if len(handles) == 0 {
-		return nil // nothing rewritten — pass through, claim nothing.
-	}
-	newBody, err := reassemble(replacements)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("compress reassembly failed; forwarding original bytes unchanged", "error", redact.Error(err), "request_id", requestID)
+	if resplice {
+		if newBody, ok = splice(); !ok {
+			return nil // ponytail: same ceiling, with this turn's rows already recorded
 		}
-		return nil
 	}
-	if len(newBody) == 0 {
-		return nil
-	}
-	if !json.Valid(newBody) {
-		if s.logger != nil {
-			s.logger.Warn("compress splice produced invalid JSON; forwarding original bytes unchanged", "request_id", requestID)
-		}
-		return nil
-	}
-	if bytes.Equal(newBody, body) {
+	if len(handles) == 0 || bytes.Equal(newBody, body) {
 		return nil
 	}
 	transform.Body = newBody
