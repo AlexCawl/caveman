@@ -1759,6 +1759,9 @@ func TestCachePrefixInvariantPixel(t *testing.T) {
 				t.Fatal("test setup: turn 1 should have gone out as text")
 			}
 			h.comp.storeErr = nil
+			// The client re-sends the same request once the store is back: the
+			// provider cached the block as text, so it must stay text.
+			h.send(pixelConversation(toolResultTurn, a), false)
 			h.send(pixelConversation(toolResultTurn, a, b), false)
 		}},
 		{"a rendered text block keeps its breakpoint", func(t *testing.T, h *pixelHarness) {
