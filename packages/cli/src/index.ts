@@ -15194,11 +15194,15 @@ async function nativeHook(argv: string[]) {
   // of those should get a silent config rewrite just because Codex started;
   // those still surface through `caveman doctor codex` like normal.
   // Runs after the proxy revival above so the repair cannot race a
-  // proxy this hook just spawned.
+  // proxy this hook just spawned. The check is file-only on purpose:
+  // nativeIntegrationStatus spawns `codex --version` and the proxy/MCP
+  // probes, and this whole delegated SessionStart gets 3s. Codex has
+  // already read config.toml by the time SessionStart fires, so the
+  // repaired route takes effect from the next Codex launch.
   if (normalizedEvent === "SessionStart" && agent === "codex") {
     try {
-      const status = nativeIntegrationStatus("codex");
-      if (status.state === "degraded" && !status.components.routing) repairNativeAgent("codex");
+      const route = readNativeJournal("codex")?.operations.find((operation) => operation.kind === "codex-config")?.owned?.route;
+      if (typeof route === "string" && route !== codexGatewayBase(gatewayURL(), detectCodexWrapAuthMode() === "subscription")) repairNativeAgent("codex");
     } catch {
       // Best-effort; a real problem still shows up in `caveman doctor codex`.
     }

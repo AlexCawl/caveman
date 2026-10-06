@@ -553,6 +553,20 @@ test("codex SessionStart hook leaves config alone when degraded for an unrelated
   assert.equal(readFileSync(configPath, "utf8"), configBefore, "config.toml must not be rewritten for non-routing drift");
 });
 
+test("codex SessionStart route check never spawns the codex binary when the route is current", async () => {
+  const fx = fixture();
+  mkdirSync(join(fx.home, ".codex"), { recursive: true });
+  writeFileSync(join(fx.home, ".codex", "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-local" }));
+  assert.equal((await run(["enable", "codex"], fx.env)).code, 0);
+  // The delegated SessionStart gets 3s in total; a `codex --version` probe
+  // per launch spends part of that on every session start for nothing.
+  const spawnLog = join(fx.home, "codex-spawns.log");
+  writeFileSync(join(fx.home, "bin", "codex"), `#!/bin/sh\necho "$@" >> '${spawnLog}'\nif [ "$1" = "--version" ]; then echo 'codex 1.0.0'; fi\n`, { mode: 0o755 });
+  const hookOut = await run(["native-hook", "codex"], fx.env, JSON.stringify({ hook_event_name: "SessionStart", session_id: "s1" }));
+  assert.equal(hookOut.code, 0, hookOut.stderr);
+  assert.equal(existsSync(spawnLog) ? readFileSync(spawnLog, "utf8") : "", "");
+});
+
 test("doctor reports a present but unlaunchable host as unavailable", async () => {
   const fx = fixture();
   writeFileSync(join(fx.home, "bin", "codex"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
