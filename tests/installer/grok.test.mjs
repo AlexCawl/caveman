@@ -174,3 +174,19 @@ test('grok dry-run leaves AGENTS.md alone and reports the planned block', () => 
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('grok install leaves a symlinked AGENTS.md alone but still installs skills', { skip: process.platform === 'win32' && 'symlinks need privileges on Windows' }, () => {
+  const home = freshHome();
+  try {
+    const target = path.join(home, 'dotfiles-AGENTS.md');
+    fs.writeFileSync(target, '# dotfiles\n');
+    fs.symlinkSync(target, path.join(home, 'AGENTS.md'));
+    const r = runInstaller(['--only', 'grok'], home);
+    assert.equal(fs.readFileSync(target, 'utf8'), '# dotfiles\n');
+    assert.ok(fs.existsSync(path.join(skillsDir(home), 'caveman', 'SKILL.md')));
+    assert.match(r.stdout, /• grok\n/, 'skills install still reported');
+    assert.match(r.stderr, /grok-always-on/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

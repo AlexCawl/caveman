@@ -859,7 +859,7 @@ function grokAgentsMdPath() {
 }
 
 function installGrokAgentsBlock(ctx) {
-  const { note, opts, repoRoot } = ctx;
+  const { note, warn, opts, repoRoot, results } = ctx;
   const target = grokAgentsMdPath();
   if (!repoRoot) {
     note(`  skipped always-on block in ${target}: needs the full caveman package (npx -y github:${REPO} -- --only grok)`);
@@ -869,9 +869,16 @@ function installGrokAgentsBlock(ctx) {
     note(`  would add the caveman ruleset block to ${target}`);
     return;
   }
-  const rule = fs.readFileSync(path.join(repoRoot, 'src', 'rules', 'caveman-activate.md'), 'utf8').trimEnd();
-  const r = OPENCLAW.appendBootstrapToSoul(target, `${OPENCLAW.MARK_BEGIN}\n${rule}\n${OPENCLAW.MARK_END}\n`);
-  note(r.changed ? `  ${r.refreshed ? 'refreshed' : 'wrote'} caveman ruleset block in ${target}` : `  ${target} already has the current caveman ruleset`);
+  try {
+    const rule = fs.readFileSync(path.join(repoRoot, 'src', 'rules', 'caveman-activate.md'), 'utf8').trimEnd();
+    const r = OPENCLAW.appendBootstrapToSoul(target, `${OPENCLAW.MARK_BEGIN}\n${rule}\n${OPENCLAW.MARK_END}\n`);
+    note(r.changed ? `  ${r.refreshed ? 'refreshed' : 'wrote'} caveman ruleset block in ${target}` : `  ${target} already has the current caveman ruleset`);
+  } catch (error) {
+    // Skills are installed either way; a symlinked or unreadable AGENTS.md only
+    // costs the always-on block, and is never written through.
+    warn(`  could not add the caveman ruleset block to ${target}: ${error.message}`);
+    results.failed.push(['grok-always-on', `${target} left untouched`]);
+  }
 }
 
 // ── hermes native install ──────────────────────────────────────────────────
