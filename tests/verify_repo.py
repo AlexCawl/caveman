@@ -300,6 +300,14 @@ def verify_manifests_and_syntax() -> None:
     for path in manifest_paths:
         read_json(path)
 
+    # The repo root is also the Claude Code plugin and Gemini extension root;
+    # both auto-load hooks/hooks.json, so one there would double-wire hooks.
+    ensure(
+        not (ROOT / "hooks/hooks.json").exists(),
+        "hooks/hooks.json is auto-loaded by Claude Code and Gemini; "
+        "Cursor's hook lives in hooks/hooks-cursor.json",
+    )
+
     claude_manifest = read_json(claude_manifest_path)
     ensure(isinstance(claude_manifest, dict), "Claude plugin manifest must be an object")
     # An explicit `agents` array loads ZERO agents on Claude Code 2.1.235 —

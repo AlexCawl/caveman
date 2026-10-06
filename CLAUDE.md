@@ -93,6 +93,9 @@ caveman/
 ├── shared/                       # Provider catalog + platform libraries
 │
 ├── .claude-plugin/              # Claude Code plugin manifest (REQUIRED at root)
+├── .cursor-plugin/plugin.json   # Cursor plugin: skills/, hooks/hooks-cursor.json, agents/ (default scan)
+├── hooks/hooks-cursor.json      # Cursor plugin sessionStart hook ONLY. Never add hooks/hooks.json:
+│                                #   Claude Code and Gemini auto-load it from the plugin/extension root
 ├── plugins/caveman/             # Claude Code plugin distribution (CI-mirrored)
 │   ├── skills/                  # ← from skills/
 │   └── agents/                  # ← from agents/
