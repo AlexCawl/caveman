@@ -20,10 +20,10 @@ workflow rejects a tag whose version differs from the package metadata.
 |---|---|---|---|---|
 | `sdk-ts-v*` | npm `@caveman-ai/sdk` | `1.1.0` | `1.2.0` | Yes |
 | `sdk-python-v*` | PyPI `caveman-sdk` | `1.1.0` | `1.2.0` | Yes |
-| `middleware-ts-v*` | npm `@caveman-ai/middleware` | `0.1.0-alpha.2` | `1.0.0` | Yes |
+| `middleware-ts-v*` | npm `@caveman-ai/middleware` | `0.1.0-alpha.2` | `1.0.1` | Yes |
 | `middleware-python-v*` | PyPI `caveman-middleware` | `0.1.0a1` | `1.0.0` | Yes |
 | `contracts-v*` | npm `@caveman-ai/contracts` | never published | `2.0.0` | Yes |
-| `pi-v*` | npm `@caveman-ai/pi` | `0.1.1` | `0.2.0` | No |
+| `pi-v*` | npm `@caveman-ai/pi` | `0.1.1` | `0.3.0` | No |
 | `bin-v*` | Go binaries and container image | `bin-v1.1.7` (`bin-v1.1.8` was pinned, never tagged) | `bin-v2.1.0` (pinned in `packages/cli/BINARY_RELEASE`) | Yes, with the binaries |
 | `cli-v*` | npm `@caveman-ai/cli` | `1.3.4` (hand-published) | `2.1.0` | No |
 | `v*` | Caveman product (installer, plugin, skills) | `v2.7.0` | `v3.2.0` | Yes, "Latest" |
