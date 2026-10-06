@@ -52,9 +52,13 @@ export function releaseGoBuild(name, goos, arch, { zig = "zig", darwinStubs = ""
   const args = ["-trimpath"];
   if (!CGO_RELEASE_BINARIES.includes(name)) return { env, args };
   env.CGO_ENABLED = "1";
-  env.CC = `${zig} cc -target ${ZIG_TARGETS[`${goos}/${arch}`]}`;
-  // cgo is for the grammars only: DNS and user lookup stay pure Go.
-  args.push("-tags", "netgo,osusergo");
+  // Go splits CC on spaces but honors quotes, so a ZIG path with a space works.
+  env.CC = `'${zig}' cc -target ${ZIG_TARGETS[`${goos}/${arch}`]}`;
+  // cgo is for the grammars only. Linux keeps the pure-Go DNS and user lookup
+  // its old CGO_ENABLED=0 build had, not static musl's. darwin and windows get no
+  // tags: they always used the system resolver (libSystem getaddrinfo,
+  // GetAddrInfoW), which netgo would replace, breaking scoped VPN DNS and .local.
+  if (goos === "linux") args.push("-tags", "netgo,osusergo");
   // No debug info, which keeps the cgo builds reproducible and near the size of
   // the pure-Go ones. An externally linked build ID hashes link inputs that vary
   // between machines and Go caches (the stub directory below among them), and

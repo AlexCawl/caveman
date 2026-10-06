@@ -36,7 +36,7 @@ test("caveman-proxy and caveman-engine build with cgo through zig on every targe
   assert.deepEqual([...CGO_RELEASE_BINARIES].sort(), ["caveman-engine", "caveman-proxy"]);
   for (const [goos, arch] of RELEASE_TARGETS) {
     for (const [name] of RELEASE_BINARIES) {
-      const { env, args } = releaseGoBuild(name, goos, arch, { zig: "/z/zig", darwinStubs: "/stubs" });
+      const { env, args } = releaseGoBuild(name, goos, arch, { zig: "/z dir/zig", darwinStubs: "/stubs" });
       assert.ok(args.includes("-trimpath"));
       if (!CGO_RELEASE_BINARIES.includes(name)) {
         assert.equal(env.CGO_ENABLED, "0", name);
@@ -44,8 +44,13 @@ test("caveman-proxy and caveman-engine build with cgo through zig on every targe
         continue;
       }
       assert.equal(env.CGO_ENABLED, "1", `${name} ${goos}/${arch}`);
-      assert.match(env.CC, /^\/z\/zig cc -target \S+-(macos\.12\.0|linux-musl|windows-gnu)$/);
-      assert.equal(args[args.indexOf("-tags") + 1], "netgo,osusergo");
+      // Go splits CC on spaces but honors quotes, so a zig path with a space survives.
+      assert.match(env.CC, /^'\/z dir\/zig' cc -target \S+-(macos\.12\.0|linux-musl|windows-gnu)$/);
+      // Pure-Go DNS and user lookup on Linux only, where the old pure-Go build had
+      // them anyway. darwin and windows keep the system resolver (getaddrinfo,
+      // GetAddrInfoW) they used before: scoped VPN DNS, .local, NRPT.
+      if (goos === "linux") assert.equal(args[args.indexOf("-tags") + 1], "netgo,osusergo");
+      else assert.ok(!args.includes("-tags"), `${name} ${goos}/${arch} must not force the Go resolver`);
       const ldflags = args[args.indexOf("-ldflags") + 1];
       assert.equal(ldflags, {
         linux: "-buildid= -w -linkmode external -extldflags '-static -s'",
