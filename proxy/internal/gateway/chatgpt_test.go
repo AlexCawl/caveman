@@ -800,3 +800,23 @@ func TestChatGPTTripwireRecordsCavemansBust(t *testing.T) {
 		t.Fatalf("the /chatgpt row of a caveman bust: bust=%v cause=%q", row.CacheBust, row.CacheBustCause)
 	}
 }
+
+// TestChatGPTOverCaptureLimitKeepsSubstitutions: a Codex session's body
+// crosses the 4 MiB capture limit as screenshots and reasoning items pile up.
+// That turn still extends the prefix earlier turns cached replaced, so it is
+// still read whole (up to the route's request limit) and substituted.
+func TestChatGPTOverCaptureLimitKeepsSubstitutions(t *testing.T) {
+	first := strings.Repeat("codex first output ", 40)
+	huge := strings.Repeat("x", chatGPTCaptureLimit)
+	rt := &captureTransport{}
+	srv := chatGPTCompressServer(rt)
+	serveChatGPT(srv, chatGPTTurn(first))
+	serveChatGPT(srv, chatGPTTurn(first, huge))
+
+	if len(rt.bodies) != 2 || strings.Contains(string(rt.bodies[0]), first) {
+		t.Fatal("test setup: want turn 1 compressed")
+	}
+	if strings.Contains(string(rt.bodies[1]), first) {
+		t.Fatalf("turn 2 re-sent turn 1's message raw although turn 1 cached it compressed (body %d bytes)", len(rt.bodies[1]))
+	}
+}

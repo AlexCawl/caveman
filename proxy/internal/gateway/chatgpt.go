@@ -13,6 +13,7 @@ import (
 
 	"github.com/JuliusBrussee/caveman/proxy/providers"
 	"github.com/JuliusBrussee/caveman/proxy/providers/openai"
+	"github.com/JuliusBrussee/caveman/shared/platform/env"
 	"github.com/JuliusBrussee/caveman/shared/platform/httpx"
 	"github.com/JuliusBrussee/caveman/shared/platform/id"
 )
@@ -22,8 +23,11 @@ import (
 // model_provider with requires_openai_auth=true and base_url .../chatgpt.
 const DefaultChatGPTUpstream = "https://chatgpt.com/backend-api/codex"
 
-// chatGPTCaptureLimit caps request transformation and opportunistic response
-// parsing. Bigger bodies stream through byte-exact and record no invented counts.
+// chatGPTCaptureLimit caps opportunistic request and response parsing for
+// metering. Bigger bodies record no invented counts. A compress-eligible
+// request is read whole up to CAVE_MAX_REQUEST_BYTES instead, like the generic
+// route: a Codex session crosses 4 MiB as screenshots and reasoning items pile
+// up, and that turn must still re-send the replacements earlier turns cached.
 const chatGPTCaptureLimit = 4 << 20
 
 // chatgpt is the ChatGPT-subscription Codex route. It preserves the agent's OAuth
@@ -89,8 +93,9 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	sentSeq := s.prefixSeq.Add(1)
 	rawRetried := false
 	if compressEligible {
-		captured, readErr := io.ReadAll(io.LimitReader(r.Body, chatGPTCaptureLimit+1))
-		if readErr == nil && len(captured) <= chatGPTCaptureLimit {
+		maxBytes := int64(env.Int("CAVE_MAX_REQUEST_BYTES", 33554432))
+		captured, readErr := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
+		if readErr == nil && int64(len(captured)) <= maxBytes {
 			requestBodyFullyRead = true
 			originalBody = captured
 			_, _ = reqHash.Write(originalBody)
