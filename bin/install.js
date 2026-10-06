@@ -27,7 +27,7 @@ const OPENCLAW = require('./lib/openclaw');
 const OWNED = require('./lib/owned-install');
 const PROVIDER_SKILLS = require('./lib/provider-skills');
 const { transformOpencodeAgentFrontmatter } = require('./lib/opencode-agent');
-const CURSOR_AGENTS = require('./lib/cursor-agent');
+const CURSOR_NATIVE = require('./lib/cursor-native');
 const PORTABLE = require('./lib/portable-process');
 const PLATFORM_PATHS = require('./lib/platform-paths');
 const { parseCommandArgs } = require('./lib/command-args');
@@ -736,24 +736,34 @@ function installViaSkills(ctx, prov) {
   const r = runSpawn('npx', args, null, opts.dryRun);
   if (spawnOk(r)) {
     results.installed.push(prov.id);
-    if (prov.id === 'cursor') {
-      try {
-        CURSOR_AGENTS.installCursorAgents({
-          repoRoot: ctx.repoRoot,
-          force: opts.force,
-          dryRun: opts.dryRun,
-          withMcpShrink: opts.withMcpShrink || false,
-          note,
-          warn: ctx.warn,
-        });
-      } catch (error) {
-        ctx.warn(`  Cursor Cavecrew agents were not installed: ${error.message}`);
-        results.failed.push(['cursor', error.message]);
-      }
-    }
+    if (prov.id === 'cursor') installCursorNative(ctx);
   }
   else results.failed.push([prov.id, `npx skills add (${prov.profile}) failed`]);
   process.stdout.write('\n');
+}
+
+// Cursor extras beyond the upstream skill profile: cavecrew subagents and a
+// user sessionStart hook (bin/lib/cursor-native.js). `--no-hooks` keeps the
+// agents only.
+function installCursorNative(ctx) {
+  const { note, warn, opts, results, repoRoot } = ctx;
+  if (!repoRoot) {
+    note('  Cursor agents and hook need the caveman package files; skipped.');
+    return;
+  }
+  try {
+    CURSOR_NATIVE.installCursorNative({
+      repoRoot,
+      node: absoluteNodePath(),
+      withHooks: opts.withHooks !== false,
+      force: opts.force,
+      dryRun: opts.dryRun,
+      note,
+    });
+  } catch (error) {
+    warn(`  Cursor agents/hook were not installed: ${error.message}`);
+    results.failed.push(['cursor (agents + hook)', error.message]);
+  }
 }
 
 // ── hermes native install ──────────────────────────────────────────────────
@@ -1746,17 +1756,16 @@ function uninstall(ctx) {
     }
   }
 
-  // Cursor subagents. One user directory serves the IDE, the Agents Window,
-  // and the CLI on Windows, macOS, and Linux. The ownership journal is the
-  // only authority for which files this installer may delete.
+  // Cursor agents + sessionStart hook. The ownership journal is the only
+  // authority for which files this installer may delete; the hooks.json entry
+  // goes with the hook script it names.
   try {
-    CURSOR_AGENTS.uninstallCursorAgents({
-      dryRun: opts.dryRun,
-      note,
-      warn,
-    });
+    const removed = CURSOR_NATIVE.uninstallCursorNative({ dryRun: opts.dryRun, note, warn });
+    if (removed.hadJournal && removed.changed.length === 0) ok('  pruned owned caveman agents and hook from Cursor');
+    if (removed.changed.length) cleanupFailed = true;
   } catch (error) {
-    warn(`  cursor ownership journal invalid; left integration untouched: ${error.message}`);
+    cleanupFailed = true;
+    warn(`  Cursor cleanup incomplete; left integration untouched: ${error.message}`);
   }
 
   // opencode native install — ownership journal is authority. Never infer

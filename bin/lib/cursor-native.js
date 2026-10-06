@@ -1,345 +1,135 @@
 'use strict';
 
+// Cursor native install, run after `npx skills add -a cursor` put the skills in
+// ~/.cursor/skills:
+//
+//   ~/.cursor/agents/cavecrew-*.md  subagents (IDE, Agents Window and CLI all
+//                                   read this directory on every OS)
+//   ~/.cursor/caveman/...           the shared sessionStart hook payload
+//   ~/.cursor/hooks.json            one sessionStart entry pointing at it
+//
+// Every file goes through the ownership journal. hooks.json is a shared user
+// file: only the entry naming our hook script is ever added or removed.
+// https://cursor.com/docs/agent/subagents  https://cursor.com/docs/agent/hooks
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const child_process = require('child_process');
 
 const OWNED = require('./owned-install');
-const PORTABLE = require('./portable-process');
-const { loadRuleBody } = require('./caveman-skill-body');
-const CURSOR_MCP = require('./cursor-mcp-json');
+const SETTINGS = require('./settings');
+const HOST_HOOKS = require('./host-hooks');
+const { transformOpencodeAgentFrontmatter } = require('./opencode-agent');
 
 const INTEGRATION = 'cursor';
-const HOOK_SCRIPT_REL = 'hooks/caveman-session-start.js';
-const HOOK_COMMAND = './hooks/caveman-session-start.js';
-const RULE_REL = 'rules/caveman.mdc';
-const HOOKS_JSON_REL = 'hooks.json';
-const MERGE_JOURNAL_REL = '.caveman-cursor-merge.json';
-const MCP_SHRINK_PKG = 'caveman-shrink';
-
-const RULE_DESCRIPTION =
-  'Caveman mode — terse communication that preserves technical substance and exact code/errors';
+const CURSOR_AGENT_SPECS = [
+  { file: 'cavecrew-investigator.md', readonly: true },
+  { file: 'cavecrew-builder.md', readonly: false },
+  { file: 'cavecrew-reviewer.md', readonly: true },
+];
 
 function cursorConfigDir(home) {
   return path.join(home, '.cursor');
 }
 
-function cavemanHome(home = os.homedir()) {
-  return path.join(home, '.caveman');
+// Same Claude-only fields opencode rejects: a provider-less `model: haiku` is
+// not a Cursor model id (without it Cursor inherits the parent model). Cursor's
+// `readonly` goes on the two agents whose prompts already refuse edits.
+function transformCursorAgentFrontmatter(content, { readonly = false } = {}) {
+  const out = transformOpencodeAgentFrontmatter(content);
+  if (!readonly || !out.startsWith('---\n')) return out;
+  return out.replace('\n---', '\nreadonly: true\n---');
 }
 
-function hasCmd(cmd) {
-  try {
-    if (process.platform === 'win32') {
-      return PORTABLE.resolveWindowsCommand(cmd, process.env) !== null;
-    }
-    const r = child_process.spawnSync('sh', ['-c', `command -v '${String(cmd).replace(/'/g, `'\\''`)}'`], { stdio: 'ignore' });
-    return r.status === 0;
-  } catch (_) {
-    return false;
+function hooksJsonPath(root) {
+  return path.join(root, 'hooks.json');
+}
+
+function readHooksJson(file) {
+  const config = SETTINGS.readSettings(file);
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error(`${file} is not a JSON object; left untouched`);
   }
-}
-
-function isExecutable(file) {
-  try {
-    const stat = fs.statSync(file);
-    if (!stat.isFile()) return false;
-    if (process.platform === 'win32') return true;
-    fs.accessSync(file, fs.constants.X_OK);
-    return true;
-  } catch (_) {
-    return false;
+  if (config.version !== undefined && config.version !== 1) {
+    throw new Error(`${file} has unsupported version ${JSON.stringify(config.version)}; left untouched`);
   }
-}
-
-function resolveBinary(name, envVar, home) {
-  const explicit = process.env[envVar];
-  if (explicit && isExecutable(explicit)) return explicit;
-  if (hasCmd(name)) {
-    if (process.platform === 'win32') {
-      const win = PORTABLE.resolveWindowsCommand(name, process.env);
-      if (win) return win;
-    } else {
-      const r = child_process.spawnSync('sh', ['-c', `command -v '${String(name).replace(/'/g, `'\\''`)}'`], { encoding: 'utf8' });
-      if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
-    }
+  if (config.hooks !== undefined && (!config.hooks || typeof config.hooks !== 'object' || Array.isArray(config.hooks))) {
+    throw new Error(`${file} hooks is not an object; left untouched`);
   }
-  const local = path.join(cavemanHome(home), 'bin', process.platform === 'win32' ? `${name}.exe` : name);
-  if (fs.existsSync(local) && isExecutable(local)) return local;
-  return null;
-}
-
-function resolveMcpCommand(home) {
-  const bin = resolveBinary('caveman-mcp', 'CAVEMAN_MCP_BIN', home);
-  if (!bin) return null;
-  return { command: bin, args: [] };
-}
-
-function resolveCavememMcpCommand(home) {
-  const bin = resolveBinary('cavemem', 'CAVEMEM_BIN', home);
-  if (!bin) return null;
-  return { command: bin, args: ['mcp'] };
-}
-
-function resolveShrinkMcpCommand(upstreamTokens) {
-  if (!Array.isArray(upstreamTokens) || upstreamTokens.length === 0) return null;
-  if (!hasCmd('npx')) return null;
-  return { command: 'npx', args: ['-y', MCP_SHRINK_PKG, ...upstreamTokens] };
-}
-
-function buildUserRuleMdc(ruleBody) {
-  return `---
-description: "${RULE_DESCRIPTION}"
-alwaysApply: true
----
-
-${ruleBody}`;
-}
-
-function buildSessionHookScript(ruleBody) {
-  const primer = JSON.stringify(ruleBody.trim());
-  return `#!/usr/bin/env node
-'use strict';
-// Caveman sessionStart hook — fail-open primer only (no savings claims).
-const primer = ${primer};
-function finish(payload) {
-  try { process.stdout.write(JSON.stringify(payload)); } catch (_) { process.stdout.write('{}'); }
-  process.exit(0);
-}
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => { input += chunk; });
-process.stdin.on('end', () => {
-  try { finish({ additional_context: primer }); }
-  catch (_) { finish({}); }
-});
-process.stdin.on('error', () => finish({}));
-`;
-}
-
-function readJsonObject(filePath) {
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8').trim();
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('not a JSON object');
-    }
-    return parsed;
-  } catch (error) {
-    if (error.code === 'ENOENT') return {};
-    throw error;
+  const list = config.hooks && config.hooks.sessionStart;
+  if (list !== undefined && !Array.isArray(list)) {
+    throw new Error(`${file} hooks.sessionStart is not an array; left untouched`);
   }
+  return config;
 }
 
-function writeJsonObject(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+function isOurs(entry, root) {
+  return !!entry && typeof entry.command === 'string' && entry.command.includes(HOST_HOOKS.hookScriptPath(root));
 }
 
-const readMcpMarker = CURSOR_MCP.readMcpMarker;
-const mergeMcpServer = CURSOR_MCP.mergeMcpServer;
-const unmergeMcpServer = CURSOR_MCP.unmergeMcpServer;
-
-function mergeSessionStartHook(root) {
-  const filePath = path.join(root, HOOKS_JSON_REL);
-  let rootObj;
-  try {
-    rootObj = readJsonObject(filePath);
-  } catch (error) {
-    throw new Error(`${filePath}: ${error.message}`);
-  }
-  if (rootObj.version !== undefined && rootObj.version !== 1) {
-    throw new Error(`${filePath} hooks.version must be 1 when present`);
-  }
-  rootObj.version = 1;
-  if (!rootObj.hooks || typeof rootObj.hooks !== 'object' || Array.isArray(rootObj.hooks)) {
-    rootObj.hooks = {};
-  }
-  const list = Array.isArray(rootObj.hooks.sessionStart) ? [...rootObj.hooks.sessionStart] : [];
-  const already = list.some((entry) => entry && typeof entry.command === 'string'
-    && entry.command.includes('caveman-session-start'));
-  if (!already) list.push({ command: HOOK_COMMAND });
-  rootObj.hooks.sessionStart = list;
-  writeJsonObject(filePath, rootObj);
+function mergeSessionStartHook(root, command) {
+  const file = hooksJsonPath(root);
+  const config = readHooksJson(file);
+  const list = (config.hooks && config.hooks.sessionStart) || [];
+  if (list.some((entry) => isOurs(entry, root) && entry.command === command)) return;
+  config.version = 1;
+  config.hooks = { ...config.hooks, sessionStart: [...list.filter((entry) => !isOurs(entry, root)), { command, timeout: 10 }] };
+  SETTINGS.writeSettings(file, config);
 }
 
 function unmergeSessionStartHook(root) {
-  const filePath = path.join(root, HOOKS_JSON_REL);
-  let rootObj;
-  try {
-    rootObj = readJsonObject(filePath);
-  } catch (_) {
-    return;
-  }
-  if (!rootObj || !rootObj.hooks || !Array.isArray(rootObj.hooks.sessionStart)) return;
-  const next = rootObj.hooks.sessionStart.filter((entry) => !(entry && typeof entry.command === 'string'
-    && entry.command.includes('caveman-session-start')));
-  if (next.length === rootObj.hooks.sessionStart.length) return;
-  if (next.length === 0) delete rootObj.hooks.sessionStart;
-  else rootObj.hooks.sessionStart = next;
-  if (rootObj.hooks && Object.keys(rootObj.hooks).length === 0) delete rootObj.hooks;
-  if (Object.keys(rootObj).length === 0) {
-    try { fs.unlinkSync(filePath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const file = hooksJsonPath(root);
+  if (!fs.existsSync(file)) return;
+  const config = readHooksJson(file);
+  const list = (config.hooks && config.hooks.sessionStart) || [];
+  if (!list.some((entry) => isOurs(entry, root))) return;
+  const rest = list.filter((entry) => !isOurs(entry, root));
+  if (rest.length) config.hooks.sessionStart = rest;
+  else delete config.hooks.sessionStart;
+  // A file that now says nothing was ours to begin with.
+  if (Object.keys(config.hooks).length === 0 && Object.keys(config).every((key) => key === 'version' || key === 'hooks')) {
+    fs.unlinkSync(file);
   } else {
-    writeJsonObject(filePath, rootObj);
+    SETTINGS.writeSettings(file, config);
   }
-}
-
-function loadMergeJournal(root) {
-  const filePath = path.join(root, MERGE_JOURNAL_REL);
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (parsed?.version !== 1) return { version: 1, mcpServers: [], sessionStartHook: false };
-    return {
-      version: 1,
-      mcpServers: Array.isArray(parsed.mcpServers) ? parsed.mcpServers : [],
-      sessionStartHook: parsed.sessionStartHook === true,
-    };
-  } catch (error) {
-    if (error.code === 'ENOENT') return { version: 1, mcpServers: [], sessionStartHook: false };
-    throw error;
-  }
-}
-
-function writeMergeJournal(root, journal) {
-  if (!journal.mcpServers.length && !journal.sessionStartHook) {
-    try { fs.unlinkSync(path.join(root, MERGE_JOURNAL_REL)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    return;
-  }
-  writeJsonObject(path.join(root, MERGE_JOURNAL_REL), journal);
 }
 
 function installCursorNative({
-  repoRoot,
-  home = os.homedir(),
-  force = false,
-  dryRun = false,
-  withMcpShrink = false,
-  note = () => {},
-  warn = () => {},
+  repoRoot, home = os.homedir(), node = process.execPath, withHooks = true,
+  force = false, dryRun = false, note = () => {},
 }) {
   const root = cursorConfigDir(home);
-  const ruleBody = loadRuleBody(repoRoot);
-  const ruleMdc = buildUserRuleMdc(ruleBody);
-  const hookScript = buildSessionHookScript(ruleBody);
-
+  const operations = CURSOR_AGENT_SPECS.map(({ file, readonly }) => {
+    const body = transformCursorAgentFrontmatter(fs.readFileSync(path.join(repoRoot, 'agents', file), 'utf8'), { readonly });
+    return { relativePath: `agents/${file}`, write: (stage) => fs.writeFileSync(stage, body) };
+  });
+  if (withHooks) {
+    const command = HOST_HOOKS.hookCommand(root, 'cursor', node);
+    operations.push({ ...HOST_HOOKS.payloadOperation(repoRoot), register: () => mergeSessionStartHook(root, command) });
+  }
   if (dryRun) {
-    note('  would install user rule, sessionStart hook, and MCP entries under ~/.cursor/');
-    return { installed: false, dryRun: true };
-  }
-
-  const operations = [
-    {
-      relativePath: RULE_REL,
-      write: (stage) => fs.writeFileSync(stage, ruleMdc, { mode: 0o600, flag: 'wx' }),
-    },
-    {
-      relativePath: HOOK_SCRIPT_REL,
-      write: (stage) => {
-        fs.writeFileSync(stage, hookScript, { mode: 0o600, flag: 'wx' });
-        try { fs.chmodSync(stage, 0o700); } catch (_) { /* Windows */ }
-      },
-    },
-  ];
-  OWNED.installOwned({ root, integration: INTEGRATION, operations, force, note });
-
-  const mergeJournal = loadMergeJournal(root);
-  try {
-    mergeSessionStartHook(root);
-    mergeJournal.sessionStartHook = true;
-    note(`  wired sessionStart hook in ${path.join(root, HOOKS_JSON_REL)}`);
-  } catch (error) {
-    warn(`  Cursor sessionStart hook was not installed: ${error.message}`);
-  }
-
-  const mcpInstalled = [];
-  const cavemanMcp = resolveMcpCommand(home);
-  if (cavemanMcp) {
-    if (mergeMcpServer(root, home, 'caveman', cavemanMcp, force, warn)) {
-      mcpInstalled.push('caveman');
-      note('  registered caveman MCP (caveman_retrieve)');
-    }
-  } else {
-    note('  caveman-mcp not found — run `caveman setup --install` then re-run `--only cursor` for retrieve');
-  }
-
-  const cavememMcp = resolveCavememMcpCommand(home);
-  if (cavememMcp) {
-    if (mergeMcpServer(root, home, 'cavemem', cavememMcp, force, warn)) {
-      mcpInstalled.push('cavemem');
-      note('  registered cavemem MCP');
-    }
-  } else {
-    note('  cavemem not found — memory MCP skipped (optional)');
-  }
-
-  if (withMcpShrink) {
-    const shrink = resolveShrinkMcpCommand(withMcpShrink);
-    if (shrink) {
-      if (mergeMcpServer(root, home, 'caveman-shrink', shrink, force, warn)) {
-        mcpInstalled.push('caveman-shrink');
-        note(`  registered caveman-shrink MCP (wraps: ${withMcpShrink.join(' ')})`);
-      }
-    } else {
-      warn('  npx not found — caveman-shrink MCP was not registered');
-    }
-  }
-
-  mergeJournal.mcpServers = [...new Set([...mergeJournal.mcpServers, ...mcpInstalled])];
-  writeMergeJournal(root, mergeJournal);
-  return { installed: true, mcpInstalled };
-}
-
-function uninstallCursorNative({
-  home = os.homedir(),
-  dryRun = false,
-  note = () => {},
-  warn = () => {},
-}) {
-  const root = cursorConfigDir(home);
-  const journal = loadMergeJournal(root);
-  if (dryRun) {
-    note('  would remove Cursor user rule, hook script, merged MCP/hook entries');
+    for (const operation of operations) note(`  would install ${path.join(root, operation.relativePath)}`);
+    if (withHooks) note(`  would add a sessionStart hook to ${hooksJsonPath(root)}`);
     return;
   }
-  if (journal.sessionStartHook) {
-    unmergeSessionStartHook(root);
-    note('  removed caveman sessionStart hook entry');
-  }
-  const servers = new Set([...journal.mcpServers, 'caveman', 'cavemem', 'caveman-shrink']);
-  for (const serverName of servers) {
-    if (!readMcpMarker(home, serverName)) continue;
-    unmergeMcpServer(root, home, serverName);
-    note(`  removed mcpServers.${serverName} when Caveman-owned`);
-  }
-  writeMergeJournal(root, { version: 1, mcpServers: [], sessionStartHook: false });
+  OWNED.installOwned({ root, integration: INTEGRATION, operations, force, note });
+  if (withHooks) note(`  sessionStart hook registered in ${hooksJsonPath(root)}`);
+  note('  open a new Cursor chat to load the agents and the hook');
 }
 
-const installCursorMcpJson = CURSOR_MCP.installCursorMcpJson;
-
-function uninstallCursorMcpJson(serverName = 'caveman', { home = os.homedir() } = {}) {
-  CURSOR_MCP.uninstallCursorMcpJson(serverName, { home });
-  const journal = loadMergeJournal(cursorConfigDir(home));
-  journal.mcpServers = journal.mcpServers.filter((name) => name !== serverName);
-  writeMergeJournal(cursorConfigDir(home), journal);
-  return true;
+function uninstallCursorNative({ home = os.homedir(), dryRun = false, note = () => {}, warn = () => {} }) {
+  const root = cursorConfigDir(home);
+  const payload = path.join(root, HOST_HOOKS.PAYLOAD_DIR);
+  return OWNED.uninstallOwned({
+    root, integration: INTEGRATION, dryRun, note, warn,
+    unregister: (target) => { if (target === payload) unmergeSessionStartHook(root); },
+  });
 }
 
 module.exports = {
-  HOOK_COMMAND,
-  buildSessionHookScript,
-  buildUserRuleMdc,
+  CURSOR_AGENT_SPECS,
   cursorConfigDir,
-  installCursorMcpJson,
+  transformCursorAgentFrontmatter,
   installCursorNative,
-  loadRuleBody,
-  mergeMcpServer,
-  mergeSessionStartHook,
-  resolveMcpCommand,
-  unmergeMcpServer,
-  unmergeSessionStartHook,
-  uninstallCursorMcpJson,
   uninstallCursorNative,
 };
