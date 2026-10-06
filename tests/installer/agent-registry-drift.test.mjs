@@ -144,6 +144,15 @@ test("broken latest probe opens an issue without copying untrusted probe output"
   assert.doesNotMatch(result.ghCalls, /ruamel|@maintainer/);
 });
 
+test("hermes latest drift probe installs the latest release, not main", () => {
+  // #1054: hermes main moved its deps to Python 3.14-only markers, so @main probed
+  // broken on the runner's 3.12 while every tagged release installs cleanly.
+  const workflow = readFileSync(join(root, ".github", "workflows", "agent-conformance.yml"), "utf8");
+  const line = /- id: hermes\s*\n\s*install_latest:\s*([^\n]+)/.exec(workflow)?.[1] || "";
+  assert.match(line, /hermes-agent\/releases\/latest/);
+  assert.doesNotMatch(line, /@main\b/);
+});
+
 test("workflow passes trusted artifact basename as expected profile id", () => {
   const workflow = readFileSync(join(root, ".github", "workflows", "agent-conformance.yml"), "utf8");
   assert.match(workflow, /expected_id="\$\(basename "\$probe" \.json\)"/);
