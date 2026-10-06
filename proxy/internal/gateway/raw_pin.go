@@ -69,15 +69,17 @@ func (r *rawPins) add(identity [32]byte, p rawPin) {
 	r.pins[identity] = append(r.pins[identity], p)
 }
 
-func (r *rawPins) match(identity [32]byte, components [][]byte) bool {
+// longest returns the length of the longest pin components extend, 0 if none.
+func (r *rawPins) longest(identity [32]byte, components [][]byte) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	n := 0
 	for _, p := range r.pins[identity] {
 		if p.matches(components) {
-			return true
+			n = max(n, int(p.n))
 		}
 	}
-	return false
+	return n
 }
 
 // pinRaw records that the provider accepted body, the client's original bytes,
@@ -108,28 +110,33 @@ func (s *Server) pinRaw(adapter providers.Adapter, meta providers.RequestMetadat
 
 // rawPinned reports whether body extends a request pinned raw.
 func (s *Server) rawPinned(adapter providers.Adapter, meta providers.RequestMetadata, body []byte) bool {
-	if s.prefixCache == nil {
-		return false
-	}
 	components, _, ok := cachedPrefix(adapter, meta, body)
-	if !ok {
-		return false
+	return ok && s.rawPinCoverage(components) > 0
+}
+
+// rawPinCoverage returns how many leading components the longest raw pin a
+// request extends covers, 0 when it extends none. Pins this process has not
+// seen yet (a restart) are loaded from the store on first use.
+func (s *Server) rawPinCoverage(components [][]byte) int {
+	if s.prefixCache == nil || len(components) == 0 {
+		return 0
 	}
 	identity := sha256.Sum256(components[0])
-	if s.rawPins.match(identity, components) {
-		return true
+	if n := s.rawPins.longest(identity, components); n > 0 {
+		return n
 	}
+	n := 0
 	for slot := 0; slot < rawPinSlots; slot++ {
 		value, _, hit := s.prefixCache.LookupReplacement(rawPinScope, rawPinKey(identity, slot))
 		if !hit {
-			return false
+			break
 		}
 		if p, ok := decodeRawPin(value); ok && p.matches(components) {
 			s.rawPins.add(identity, p)
-			return true
+			n = max(n, int(p.n))
 		}
 	}
-	return false
+	return n
 }
 
 func rawPinKey(identity [32]byte, slot int) []byte {

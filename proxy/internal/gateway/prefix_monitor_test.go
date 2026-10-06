@@ -16,7 +16,7 @@ import (
 // components are the same comma-separated list, all of it cached.
 func observeSame(m *prefixMonitor, session, components string) (bool, int) {
 	parts := splitComponents(components)
-	cause, index := m.observe(session, parts, parts, len(parts), false)
+	cause, index := m.observe(session, parts, parts, len(parts), false, 0)
 	return cause != "", index
 }
 
@@ -135,7 +135,7 @@ func TestPrefixMonitorClassifiesWhoChangedTheBytes(t *testing.T) {
 	m := newPrefixMonitor()
 	observe := func(client, forwarded string, rawRetry bool) (string, int) {
 		c := splitComponents(client)
-		return m.observe("s", c, splitComponents(forwarded), len(c), rawRetry)
+		return m.observe("s", c, splitComponents(forwarded), len(c), rawRetry, 0)
 	}
 	if cause, _ := observe("sys,tools,m1", "sys,tools,M1", false); cause != "" {
 		t.Fatalf("first observation flagged %q", cause)
@@ -155,26 +155,30 @@ func TestPrefixMonitorClassifiesWhoChangedTheBytes(t *testing.T) {
 }
 
 // TestPrefixMonitorHoldsRequestsToTheRawRetry: the retry the provider accepted
-// raw is the invariant's one exception, and what follows it is held to it —
-// including a shorter request that compressed what the raw retry covers.
+// raw is the invariant's one exception, and what extends it is held to it — by
+// the raw pin that covers it, also over a shorter compressed request.
 func TestPrefixMonitorHoldsRequestsToTheRawRetry(t *testing.T) {
 	m := newPrefixMonitor()
-	observe := func(client, forwarded string, rawRetry bool) (string, int) {
+	observe := func(client, forwarded string, rawRetry bool, pinned int) (string, int) {
 		c := splitComponents(client)
-		return m.observe("s", c, splitComponents(forwarded), len(c), rawRetry)
+		return m.observe("s", c, splitComponents(forwarded), len(c), rawRetry, pinned)
 	}
-	observe("sys,tools,m1", "sys,tools,M1", false)
-	if cause, idx := observe("sys,tools,m1,m2", "sys,tools,m1,m2", true); cause != bustCauseRawRetry || idx != 2 {
+	observe("sys,tools,m1", "sys,tools,M1", false, 0)
+	if cause, idx := observe("sys,tools,m1,m2", "sys,tools,m1,m2", true, 4); cause != bustCauseRawRetry || idx != 2 {
 		t.Fatalf("the raw retry must be classified raw_retry at 2, got %q at %d", cause, idx)
 	}
-	if cause, _ := observe("sys,tools,m1,m2,m3", "sys,tools,m1,m2,m3", false); cause != "" {
+	if cause, _ := observe("sys,tools,m1,m2,m3", "sys,tools,m1,m2,m3", false, 4); cause != "" {
 		t.Fatalf("the pinned turn after the raw retry was flagged %q", cause)
 	}
-	if cause, _ := observe("sys,tools,m1", "sys,tools,M1", false); cause == bustCauseCaveman {
+	if cause, _ := observe("sys,tools,m1", "sys,tools,M1", false, 0); cause == bustCauseCaveman {
 		t.Fatal("a shorter request is not held to a longer one")
 	}
-	if cause, _ := observe("sys,tools,m1,m2,m3,m4", "sys,tools,m1,m2,m3,m4", false); cause != "" {
+	if cause, _ := observe("sys,tools,m1,m2,m3,m4", "sys,tools,m1,m2,m3,m4", false, 4); cause != "" {
 		t.Fatalf("a pinned turn covering a shorter compressed request was flagged %q", cause)
+	}
+	observe("sys,tools,m1", "sys,tools,M1", false, 0)
+	if cause, idx := observe("sys,tools,m1,other", "sys,tools,m1,other", false, 0); cause != bustCauseCaveman || idx != 2 {
+		t.Fatalf("raw bytes no pin covers are caveman's bust at 2, got %q at %d", cause, idx)
 	}
 }
 
@@ -383,4 +387,20 @@ func TestPrefixMonitorSkipsCallerOptOut(t *testing.T) {
 	if row := sink.last(t); row.CacheBustCause == bustCauseCaveman {
 		t.Fatal("a caller opt-out was counted as caveman's bust")
 	}
+}
+
+// TestTripwireFollowsThePinAcrossSessions: the raw retry that pinned a
+// conversation can arrive without a session id (correlation is best effort),
+// so the tripwire cannot count on having seen it. The pin itself says the turn
+// after it is held to the raw request, not to the compressed turn before it.
+func TestTripwireFollowsThePinAcrossSessions(t *testing.T) {
+	h := newInvariantHarness(t)
+	c := newCCConversation("You are Claude Code.", "sess-a")
+	h.send(c.user(filler("one")), sendOpts{})
+	c.session = ""
+	h.send(c.user(filler("two")), sendOpts{respond: rejectTransformed(http.StatusTooManyRequests, nil)})
+	c.session = "sess-a"
+	h.send(c.user(filler("three")), sendOpts{})
+	h.compressedSomething()
+	h.assert()
 }

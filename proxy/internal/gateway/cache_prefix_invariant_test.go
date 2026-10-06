@@ -716,6 +716,8 @@ func FuzzCachePrefixInvariant(f *testing.F) {
 		{0, 2, 9, 3, 0, 2, 0, 2, 13, 0, 0, 0, 7, 0, 0, 0},
 		{0, 0, 0, 1, 9, 0, 1, 1, 0, 0, 0, 1, 14, 0, 0, 1},
 		{0, 0, 10, 0, 15, 0, 0, 0, 13, 0, 15, 0, 0, 0},
+		// A raw retry without a session id between two turns that carry one.
+		{46, 50, 46, 50, 57, 48, 46, 50, 46, 50},
 	} {
 		f.Add(seed)
 	}

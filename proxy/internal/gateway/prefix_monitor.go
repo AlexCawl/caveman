@@ -21,8 +21,9 @@ import (
 //   - caveman: the client's bytes are unchanged and the forwarded bytes are not.
 //     That is a caveman bug: logged at ERROR, counted by stats and status.
 //   - raw_retry: the provider rejected the transformed request and accepted the
-//     original bytes, the invariant's one exception. Requests after it are held
-//     to the raw request (see raw_pin.go).
+//     original bytes, the invariant's one exception. Requests extending it are
+//     held to the raw request: the raw pin that records it (raw_pin.go) exempts
+//     the anchors it covers, whether or not the retry was observed here.
 //
 // It is OBSERVE-ONLY: it never blocks or modifies traffic. A session is not one
 // conversation — a header-less Claude Code process correlates its main thread,
@@ -41,10 +42,6 @@ type prefixMonitor struct {
 // prefixAnchor is one accepted request's cached prefix as component digests.
 type prefixAnchor struct {
 	client, forwarded [][32]byte
-	// raw: the provider holds this prefix as the client's original bytes after
-	// a raw retry, so a request extending it is held to it, not to compressed
-	// requests it covers.
-	raw bool
 }
 
 const (
@@ -80,28 +77,30 @@ func newPrefixMonitor() *prefixMonitor {
 // observe checks one accepted request against the anchors of its session and
 // records it as an anchor. client and forwarded are its cached-prefix
 // components as the client sent them and as they went upstream (see
-// cachedPrefix), cached how many of them it caches, and rawRetry whether the
-// provider accepted it only as the client's original bytes.
+// cachedPrefix), cached how many of them it caches, rawRetry whether the
+// provider accepted it only as the client's original bytes, and pinned how
+// many leading components a raw pin it extends covers.
 //
 // Every anchor whose cached client prefix the request repeats must find its
 // forwarded prefix repeated too; the first component that is not is a caveman
-// bust (raw_retry for the retry itself), unless a raw request that covers the
-// anchor took it over. Otherwise, a request whose closest anchor shares the
-// conversation identity but is not repeated is a client bust at the first
-// differing component. "" and -1 mean the request extends what was cached, or
-// there was nothing to compare: no session, or no comparable components.
-func (m *prefixMonitor) observe(session string, client, forwarded [][]byte, cached int, rawRetry bool) (cause string, index int) {
+// bust (raw_retry for the retry itself), unless a raw pin covers the anchor:
+// the provider re-cached those bytes raw. Otherwise, a request whose closest
+// anchor shares the conversation identity but is not repeated is a client bust
+// at the first differing component. "" and -1 mean the request extends what was
+// cached, or there was nothing to compare: no session, or no comparable
+// components.
+func (m *prefixMonitor) observe(session string, client, forwarded [][]byte, cached int, rawRetry bool, pinned int) (cause string, index int) {
 	if m == nil || session == "" || len(client) == 0 || len(forwarded) != len(client) || cached < 0 || cached > len(client) {
 		return "", -1
 	}
-	cur := prefixAnchor{client: digestEach(client), forwarded: digestEach(forwarded), raw: rawRetry}
+	cur := prefixAnchor{client: digestEach(client), forwarded: digestEach(forwarded)}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	anchors := m.last[session]
 	cause, index = "", -1
 	closest, closestRepeated := -1, false
 	var kept []prefixAnchor
-	for i, a := range anchors {
+	for _, a := range anchors {
 		n := commonPrefixLen(a.client, cur.client)
 		repeats := n == len(a.client)
 		if n > closest || (n == closest && repeats && !closestRepeated) {
@@ -112,7 +111,8 @@ func (m *prefixMonitor) observe(session string, client, forwarded [][]byte, cach
 			continue
 		}
 		preserved := commonPrefixLen(a.forwarded, cur.forwarded)
-		if preserved < len(a.forwarded) && !rebased(anchors, i, cur) && (index < 0 || preserved < index) {
+		diverged := preserved < len(a.forwarded) && (rawRetry || pinned < len(a.forwarded))
+		if diverged && (index < 0 || preserved < index) {
 			cause, index = bustCauseCaveman, preserved
 			if rawRetry {
 				cause = bustCauseRawRetry
@@ -122,7 +122,6 @@ func (m *prefixMonitor) observe(session string, client, forwarded [][]byte, cach
 		// much — it is the provider's latest entry for those bytes — and always
 		// when it is a raw retry, whose raw bytes the provider now holds there.
 		if rawRetry || cached >= len(a.client) {
-			cur.raw = cur.raw || (a.raw && preserved == len(a.forwarded))
 			continue
 		}
 		kept = append(kept, a)
@@ -152,13 +151,14 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 	if !ok {
 		return ""
 	}
-	forwarded := client
-	if !bytes.Equal(accepted, body) {
-		if forwarded, _, ok = cachedPrefix(adapter, meta, accepted); !ok {
-			return ""
-		}
+	// Only a request that went out as sent can be one held to a raw pin.
+	forwarded, pinned := client, 0
+	if bytes.Equal(accepted, body) {
+		pinned = s.rawPinCoverage(client)
+	} else if forwarded, _, ok = cachedPrefix(adapter, meta, accepted); !ok {
+		return ""
 	}
-	cause, index := s.prefixMonitor.observe(sessionID+"\x00"+meta.Model, client, forwarded, cached, rawRetry)
+	cause, index := s.prefixMonitor.observe(sessionID+"\x00"+meta.Model, client, forwarded, cached, rawRetry, pinned)
 	if s.logger != nil {
 		attrs := []any{"request_id", requestID, "session_id", sessionID, "index", index}
 		switch cause {
@@ -171,20 +171,6 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 		}
 	}
 	return cause
-}
-
-// rebased reports whether a raw anchor other than anchors[i] covers anchor i's
-// cached client prefix and cur repeats that raw anchor: cur is then held to the
-// raw request the provider re-cached those bytes as, not to anchor i.
-func rebased(anchors []prefixAnchor, i int, cur prefixAnchor) bool {
-	for j, x := range anchors {
-		if j != i && x.raw &&
-			commonPrefixLen(x.client, anchors[i].client) == len(anchors[i].client) &&
-			commonPrefixLen(x.client, cur.client) == len(x.client) {
-			return true
-		}
-	}
-	return false
 }
 
 func digestEach(components [][]byte) [][32]byte {
