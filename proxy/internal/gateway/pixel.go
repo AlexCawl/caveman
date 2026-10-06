@@ -57,7 +57,7 @@ func (s *Server) pixelRequest(body []byte, meta providers.RequestMetadata, trans
 	handle, err := s.compressor.StoreOriginal(body)
 	if err != nil || handle == "" {
 		if s.logger != nil {
-			s.logger.Warn("pixel recovery store failed; new renders go out as text", "error", redact.Error(err), "request_id", requestID)
+			s.logger.Warn("pixel recovery store failed; nothing new renders this turn", "error", redact.Error(err), "request_id", requestID)
 		}
 		handle = ""
 		d.dropFresh(everyRender)
