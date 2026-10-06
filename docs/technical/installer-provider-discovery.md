@@ -74,6 +74,7 @@ directory below is source or documentation evidence; it is not a full host run.
 | `qoder` | Qoder CLI/IDE user `.qoder/skills`; upstream link matches. | Metadata first, automatic selection or `/skill-name`. [Official CLI docs](https://docs.qoder.com/cli/Skills). QoderWork's `.qoderwork/skills` is a separate product scope. |
 | `antigravity` | Owned copies into Antigravity IDE `.gemini/antigravity/skills`; current universal upstream algorithm misses this declared destination. | [Official IDE skills docs](https://www.antigravity.google/docs/ide/skills/) (IDE 2.5.5). Explicit selection retains the existing installer ID. Closed source; no native loading run. |
 | `antigravity-2` | Owned copies into Antigravity 2.0 `.gemini/config/skills`, distinct from IDE. | [Official 2.0 skills docs](https://www.antigravity.google/docs/skills/) (2.12.2). Separate explicit target; no guessed filesystem detection or multi-home install. Closed source; no native loading run. |
+| `antigravity-cli` | `agy plugin install` of a staged `caveman` plugin; agy copies it to `.gemini/config/plugins/caveman` and owns it. Detection: `agy` on PATH. | Plugin `skills/` load as skills and `rules/AGENTS.md` merges into the active rule set while the plugin is enabled (agy 1.2.17 built-in plugin guide). Live run 2026-10-05 in a throwaway HOME: caveman reply with the plugin, normal prose with it disabled or with only `skills/`. Closed source. |
 
 ## Native installer integrations
 

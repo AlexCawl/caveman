@@ -2115,11 +2115,11 @@ async function promptForOnly(detected) {
 function printList(noColor) {
   const c = makeChalk(noColor);
   process.stdout.write(c.orange('🪨 caveman provider matrix') + '\n\n');
-  process.stdout.write(`  ${pad('ID', 13)} ${pad('AGENT', 22)} INSTALL MECHANISM\n`);
-  process.stdout.write(`  ${pad('--', 13)} ${pad('-----', 22)} -----------------\n`);
+  process.stdout.write(`  ${pad('ID', 15)} ${pad('AGENT', 22)} INSTALL MECHANISM\n`);
+  process.stdout.write(`  ${pad('--', 15)} ${pad('-----', 22)} -----------------\n`);
   for (const p of PROVIDERS) {
     const tag = p.soft ? ' (soft)' : '';
-    process.stdout.write(`  ${pad(p.id, 13)} ${pad(p.label, 22)} ${p.mech}${tag}\n`);
+    process.stdout.write(`  ${pad(p.id, 15)} ${pad(p.label, 22)} ${p.mech}${tag}\n`);
   }
   process.stdout.write('\n');
   process.stdout.write(c.dim('  Defaults: --with-hooks ON, --with-init OFF, --with-mcp-shrink OFF.\n'));
