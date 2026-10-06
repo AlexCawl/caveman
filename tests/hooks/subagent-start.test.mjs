@@ -68,12 +68,23 @@ test('a session that never activated injects nothing', t => {
   assert.equal(subagent(), '');
 });
 
-test('another window\'s mode does not reach this session\'s subagents', t => {
+test('another window\'s mode does not reach a session that stored off', t => {
   const { prompt, subagent } = fixture(t);
   prompt('stop caveman');
   // A second window turns ultracave on, which also rewrites the legacy mirror.
   prompt('/ultracave', 's2');
   assert.equal(subagent(), '');
+});
+
+// Documented degrade, not a leak to fix here: a session with NO stored state
+// (SessionStart skipped or failed, or the session predates the store) reads
+// the legacy mirror through resolveActiveMode, exactly like the tracker's
+// per-turn reinforcement for the parent thread. Subagents match their parent.
+test('a session with no stored state falls back to the legacy mirror, like its parent thread', t => {
+  const { prompt, subagent } = fixture(t);
+  prompt('/ultracave', 's2');
+  assert.match(contextOf(subagent()), /mode: ultracave\b/);
+  assert.match(prompt('hello'), /ultracave/i, 'the tracker reinforces the same mirrored mode');
 });
 
 for (const agentType of ['caveman:cavecrew-investigator', 'cavecrew-builder']) {

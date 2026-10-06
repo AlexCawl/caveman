@@ -56,7 +56,8 @@ environment to opt a headless run back in.
 ### `caveman-activate.js --subagent` — SubagentStart hook
 
 - SessionStart context reaches only the main conversation, so subagents never saw caveman. This hook hands each new subagent **this session's** active skill
-- Injects nothing when the session is off, so "stop caveman" never leaks into subagents
+- Injects nothing once the session has stored `off`, so "stop caveman" never leaks into subagents, even if another window turns caveman on
+- A session with no stored mode at all (its SessionStart hook never ran or failed) falls back to the shared mirror, the same as the per-turn reminder its main conversation gets
 - Skips the cavecrew agents (they already talk ultracave), one-shot modes (`commit`/`review`/`compress`), and projects whose repo config says `defaultMode: "off"`
 - Read-only: it never writes mode state, logs, or marker files
 
