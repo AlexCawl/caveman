@@ -30,6 +30,11 @@ func main() {
 		return
 	}
 
+	// Installed before Chrome launches: a signal during startup is held until
+	// runUntilSignal sees it, so the deferred Close calls below still run.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer cancel()
+
 	store, err := openRecoveryStore()
 	if err != nil {
 		logger.Error("open recovery store", "err", err)
@@ -54,9 +59,6 @@ func main() {
 	defer session.Close()
 
 	srv := mcp.NewServer("caveman-browse", browse.BrowserTools(session), logger)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer cancel()
 	if err := runUntilSignal(ctx, srv, os.Stdin, os.Stdout); err != nil {
 		logger.Error("serve", "err", err)
 		os.Exit(1)

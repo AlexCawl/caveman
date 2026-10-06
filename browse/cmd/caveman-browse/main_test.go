@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -173,5 +176,71 @@ func TestDefaultChromeCandidatesIncludeWindowsInstallRoots(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("Windows Chrome candidate %q missing from %v", want, got)
 		}
+	}
+}
+
+// TestMainHelper runs main() in a subprocess for TestSignalDuringBrowserStartup.
+func TestMainHelper(t *testing.T) {
+	if os.Getenv("CAVEMAN_BROWSE_MAIN_HELPER") != "1" {
+		return
+	}
+	os.Args = os.Args[:1] // any argument switches main to direct-command mode
+	main()
+	os.Exit(0)
+}
+
+// TestSignalDuringBrowserStartup pins the startup half of #1016: a SIGTERM that
+// lands while NewCDPDriver is still bringing the browser up must not take the
+// default action, or a launched Chrome is orphaned with its temp profile. The
+// fake CDP endpoint accepts the driver's /json/version request and never
+// answers, holding main inside NewCDPDriver; closing it then fails startup.
+// An unguarded process dies by the signal; a guarded one exits on its error.
+func TestSignalDuringBrowserStartup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX signal delivery")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if conn, err := ln.Accept(); err == nil {
+			accepted <- conn
+		}
+	}()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMainHelper$")
+	cmd.Env = append(os.Environ(), "CAVEMAN_BROWSE_MAIN_HELPER=1", "CAVEMAN_BROWSE_EPHEMERAL=1", "CAVEMAN_BROWSE_CDP=http://"+ln.Addr().String())
+	stdin, err := cmd.StdinPipe() // held open, so stdin EOF never ends the run
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+
+	var conn net.Conn
+	select {
+	case conn = <-accepted:
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("main never dialed the CDP endpoint")
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done: // killed by the signal's default action
+	case <-time.After(time.Second):
+		_ = conn.Close()
+		<-done
+	}
+	if status := cmd.ProcessState.Sys().(syscall.WaitStatus); status.Signaled() {
+		t.Fatalf("SIGTERM during browser startup killed the process (%v) before its deferred Close calls could run", status.Signal())
 	}
 }
