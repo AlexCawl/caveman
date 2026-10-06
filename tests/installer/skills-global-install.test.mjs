@@ -108,3 +108,22 @@ test('standalone Copilot CLI executable triggers the github-copilot profile', (t
   assert.match(result.stdout, /GitHub Copilot detected/);
   assert.match(result.stdout, /-a github-copilot --yes -g/);
 });
+
+// #408: CodeBuddy Code ships a `codebuddy` binary; upstream skills has a
+// `codebuddy` profile (~/.codebuddy/skills).
+test('CodeBuddy Code executable triggers the codebuddy profile', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'caveman codebuddy '));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, 'bin');
+  nodeStub(bin, 'codebuddy', 'process.exit(0);');
+  const preload = path.join(dir, 'hide-system-apps.cjs');
+  fs.writeFileSync(preload, `const fs = require('fs'); const exists = fs.existsSync; fs.existsSync = p => String(p).startsWith('/Applications/') ? false : exists(p);`);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
+  Object.assign(env, { PATH: process.platform === 'win32' ? bin : `${bin}:/usr/bin:/bin`, HOME: dir, USERPROFILE: dir, APPDATA: dir, LOCALAPPDATA: dir, XDG_CONFIG_HOME: dir });
+  const result = spawnSync(process.execPath, ['--require', preload, INSTALLER, '--minimal', '--dry-run', '--non-interactive'], {
+    encoding: 'utf8', cwd: dir, env,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /CodeBuddy Code detected/);
+  assert.match(result.stdout, /-a codebuddy --yes -g/);
+});

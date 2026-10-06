@@ -263,6 +263,7 @@ const PROVIDERS = [
   { id: 'aider-desk', label: 'Aider Desk',          mech: 'native skills copy',   detect: 'command:aider-desk||macapp:aider-desk', profile: 'aider-desk' },
   { id: 'amp',        label: 'Sourcegraph Amp',     mech: 'npx skills add (amp)',          detect: 'command:amp',             profile: 'amp' },
   { id: 'bob',        label: 'IBM Bob',             mech: 'npx skills add (bob)',          detect: 'command:bob', profile: 'bob' },
+  { id: 'codebuddy',  label: 'CodeBuddy Code',      mech: 'npx skills add (codebuddy)',    detect: 'command:codebuddy', profile: 'codebuddy' },
   { id: 'crush',      label: 'Crush',               mech: 'npx skills add (crush)',        detect: 'command:crush', profile: 'crush' },
   { id: 'devin',      label: 'Devin (terminal)',    mech: 'npx skills add (devin)',        detect: 'command:devin', profile: 'devin' },
   { id: 'droid',      label: 'Droid (Factory)',     mech: 'npx skills add (droid)',        detect: 'command:droid', profile: 'droid' },

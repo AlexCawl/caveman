@@ -62,6 +62,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **AiderDesk** | `npx -y github:JuliusBrussee/caveman -- --only aider-desk` | No — enable Skills Tools |
 | **Sourcegraph Amp** | `npx skills add JuliusBrussee/caveman -a amp -g` | No |
 | **IBM Bob** | `npx skills add JuliusBrussee/caveman -a bob -g` | No |
+| **CodeBuddy Code** | `npx skills add JuliusBrussee/caveman -a codebuddy -g` | No |
 | **Crush** | `npx -y github:JuliusBrussee/caveman -- --only crush` | No |
 | **Devin (terminal)** | `npx skills add JuliusBrussee/caveman -a devin -g` | No |
 | **Droid (Factory)** | `npx skills add JuliusBrussee/caveman -a droid -g` | No |
