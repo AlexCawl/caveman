@@ -364,9 +364,13 @@ available locally.
   from corrupting a stack trace, a command, or a secret while it shortens
   prose. It creates no new place for data to go. The `caveman` skill is
   instructions only: no scripts, no network calls, no extra tool access.
-  `caveman-compress` sends only the file you name to Anthropic (through the API
-  or your `claude` CLI) and writes back only that file and its backup; see
-  [`skills/caveman-compress/SECURITY.md`](./skills/caveman-compress/SECURITY.md).
+  By default `caveman-compress` sends only the file you name to Anthropic
+  (through the API or your `claude` CLI) and writes back only that file and its
+  backup. If you opt in with `CAVEMAN_COMPRESS_PROVIDER=opencode` or
+  `openai-compat`, the file goes to that provider, or to the endpoint you set in
+  `CAVEMAN_COMPRESS_ENDPOINT`, instead (opencode also gets the prompt through a
+  temporary file that is deleted afterwards); see
+  [`skills/caveman-compress/SECURITY.md`](./skills/caveman-compress/SECURITY.md#auth-behavior).
   Text either skill keeps verbatim is text you already gave the model.
 - Skill scanners (Snyk Agent Scan, `npx skills` risk ratings) can rate
   `caveman-setup` high risk because it handles a credential. It is the Caveman
