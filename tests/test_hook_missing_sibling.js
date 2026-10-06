@@ -52,10 +52,10 @@ function makeInstall(omit = []) {
   return { root, hooks };
 }
 
-function runHook(hooks, name, { stdin = '', env = {} } = {}) {
+function runHook(hooks, name, { stdin = '', env = {}, args = [] } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'caveman-home-'));
   try {
-    return spawnSync(process.execPath, [path.join(hooks, name)], {
+    return spawnSync(process.execPath, [path.join(hooks, name), ...args], {
       input: stdin,
       encoding: 'utf8',
       env: { ...process.env, CLAUDE_CONFIG_DIR: home, ...env },
@@ -150,6 +150,16 @@ test('prints one actionable line instead of a stack trace', () => {
     assert.doesNotMatch(r.stderr, /MODULE_NOT_FOUND/);
     assert.doesNotMatch(r.stderr, /Require stack:/);
     assert.ok(r.stderr.trim().split('\n').length <= 3, `expected a short message, got:\n${r.stderr}`);
+  });
+});
+
+// As a SessionEnd hook there is no report to fail loudly into: any stderr or
+// non-zero exit surfaces as a hook error while the user is quitting.
+test('--record (SessionEnd) exits 0 silently instead', () => {
+  withInstall(['caveman-config.js'], ({ hooks }) => {
+    const r = runHook(hooks, 'caveman-stats.js', { args: ['--record'], stdin: '{"session_id":"x"}' });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.stdout + r.stderr, '');
   });
 });
 

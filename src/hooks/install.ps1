@@ -1,5 +1,5 @@
 # caveman — one-command hook installer for Claude Code (Windows PowerShell)
-# Installs: SessionStart hook (auto-load rules) + UserPromptSubmit hook (mode tracking)
+# Installs: SessionStart hook + UserPromptSubmit hook + SessionEnd stats recorder
 # Usage: powershell -ExecutionPolicy Bypass -File src\hooks\install.ps1
 #   or:  powershell -ExecutionPolicy Bypass -File src\hooks\install.ps1 -Force
 #   or (remote, no -Force support via pipe):
@@ -101,7 +101,8 @@ if (-not $Force) {
                 return $false
             }
             $HooksWired = (& $hasCavemanHook "SessionStart" "caveman-activate.js") `
-                -and (& $hasCavemanHook "UserPromptSubmit" "caveman-mode-tracker.js")
+                -and (& $hasCavemanHook "UserPromptSubmit" "caveman-mode-tracker.js") `
+                -and (& $hasCavemanHook "SessionEnd" "caveman-stats.js")
             $HasStatusLine = $null -ne $settingsObj.statusLine
         } catch {
             $HooksWired = $false
@@ -212,6 +213,22 @@ if (!hasPrompt) {
   });
 }
 
+// SessionEnd
+if (!settings.hooks.SessionEnd) settings.hooks.SessionEnd = [];
+const hasEnd = settings.hooks.SessionEnd.some(e =>
+  e.hooks && e.hooks.some(h => h.command && h.command.includes('caveman-stats.js'))
+);
+if (!hasEnd) {
+  settings.hooks.SessionEnd.push({
+    hooks: [{
+      type: 'command',
+      command: 'node "' + hooksDir + '/caveman-stats.js" --record',
+      timeout: 5,
+      statusMessage: 'Recording caveman stats...'
+    }]
+  });
+}
+
 // Statusline
 if (!settings.statusLine) {
   settings.statusLine = {
@@ -256,4 +273,5 @@ Write-Host "What's installed:"
 Write-Host "  - SessionStart hook: auto-loads caveman rules every session"
 Write-Host "  - Mode tracker hook: updates statusline badge when you switch modes"
 Write-Host "    (/caveman, /ultracave, /megacave, /caveman-commit, etc.)"
+Write-Host "  - SessionEnd hook: records lifetime stats silently"
 Write-Host "  - Statusline badge: shows [CAVEMAN], [ULTRACAVE] or [MEGACAVE]"

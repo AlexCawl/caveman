@@ -47,7 +47,7 @@ function resolvedNodeArg(shell, command, claudePluginRoot) {
   }
 }
 
-for (const hookName of ['SessionStart', 'UserPromptSubmit']) {
+for (const hookName of ['SessionStart', 'UserPromptSubmit', 'SessionEnd']) {
   for (const shell of SHELLS) {
     test(`${hookName} hook converts an MSYS-style CLAUDE_PLUGIN_ROOT to a Windows drive path under ${shell}`, () => {
       const command = hookCommand(hookName);

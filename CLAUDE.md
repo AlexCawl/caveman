@@ -212,7 +212,7 @@ The old steps that mirrored SKILL.md and rules into root dotdirs (`.cursor/`, `.
 
 ## Hook system (Claude Code)
 
-Three hooks in `src/hooks/` plus a `caveman-config.js` shared module, a `caveman-parse.js` shared mode-change parser and a `package.json` CommonJS marker.
+Four hooks in `src/hooks/` plus a `caveman-config.js` shared module, a `caveman-parse.js` shared mode-change parser and a `package.json` CommonJS marker.
 
 **Mode state is per session.** Each session's mode lives in `$CLAUDE_CONFIG_DIR/.caveman-sessions/<session_id>.mode`, keyed by the `session_id` Claude Code puts in every hook payload *and* in the statusline's stdin JSON. `$CLAUDE_CONFIG_DIR/.caveman-active` survives as a last-write-wins compat mirror (falls back to `~/.claude/`).
 
@@ -300,11 +300,15 @@ The statusline reports mode only. Old `.caveman-statusline-suffix` values are ig
 
 Configured in `settings.json` under `statusLine.command`. PowerShell counterpart at `src/hooks/caveman-statusline.ps1` for Windows. Both scripts symlink-refuse and whitelist-validate mode flag contents — never echo arbitrary bytes.
 
+### `src/hooks/caveman-stats.js --record` — SessionEnd hook
+
+Same script as `/caveman-stats`; the `--record` flag turns it into a silent recorder. Reads the SessionEnd payload (`session_id`, `transcript_path`) and appends one snapshot of that transcript's totals to `$CLAUDE_CONFIG_DIR/.caveman-history.jsonl`, so lifetime history fills in without the user running `/caveman-stats`. Only the transcript the host names is read — never the newest file on disk. Stdin follows the activate-hook contour: first complete JSON object, 2000ms `PAYLOAD_WATCHDOG_MS` (gives up without recording), `unref()` on finish. Always exits 0 and writes nothing to stderr — a SessionEnd failure would surface as a hook error while the user quits. Every installer (plugin manifest, `bin/install.js`, `src/hooks/install.{sh,ps1}`) writes `--record` unquoted after the quoted script path; `rewriteLegacyManagedHookCommands` carries trailing `--flag` args over when it moves a bare-`node` command to the absolute node path.
+
 ### Hook installation
 
 **Plugin install** — hooks wired automatically by plugin system.
 
-**Standalone install** — `bin/install.js` (the unified Node installer) copies hook files into `$CLAUDE_CONFIG_DIR/hooks/` and merges SessionStart + UserPromptSubmit + statusline into `settings.json`. Uses the JSONC-tolerant helpers in `bin/lib/settings.js` so a commented `settings.json` no longer crashes the merge. Defensive `validateHookFields` runs before every write to prevent a single malformed hook from poisoning the entire file (Claude Code Zod silently discards the whole `settings.json` on schema mismatch).
+**Standalone install** — `bin/install.js` (the unified Node installer) copies hook files into `$CLAUDE_CONFIG_DIR/hooks/` and merges SessionStart + UserPromptSubmit + SessionEnd + statusline into `settings.json`. Uses the JSONC-tolerant helpers in `bin/lib/settings.js` so a commented `settings.json` no longer crashes the merge. Defensive `validateHookFields` runs before every write to prevent a single malformed hook from poisoning the entire file (Claude Code Zod silently discards the whole `settings.json` on schema mismatch).
 
 The `install.sh` / `install.ps1` shims at the repo root delegate to `bin/install.js` via `node` (local clone) or `npx -y github:JuliusBrussee/caveman` (curl|bash). No legacy fallback path remains — earlier `install.sh.legacy` / `install.ps1.legacy` files were removed.
 
@@ -413,6 +417,6 @@ To reproduce: `uv run python benchmarks/run.py` (needs `ANTHROPIC_API_KEY` in `.
 - The two statusline scripts have no shared runtime with the JS, so they re-implement path resolution by hand. `tests/verify_repo.py::verify_powershell_static` greps both against the `SESSIONS_DIRNAME` and `SESSION_ID_RE` constants to catch drift — there is no behavioral `.ps1` test on the POSIX runners, so that grep is the only guard on the Windows badge.
 - Editing anything in `src/hooks/` means regenerating `src/hooks/checksums.sha256` (same file set, recomputed digests) — `tests/verify_repo.py` fails the build otherwise, and `bin/install.js` verifies remote hook downloads against the manifest for the pinned ref.
 - Hooks must respect `CLAUDE_CONFIG_DIR` env var, not hardcode `~/.claude`. Same for `bin/install.js` / statusline scripts.
-- **Any entrypoint that reads a host hook payload from stdin returns on the first complete JSON object, never at EOF.** Under the Windows pipe implementation the host's close lags arbitrarily (#729/#833, #949), so a reader that waits for EOF burns the host's whole budget with its work done. The readers that follow this rule: `caveman-activate.js` and `caveman-mode-tracker.js` (per-chunk parse), `packages/cli/src/native-hook-fast.ts` (`stdin()`), `readHookStdin()` in `packages/cli/src/index.ts` (shrink-hook, memory recall, native-hook), and `readNativeHookPayload` in `proxy/cmd/caveman-proxy/main.go`. A new hook callback uses one of those, not `readStdin()` or `io.ReadAll`. Each has a keep-the-writer-open regression test; add one for any new reader.
+- **Any entrypoint that reads a host hook payload from stdin returns on the first complete JSON object, never at EOF.** Under the Windows pipe implementation the host's close lags arbitrarily (#729/#833, #949), so a reader that waits for EOF burns the host's whole budget with its work done. The readers that follow this rule: `caveman-activate.js`, `caveman-mode-tracker.js` and `caveman-stats.js --record` (per-chunk parse), `packages/cli/src/native-hook-fast.ts` (`stdin()`), `readHookStdin()` in `packages/cli/src/index.ts` (shrink-hook, memory recall, native-hook), and `readNativeHookPayload` in `proxy/cmd/caveman-proxy/main.go`. A new hook callback uses one of those, not `readStdin()` or `io.ReadAll`. Each has a keep-the-writer-open regression test; add one for any new reader.
 - `bin/install.js` is the only installer source. `install.sh` / `install.ps1` at repo root are 30-line shims that delegate to it. Never re-add per-OS install logic to the shims — that's how we got the Windows quoting bug (#249).
 - Any settings.json read in installer or hooks must go through `bin/lib/settings.js` `readSettings()` so JSONC comments don't crash the merge. Any settings.json write must run through `validateHookFields()` first.

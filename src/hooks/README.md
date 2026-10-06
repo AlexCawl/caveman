@@ -59,7 +59,14 @@ since it is an explicit user reset.
 - Reads the session JSON Claude Code sends on stdin, takes `session_id`, and renders **that window's** mode; falls back to the legacy mirror when there is no usable id
 - Shows `[CAVEMAN]`, `[ULTRACAVE]`, `[MEGACAVE]`, `[CAVEMAN:COMMIT]`, etc. A deactivated session renders nothing at all — never `[CAVEMAN:OFF]`
 - Never blocks: an interactive terminal is not read from, and the stdin read has a 1s ceiling (integer, because macOS ships bash 3.2 and it rejects fractional `read -t`)
-- Appends the lifetime savings suffix `⛏ 12.4k` from `$CLAUDE_CONFIG_DIR/.caveman-statusline-suffix` (written by `caveman-stats.js` on each `/caveman-stats` run; absent until the first run, so fresh installs render no fake number). Opt out with `CAVEMAN_STATUSLINE_SAVINGS=0`.
+- Shows mode only. The old `⛏` savings suffix is gone: `.caveman-statusline-suffix` is ignored, because a transcript cannot show what caveman saved
+
+### `caveman-stats.js --record` — SessionEnd hook
+
+- Runs when Claude Code ends a session
+- Reads `session_id` and `transcript_path` from the hook payload on stdin (first complete JSON object, 2s watchdog) and appends one snapshot to `$CLAUDE_CONFIG_DIR/.caveman-history.jsonl`: recorded output and cache-read tokens, turns, and per-mode attribution. No savings figures
+- Writes no stdout and always exits 0, so it never interrupts shutdown
+- Duplicate snapshots are safe: lifetime views (`--all`, `--since`) count only the newest row per `session_id`
 
 ## Statusline Badge
 
@@ -154,6 +161,9 @@ SessionStart hook ──┐                                        ┌── Use
               .caveman-active      Statusline script  ◀── session JSON on stdin
            (last-write-wins,        [CAVEMAN] / [ULTRACAVE] / [MEGACAVE]
             compat only)
+
+SessionEnd hook ──(session_id, transcript_path)──▶ caveman-stats.js --record
+                                                     ──appends──▶ .caveman-history.jsonl
 ```
 
 SessionStart stdout is injected as hidden system context — Claude sees it, users
@@ -178,7 +188,7 @@ node bin/install.js --uninstall
 
 Or manually:
 1. Remove the caveman hook files from `$CLAUDE_CONFIG_DIR/hooks/` (default `~/.claude/hooks/`): `caveman-activate.js`, `caveman-mode-tracker.js`, `caveman-parse.js`, `caveman-stats.js`, `caveman-config.js`, `cavecrew-model-overrides.js`, and `caveman-statusline.{sh,ps1}`.
-2. Remove the SessionStart, UserPromptSubmit, and statusLine entries from `$CLAUDE_CONFIG_DIR/settings.json`.
+2. Remove the SessionStart, UserPromptSubmit, SessionEnd, and statusLine entries from `$CLAUDE_CONFIG_DIR/settings.json`.
 3. Delete the mode state from `$CLAUDE_CONFIG_DIR`: the `.caveman-sessions/` directory, `.caveman-active`, `.caveman-active.prev`, `.caveman-mode-log.jsonl`, `.caveman-statusline-suffix`, and `.caveman-nudge-shown`.
 
 The uninstaller does all of step 3 for you, but deliberately leaves

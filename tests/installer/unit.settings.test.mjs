@@ -252,6 +252,20 @@ test('rewriteLegacyManagedHookCommands emits a bash-safe command on Windows', ()
   );
 });
 
+// src/hooks/install.{sh,ps1} write the SessionEnd recorder as
+// `node "<dir>/caveman-stats.js" --record`. The trailing flag must not stop the
+// migration, or addCommandHook sees the marker and leaves it on bare `node`.
+test('rewriteLegacyManagedHookCommands keeps trailing flags on bare-node scripts', () => {
+  const s = {
+    hooks: {
+      SessionEnd: [{ hooks: [{ type: 'command', command: 'node "/h/caveman-stats.js" --record' }] }],
+    },
+  };
+  const n = SETTINGS.rewriteLegacyManagedHookCommands(s, '/usr/local/bin/node', 'linux');
+  assert.equal(n, 1);
+  assert.equal(s.hooks.SessionEnd[0].hooks[0].command, '"/usr/local/bin/node" "/h/caveman-stats.js" --record');
+});
+
 test('rewriteLegacyManagedHookCommands ignores already-absolute node commands', () => {
   const s = {
     hooks: {

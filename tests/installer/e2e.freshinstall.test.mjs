@@ -859,6 +859,50 @@ test('lib settings.addCommandHook is idempotent across two synthetic install pas
   }
 });
 
+test('claude hook install wires SessionEnd stats recorder once, and uninstall removes it', () => {
+  const dir = freshTmpDir();
+  const configDir = path.join(dir, 'claude-config');
+  const env = isolatedInstallEnv(dir);
+
+  try {
+    const r1 = runInstaller(['--only', 'claude', '--with-hooks'], configDir, env);
+    const r2 = runInstaller(['--only', 'claude', '--with-hooks'], configDir, env);
+    assert.equal(r1.status, 0, `first install failed:\n${r1.stdout}\n${r1.stderr}`);
+    assert.equal(r2.status, 0, `second install failed:\n${r2.stdout}\n${r2.stderr}`);
+
+    const settings = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8'));
+    const sessionEnd = cavemanHookCommands(settings, 'SessionEnd', 'caveman-stats');
+    assert.equal(sessionEnd.length, 1, `expected 1 SessionEnd stats hook, got ${sessionEnd.length}`);
+    assert.match(sessionEnd[0].command, /caveman-stats\.js" --record$/);
+
+    const removed = runInstaller(['--uninstall'], configDir, env);
+    assert.equal(removed.status, 0, removed.stderr || removed.stdout);
+    const clean = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8'));
+    assert.deepEqual(cavemanHookCommands(clean, 'SessionEnd', 'caveman-stats'), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Windows skip: the installer spawns `claude` via spawnSync without a shell, so
+// a `claude.cmd` shim on PATH is never executed there and the plugin install can
+// never report success — the run always falls back to standalone wiring. The
+// note asserted here is platform-independent installer output, so POSIX covers it.
+test('claude plugin install success reports SessionEnd manifest coverage', {
+  skip: process.platform === 'win32' && 'installer cannot spawn a claude.cmd shim, so the plugin-success path is unreachable',
+}, () => {
+  const dir = freshTmpDir();
+  const configDir = path.join(dir, 'claude-config');
+
+  try {
+    const r = runInstaller(['--only', 'claude'], configDir, isolatedInstallEnv(dir));
+    assert.equal(r.status, 0, `install failed:\n${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /plugin manifest handles SessionStart \+ UserPromptSubmit \+ SessionEnd/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── Test: --force migrates a mixed legacy AGENTS.md instead of wiping it (#594)
 // The old code replaced the whole file with the fenced block whenever the
 // legacy un-fenced sentinel was present — and the installer's own hint told
