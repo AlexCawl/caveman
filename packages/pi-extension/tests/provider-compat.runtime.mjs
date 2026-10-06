@@ -180,3 +180,42 @@ test("OpenAI Chat stays direct because Pi exposes no override for its URL-derive
     assert.equal(await router.closeGate(ctx), true);
   }
 });
+
+// The Go proxy routes Pi's ChatGPT OAuth traffic only on the exact shape below
+// (isPiChatGPTSubscription): provider openai-codex, api openai-codex-responses,
+// the ChatGPT backend base it publishes, and POST <gateway>/w/pi/codex/responses
+// with a Bearer token and ChatGPT-Account-ID. Fail here, not in production,
+// when a Pi SDK bump moves any of it.
+test("pinned Pi ChatGPT subscription provider keeps the shape the /chatgpt route proves", async () => {
+  const { OPENAI_CODEX_MODELS } = await import(pathToFileURL(join(dirname(sdkManifest), "dist/providers/openai-codex.models.js")));
+  const models = Object.values(OPENAI_CODEX_MODELS);
+  assert.ok(models.length > 0);
+  for (const model of models) {
+    assert.deepEqual([model.provider, model.api, model.baseUrl], ["openai-codex", "openai-codex-responses", "https://chatgpt.com/backend-api"], model.id);
+  }
+
+  const original = models[0];
+  let selected = original;
+  const ctx = { get model() { return selected; }, sessionManager: { getSessionId: () => OPTIONS.sessionId },
+    modelRegistry: { isUsingOAuth: () => true, getApiKeyAndHeaders: async () => assert.fail("OAuth route must not resolve an API key") } };
+  const router = new ProviderRouter({ async setModel(value) { selected = value; return true; } }, () => {});
+  await router.openGate(GATEWAY, ctx, {}, { "openai-codex": "https://chatgpt.com/backend-api" });
+  assert.equal(router.routing(), true);
+
+  const codexStream = await sdkStream("openai-codex-responses");
+  const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct_fixture" } })).toString("base64url");
+  const requests = [];
+  await codexStream(selected, context(selected), { apiKey: `e30.${claims}.sig`, transport: "sse", sessionId: OPTIONS.sessionId, maxRetries: 0,
+    fetch: async (url, init) => {
+      requests.push({ url: String(url), method: init.method, headers: new Headers(init.headers) });
+      return new Response('{"error":{"message":"local serialization capture complete"}}', { status: 400, headers: { "content-type": "application/json" } });
+    } }).result();
+  assert.equal(requests.length, 1);
+  const [request] = requests;
+  assert.equal(request.url, `${GATEWAY}/w/pi/codex/responses`);
+  assert.equal(request.method, "POST");
+  assert.match(request.headers.get("authorization"), /^Bearer /);
+  assert.equal(request.headers.get("chatgpt-account-id"), "acct_fixture");
+  assert.equal(await router.closeGate(ctx), true);
+  assert.deepEqual(selected, original);
+});
