@@ -1532,3 +1532,116 @@ func TestCachePrefixInvariantRawRetryRacingAFork(t *testing.T) {
 		h.assert()
 	}
 }
+
+// pixelHarness is the net for pixel mode: claude-fable-5 renders under an API
+// key and a durable prefix cache. It keeps every request as the provider
+// accepted it, for assertCachedPrefixPreserved.
+type pixelHarness struct {
+	t    *testing.T
+	comp *pixelStoreCompressor
+	rt   *captureTransport
+	srv  *Server
+	sink *captureSink
+	xs   []exchange
+}
+
+func newPixelHarness(t *testing.T) *pixelHarness {
+	t.Setenv("CAVE_PIXEL_MODELS", "")
+	h := &pixelHarness{t: t, comp: &pixelStoreCompressor{}, rt: &captureTransport{}, sink: &captureSink{}}
+	h.srv = New(Config{
+		Adapters:    []providers.Adapter{anthropic.New("https://upstream.test")},
+		Auth:        stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "pixel"}},
+		Creds:       stubCreds{key: "sk-byok"},
+		Sink:        h.sink,
+		Compressor:  h.comp,
+		PrefixCache: newTestPrefixCache(),
+		HTTPClient:  &http.Client{Transport: h.rt},
+	})
+	return h
+}
+
+// send serves one request and returns the bytes the provider accepted; reject
+// makes the provider refuse the first attempt, so the proxy takes the raw
+// retry.
+func (h *pixelHarness) send(body string, reject bool) []byte {
+	h.t.Helper()
+	h.rt.mu.Lock()
+	first := len(h.rt.bodies)
+	for len(h.rt.responses) < first+2 {
+		h.rt.responses = append(h.rt.responses, anthropicPixelResponse("claude-fable-5"))
+		h.rt.statuses = append(h.rt.statuses, 0)
+	}
+	if reject {
+		h.rt.statuses[first] = http.StatusBadRequest
+		h.rt.responses[first] = `{"type":"error","error":{"type":"invalid_request_error","message":"rejected"}}`
+	}
+	h.rt.mu.Unlock()
+	serveBody(h.t, h.srv, "/v1/messages", body, map[string]string{"x-api-key": "sk-byok", "anthropic-version": "2023-06-01", "x-cave-session": "sess-pixel"})
+	h.rt.mu.Lock()
+	defer h.rt.mu.Unlock()
+	attempts := h.rt.bodies[first:]
+	h.xs = append(h.xs, exchange{client: []byte(body), forwarded: attempts[len(attempts)-1], rawRetry: len(attempts) > 1})
+	return attempts[len(attempts)-1]
+}
+
+func (h *pixelHarness) assert() {
+	h.t.Helper()
+	assertCachedPrefixPreserved(h.t, h.xs)
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
+	for i, row := range h.sink.rows {
+		if row.CacheBustCause == bustCauseCaveman {
+			h.t.Errorf("tripwire reported a caveman bust on recorded request %d of %d", i, len(h.sink.rows))
+		}
+	}
+}
+
+// pixelConversation is a Claude Code shaped claude-fable-5 conversation whose
+// user turns are long tool results, the newest one marked.
+func pixelConversation(turns ...string) string {
+	msgs := make([]string, 0, 2*len(turns))
+	for i, text := range turns {
+		if i > 0 {
+			msgs = append(msgs, `{"role":"assistant","content":[{"type":"text","text":"read it `+strconv.Itoa(i)+`"}]}`)
+		}
+		marker := ""
+		if i == len(turns)-1 {
+			marker = `,"cache_control":{"type":"ephemeral"}`
+		}
+		msgs = append(msgs, `{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_`+strconv.Itoa(i)+`","content":`+jsonText(text)+marker+`}]}`)
+	}
+	return `{"model":"claude-fable-5","max_tokens":128,"system":"You are Claude Code.","messages":[` + strings.Join(msgs, ",") + `]}`
+}
+
+// pixelRows is a tool result long enough to render.
+func pixelRows(label string) string {
+	return strings.Repeat(label+" row with values and a few more words.\n", 420)
+}
+
+func rendered(body []byte) bool { return bytes.Contains(body, []byte(`"type":"image"`)) }
+
+func TestCachePrefixInvariantPixel(t *testing.T) {
+	a, b, c := pixelRows("A"), pixelRows("B"), pixelRows("C")
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T, h *pixelHarness)
+	}{
+		{"raw retry pins the conversation", func(t *testing.T, h *pixelHarness) {
+			// The provider cached turn 2 as text: turn 3 extends that text and
+			// must not render turn 1 back in.
+			if !rendered(h.send(pixelConversation(a), false)) {
+				t.Fatal("test setup: turn 1 was not rendered")
+			}
+			if raw := h.send(pixelConversation(a, b), true); !bytes.Equal(raw, []byte(pixelConversation(a, b))) {
+				t.Fatal("test setup: turn 2 should have been accepted raw")
+			}
+			h.send(pixelConversation(a, b, c), false)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPixelHarness(t)
+			tc.run(t, h)
+			h.assert()
+		})
+	}
+}

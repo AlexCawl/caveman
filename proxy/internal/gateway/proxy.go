@@ -339,6 +339,9 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		if authMode == AuthModeSubscription {
 			break
 		}
+		if s.rawPinned(adapter, meta, body) {
+			break // the provider cached this conversation as text (raw_pin.go)
+		}
 		comp = s.pixelRequest(body, meta, &transform, requestID)
 	default:
 		if authMode != AuthModeSubscription {
