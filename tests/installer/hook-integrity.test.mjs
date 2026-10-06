@@ -37,21 +37,22 @@ out=""; url=""
 while [ $# -gt 0 ]; do
   case "$1" in -o) out="$2"; shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac
 done
-case "$url" in */src/hooks/*) f="${served}/\${url##*/}"; [ -f "$f" ] && cp "$f" "$out" && exit 0 ;; esac
+case "$url" in */src/hooks/*|*/src/tools/*) f="${served}/\${url##*/}"; [ -f "$f" ] && cp "$f" "$out" && exit 0 ;; esac
 exit 22
 `, { mode: 0o755 });
   const configDir = path.join(root, 'claude');
   fs.mkdirSync(path.join(configDir, 'hooks'), { recursive: true });
   fs.writeFileSync(path.join(configDir, 'settings.json'), '{"theme":"dark"}\n');
   fs.writeFileSync(path.join(configDir, 'hooks', 'caveman-config.js'), '// previous install\n');
-  const run = () => spawnSync(process.execPath, [
+  const run = (args = ['--with-hooks'], extraEnv = {}, cwd = undefined) => spawnSync(process.execPath, [
     path.join(root, 'bin', 'install.js'),
-    '--only', 'claude', '--with-hooks', '--config-dir', configDir, '--non-interactive', '--no-mcp-shrink',
+    '--only', 'claude', ...args, '--config-dir', configDir, '--non-interactive', '--no-mcp-shrink',
   ], {
-    env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: configDir, NO_COLOR: '1' },
+    env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: configDir, NO_COLOR: '1', ...extraEnv },
     encoding: 'utf8',
+    cwd,
   });
-  return { root, configDir, run };
+  return { root, served, configDir, run };
 }
 
 function assertUntouched(configDir) {
@@ -106,5 +107,23 @@ test('hook install replaces a symlinked hook instead of writing through it', pos
     assert.equal(fs.lstatSync(dest).isSymbolicLink(), false);
     assert.deepEqual(fs.readFileSync(dest), fs.readFileSync(path.join(HOOKS, 'caveman-config.js')));
     assert.deepEqual(fs.readdirSync(path.join(configDir, 'hooks')).filter((f) => f.includes('.tmp-')), []);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// #627: the detached fallback used to download caveman-init.js from the pinned
+// ref and EXECUTE it with no integrity check. Every supported install path
+// ships src/tools/caveman-init.js locally, so the remote fallback is gone.
+test('detached installer never downloads and executes caveman-init.js', posixOnly, () => {
+  const { root, served, configDir, run } = setup();
+  try {
+    const marker = path.join(root, 'init-ran');
+    fs.writeFileSync(path.join(served, 'caveman-init.js'),
+      "require('fs').writeFileSync(process.env.MARKER, 'ran');\n");
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(repo);
+    const r = run(['--no-hooks', '--with-init'], { MARKER: marker }, repo);
+    assert.equal(fs.existsSync(marker), false, 'remote caveman-init.js must never run');
+    assert.match(r.stdout + r.stderr, /caveman-init/);
+    assert.equal(fs.existsSync(configDir), true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

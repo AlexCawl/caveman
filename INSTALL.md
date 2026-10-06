@@ -25,7 +25,7 @@ What it does:
 - Auto-detects every supported agent installed on your machine (Claude Code, Cursor, Codex, etc.).
 - For each one, runs that agent's native install path (plugin / extension / rule file / `npx skills add`).
 - Installs Cavecrew investigator, builder, and reviewer presets where the host supports native subagents.
-- Wires Claude Code hooks and statusline badge on top. (`caveman-shrink` MCP middleware is opt-in via `--with-mcp-shrink` — see flag table below.)
+- Wires Claude Code hooks and statusline badge on top, plus a Codex start-of-session hook so Codex talks caveman without asking. (`caveman-shrink` MCP middleware is opt-in via `--with-mcp-shrink` — see flag table below.)
 - Skips anything you don't have. Safe to re-run. ~30 seconds end-to-end.
 
 Want to preview before installing? Use `--dry-run`:
@@ -50,7 +50,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Oh My Pi (OMP)** | `npx -y github:JuliusBrussee/caveman -- --only omp` *(or `node bin/install.js --only omp` from a clone)* | Yes (native OMP plugin) |
 | **OpenClaw** | `npx -y github:JuliusBrussee/caveman -- --only openclaw` | Yes (workspace skill + SOUL.md) |
 | **Hermes Agent** | `npx -y github:JuliusBrussee/caveman -- --only hermes` *(or `node bin/install.js --only hermes` from a clone)* | Yes (native skills, enabled on load) |
-| **Codex CLI** | `npx skills add JuliusBrussee/caveman -a codex -g` | Per-session: `/caveman` |
+| **Codex CLI** | `npx -y github:JuliusBrussee/caveman -- --only codex` *(skills only, no hook: `npx skills add JuliusBrussee/caveman -a codex -g`)* | Yes (SessionStart hook — trust it once with `/hooks`); skills-only: `$caveman` |
 | **Cursor** | `npx skills add JuliusBrussee/caveman -a cursor -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Windsurf** | `npx skills add JuliusBrussee/caveman -a windsurf -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Cline** | `npx skills add JuliusBrussee/caveman -a cline -g` | Per-session by default; `--with-init` for an always-on rule file |
@@ -62,12 +62,13 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **AiderDesk** | `npx -y github:JuliusBrussee/caveman -- --only aider-desk` | No — enable Skills Tools |
 | **Sourcegraph Amp** | `npx skills add JuliusBrussee/caveman -a amp -g` | No |
 | **IBM Bob** | `npx skills add JuliusBrussee/caveman -a bob -g` | No |
+| **CodeBuddy Code** | `npx skills add JuliusBrussee/caveman -a codebuddy -g` | No |
 | **Crush** | `npx -y github:JuliusBrussee/caveman -- --only crush` | No |
 | **Devin (terminal)** | `npx skills add JuliusBrussee/caveman -a devin -g` | No |
 | **Droid (Factory)** | `npx skills add JuliusBrussee/caveman -a droid -g` | No |
 | **ForgeCode** | `npx skills add JuliusBrussee/caveman -a forgecode -g` | No |
 | **Block Goose** | `npx skills add JuliusBrussee/caveman -a goose -g` | No |
-| **Grok Build** | `npx -y github:JuliusBrussee/caveman -- --only grok` | No |
+| **Grok Build** | `npx -y github:JuliusBrussee/caveman -- --only grok` | Yes (`~/.grok/AGENTS.md` block) |
 | **iFlow CLI** | `npx -y github:JuliusBrussee/caveman -- --only iflow` | No |
 | **Kiro CLI** | `npx skills add JuliusBrussee/caveman -a kiro-cli -g` | No |
 | **Mistral Vibe** | `npx skills add JuliusBrussee/caveman -a mistral-vibe -g` | No |
@@ -97,7 +98,7 @@ Scripted Claude Code runs (`claude -p` and the Agent SDK) start with caveman off
 - **opencode**: subagents get the always-on caveman rules from `AGENTS.md` (checked on opencode 2.0.22). Those rules are fixed text, so "stop caveman" does not switch them off for subagents.
 - **Hermes Agent**: not verified. If a delegated task comes back wordy, ask for the caveman skill in that task.
 
-Continue needs physical skill directories because its current loader skips per-skill symlinks. The unified installer copies into `CONTINUE_GLOBAL_DIR/skills` (default `~/.continue/skills`) and follows AiderDesk's `AIDER_DESK_HOME_DIR` / `AIDER_DESK_DIR` overrides. It also honors `IFLOW_HOME`, Crush's exact `CRUSH_SKILLS_DIR`, and `GROK_HOME` (Grok Build reads `GROK_HOME/skills`, default `~/.grok/skills`). Use the same environment when uninstalling — for a relative override, that means the same working directory too, since the path resolves against `cwd`. Existing unowned skill directories or symlinks produce a conflict rather than being silently replaced. See the [vendor discovery matrix](docs/technical/installer-provider-discovery.md) for sources and product limits.
+Continue needs physical skill directories because its current loader skips per-skill symlinks. The unified installer copies into `CONTINUE_GLOBAL_DIR/skills` (default `~/.continue/skills`) and follows AiderDesk's `AIDER_DESK_HOME_DIR` / `AIDER_DESK_DIR` overrides. It also honors `IFLOW_HOME`, Crush's exact `CRUSH_SKILLS_DIR`, and `GROK_HOME` (Grok Build reads `GROK_HOME/skills`, default `~/.grok/skills`). For Grok Build it also adds a marker-fenced caveman ruleset block to `GROK_HOME/AGENTS.md`, the global rules file Grok loads every session; your own text in that file stays. Use the same environment when uninstalling — for a relative override, that means the same working directory too, since the path resolves against `cwd`. Existing unowned skill directories or symlinks produce a conflict rather than being silently replaced. See the [vendor discovery matrix](docs/technical/installer-provider-discovery.md) for sources and product limits.
 
 Antigravity IDE reads `~/.gemini/antigravity/skills`; Antigravity 2.0 reads `~/.gemini/config/skills`. Select the matching product. Each command copies only into that product's directory.
 
@@ -113,6 +114,22 @@ npx -y github:JuliusBrussee/caveman -- --list   # no clone needed
 ```
 
 Each row prints the agent id, profile slug (where applicable), and whether it was auto-detected on your machine. Full agent matrix (with detection rules) is also defined in `bin/install.js` under the `PROVIDERS` array.
+
+### Codex
+
+With `codex` on your PATH, `npx -y github:JuliusBrussee/caveman -- --only codex`
+installs the skills and a small start-of-session hook. Every new Codex session
+(and every `/clear` or context compaction) then starts in caveman, following
+your configured default mode — including `off`. Codex asks you to review new hooks: run `/hooks` once in
+Codex and trust the caveman one. Hooks are on by default in current Codex; if
+`codex features list` shows `hooks` off, add `[features] hooks = true` to
+`~/.codex/config.toml`.
+
+The hook files live in `$CODEX_HOME/caveman/` (default `~/.codex/caveman/`) and
+one entry is added to `$CODEX_HOME/hooks.json`. Re-running never duplicates it.
+`--no-hooks` keeps the skills-only, per-session behavior: type `$caveman`.
+`--uninstall` removes only caveman's entry and files. Use the same `CODEX_HOME`
+for install and uninstall.
 
 ### Oh My Pi (OMP)
 
@@ -164,9 +181,9 @@ Useful flags:
 | `--with-init` | Drop always-on rule files into the current repo (`.cursor/`, `.windsurf/`, `.clinerules/`, `.github/copilot-instructions.md`, `.opencode/AGENTS.md`, `AGENTS.md`) and, if OpenClaw is on the box, append the bootstrap block to `~/.openclaw/workspace/SOUL.md`. |
 | `--with-mcp-shrink="<upstream cmd>"` | Register `caveman-shrink` MCP proxy wrapping the given upstream MCP server. **Off by default.** A value is required — caveman-shrink is a proxy and exits immediately without one. Example: `--with-mcp-shrink="npx @modelcontextprotocol/server-filesystem /tmp"`. Within the value, single or double quotes group paths containing spaces; backslashes stay literal. A JSON array of strings also works when arguments contain quotes. No shell expansion occurs. |
 | `--no-mcp-shrink` | Skip MCP-shrink registration. (Default.) |
-| `--with-hooks` / `--no-hooks` | Force-on or force-off the Claude Code hook installer. (Default: on.) |
+| `--with-hooks` / `--no-hooks` | Force-on or force-off the Claude Code hook installer and the Codex SessionStart hook. (Default: on.) |
 | `--skip-skills` | Don't run the npx-skills auto-detect fallback when nothing else matched. |
-| `--config-dir <path>` | Claude Code config dir for hook files + `settings.json`. **Does NOT scope** `claude plugin install`, `gemini extensions install`, OMP (`~/.omp/`), opencode (`XDG_CONFIG_HOME`), or openclaw (`OPENCLAW_WORKSPACE`) — those use their own paths. Default: `$CLAUDE_CONFIG_DIR` or `~/.claude`. `~` is expanded. |
+| `--config-dir <path>` | Claude Code config dir for hook files + `settings.json`. **Does NOT scope** `claude plugin install`, `gemini extensions install`, Codex (`CODEX_HOME`), OMP (`~/.omp/`), opencode (`XDG_CONFIG_HOME`), or openclaw (`OPENCLAW_WORKSPACE`) — those use their own paths. Default: `$CLAUDE_CONFIG_DIR` or `~/.claude`. `~` is expanded. |
 | `--non-interactive` | Never prompt; use defaults. (Auto when stdin is not a TTY.) |
 | `--no-color` | Disable ANSI colors. |
 | `--list` | Print full agent matrix and exit. |
@@ -281,8 +298,10 @@ What it removes:
 - Hook files in `$CLAUDE_CONFIG_DIR/hooks/` (`caveman-activate.js`, `caveman-mode-tracker.js`, `caveman-parse.js`, `caveman-stats.js`, `caveman-config.js`, `cavecrew-model-overrides.js`, `caveman-statusline.{sh,ps1}`, plus the dir's `package.json` marker).
 - The Claude Code plugin and the Gemini CLI extension (if installed).
 - The opencode native plugin (`~/.config/opencode/plugins/caveman/`, the `plugin` and `mcp.caveman-shrink` entries from `opencode.json`, our skill/agent/command files, the caveman block from `AGENTS.md`, and the opencode flag file).
+- The Codex SessionStart entry from `$CODEX_HOME/hooks.json` (default `~/.codex/`; other hooks, including the caveman CLI's own, stay) and the hook files under `$CODEX_HOME/caveman/`. The file goes away only if caveman's entry was all it held.
 - The Oh My Pi plugin (`omp plugin uninstall caveman`) and Caveman's managed OMP plugin package at `~/.omp/caveman-plugin/`.
 - The OpenClaw workspace skill folder and the marker-fenced block from `~/.openclaw/workspace/SOUL.md` (when present).
+- Owned native skill copies (Continue, AiderDesk, Antigravity, Grok Build, and iFlow/Crush with a custom home) and the marker-fenced block from `$GROK_HOME/AGENTS.md` (default `~/.grok/AGENTS.md`). Your own text in that file stays.
 - All mode state in `$CLAUDE_CONFIG_DIR`: the `.caveman-sessions/` directory (one file per window), `.caveman-active`, `.caveman-active.prev`, `.caveman-mode-log.jsonl`, `.caveman-statusline-suffix`, `.caveman-nudge-shown`, and `.caveman-statusline-stale`.
 
 What it does **not** remove:
@@ -373,6 +392,7 @@ The installer doesn't phone home. It writes to:
 - `$CLAUDE_CONFIG_DIR` (default `~/.claude/`) — hooks, flag file, `settings.json` merge.
 - Each agent's own config location — Cursor's `.cursor/rules/`, Windsurf's `.windsurf/rules/`, opencode's `~/.config/opencode/`, etc.
 - Your current working directory (only with `--with-init`) — repo-local rule files.
+- `$CODEX_HOME` (default `~/.codex/`; only when Codex is detected or selected, and not with `--no-hooks`) — the caveman hook files in `caveman/`, one entry in `hooks.json`, and an ownership record.
 - `~/.omp/caveman-plugin/` (only with `--only omp`, or auto-detect when `omp` is on `PATH`) — managed OMP plugin package installed through `omp plugin install`.
 - `~/.openclaw/workspace/` (only with `--only openclaw` or `--with-init` when OpenClaw is detected) — the one `--with-init` side-effect outside the cwd.
 

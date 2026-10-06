@@ -408,6 +408,7 @@ def verify_package_contents() -> None:
     files = {entry["path"] for entry in payload[0]["files"]}
     required = {
         "bin/install.js",
+        ".codex/codex-sessionstart.js",  # Codex always-on hook payload (#573)
         "agents/cavecrew-investigator.md",
         "agents/cavecrew-builder.md",
         "agents/cavecrew-reviewer.md",
