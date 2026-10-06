@@ -133,10 +133,13 @@ Two ways in. Pick one: with both, every chat gets the rules twice.
   the skills, the Cavecrew agents (`~/.cursor/agents/`) and a session hook
   (`~/.cursor/hooks.json` plus `~/.cursor/caveman/`). The Cursor editor, the
   Agents Window and `cursor-agent` all read these. `--no-hooks` installs the
-  agents without the hook. `--uninstall` removes only caveman's entry from
+  agents without the hook; it does not remove a hook an earlier install
+  added (`--uninstall` does). `--uninstall` removes only caveman's entry from
   `hooks.json`; your other hooks stay.
 - **Plugin.** This repo is a Cursor plugin (`.cursor-plugin/plugin.json`: the
-  skills plus the same session hook). Clone it into
+  skills, the same session hook, and the Cavecrew agents as-is from `agents/`).
+  Cursor skips their Claude-only model pin and runs them on your chat model;
+  the installer's copies also mark two of them read-only. Clone it into
   `~/.cursor/plugins/local/caveman`, then run **Developer: Reload Window**. For
   the CLI: `cursor-agent --plugin-dir ~/.cursor/plugins/local/caveman`.
 
@@ -161,7 +164,8 @@ sessions normal. Checked with Copilot CLI 1.0.92.
 Files, all owned by the installer and removed by `--uninstall`:
 `$COPILOT_HOME/hooks/caveman.json` (default `~/.copilot/hooks/`) and
 `$COPILOT_HOME/caveman/`. Other files in `hooks/` are never touched. Skip the
-hook with `--no-hooks`. VS Code reads the same `hooks/` folder, but its
+hook with `--no-hooks` (it skips adding one; `--uninstall` removes one already
+there). VS Code reads the same `hooks/` folder, but its
 documented session output is shaped differently and this path is untested
 there: for VS Code Copilot Chat, use `--with-init` for always-on.
 
