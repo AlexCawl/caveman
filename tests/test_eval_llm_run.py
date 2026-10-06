@@ -237,13 +237,18 @@ class LlmRunTests(unittest.TestCase):
                 self.run_main(fake, env)
             self.assertEqual(fake.calls, [])
 
-    # Proves reminder_run.py, which borrows llm_run's prompts and control,
-    # still imports and picks the control matching the prompt language.
-    def test_reminder_run_imports(self) -> None:
-        with mock.patch.object(sys, "path", list(sys.path)), mock.patch.dict(sys.modules):
-            reminder_run = load("reminder_run", {"CAVEMAN_EVAL_LANG": "fr"})
-        self.assertEqual(reminder_run.TERSE_PREFIX, "Réponds de façon concise.")
-        self.assertEqual(reminder_run.PROMPTS.name, "fr.txt")
+    # Proves reminder_run.py imports and stays on the English length prompts
+    # and control whatever CAVEMAN_EVAL_SET / CAVEMAN_EVAL_LANG the shell
+    # left exported: it writes one reminder.json, and a leftover
+    # CAVEMAN_EVAL_SET=fidelity must not feed it fidelity.json line by line.
+    def test_reminder_run_ignores_eval_set_and_lang(self) -> None:
+        for env in ({"CAVEMAN_EVAL_SET": "fidelity"}, {"CAVEMAN_EVAL_LANG": "fr"},
+                    {"CAVEMAN_EVAL_LANG": "de"}):
+            with self.subTest(env=env), mock.patch.object(sys, "path", list(sys.path)), \
+                    mock.patch.dict(sys.modules):
+                reminder_run = load("reminder_run", env)
+                self.assertEqual(reminder_run.TERSE_PREFIX, "Answer concisely.")
+                self.assertEqual(reminder_run.PROMPTS, EVALS / "prompts" / "en.txt")
 
     # Proves an untranslated language fails closed before any claude call.
     def test_unknown_language_exits_before_any_call(self) -> None:
