@@ -32,6 +32,10 @@ Set `CAVEMAN_COMPRESS_PROVIDER=openai-compat` to POST the prompt with Python's s
 
 Files larger than 500KB are rejected before any API call is made.
 
+### Snyk W007 ("insecure credential handling")
+
+W007 fires on the rule that code blocks, commands, and exact error strings stay verbatim. See [Scanner warnings](../../SECURITY.md#scanner-warnings) in the repository SECURITY.md.
+
 ### Reporting a vulnerability
 
 If you believe you've found a genuine security issue, please open a GitHub issue with the label `security`.

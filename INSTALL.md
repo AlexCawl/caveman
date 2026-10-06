@@ -51,7 +51,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **OpenClaw** | `npx -y github:JuliusBrussee/caveman -- --only openclaw` | Yes (workspace skill + SOUL.md) |
 | **Hermes Agent** | `npx -y github:JuliusBrussee/caveman -- --only hermes` *(or `node bin/install.js --only hermes` from a clone)* | Yes (native skills, enabled on load) |
 | **Antigravity CLI** (`agy`) | `npx -y github:JuliusBrussee/caveman -- --only antigravity-cli` | Yes ([agy plugin](#antigravity-cli)) |
-| **Codex CLI** | `npx -y github:JuliusBrussee/caveman -- --only codex` *(skills only, no hook: `npx skills add JuliusBrussee/caveman -a codex -g`)* | Yes (SessionStart hook — trust it once with `/hooks`); skills-only: `$caveman` |
+| **Codex CLI** | `npx -y github:JuliusBrussee/caveman -- --only codex` *(skills only, no hook: `npx skills add JuliusBrussee/caveman -a codex -g`)* | Yes (SessionStart hook — trust it once with `/hooks`); skills-only: `$caveman` (Codex calls skills with `$`, not `/`) |
 | **Cursor** | `npx -y github:JuliusBrussee/caveman -- --only cursor` *(or the [Cursor plugin](#cursor))* | Yes (session hook) |
 | **Windsurf** | `npx skills add JuliusBrussee/caveman -a windsurf -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Cline** | `npx skills add JuliusBrussee/caveman -a cline -g` | Per-session by default; `--with-init` for an always-on rule file |
@@ -71,7 +71,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Block Goose** | `npx skills add JuliusBrussee/caveman -a goose -g` | No |
 | **Grok Build** | `npx -y github:JuliusBrussee/caveman -- --only grok` | Yes (`~/.grok/AGENTS.md` block) |
 | **iFlow CLI** | `npx -y github:JuliusBrussee/caveman -- --only iflow` | No |
-| **Kiro CLI** | `npx skills add JuliusBrussee/caveman -a kiro-cli -g` | No |
+| **Kiro (IDE + CLI)** | `npx skills add JuliusBrussee/caveman -a kiro-cli -g` | No ([always-on steering](#kiro-ide-and-cli)) |
 | **Mistral Vibe** | `npx skills add JuliusBrussee/caveman -a mistral-vibe -g` | No |
 | **OpenHands** | `npx skills add JuliusBrussee/caveman -a openhands -g` | No |
 | **Qwen Code** | `npx skills add JuliusBrussee/caveman -a qwen-code -g` | No |
@@ -85,9 +85,18 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Antigravity IDE** *(soft probe)* | `npx -y github:JuliusBrussee/caveman -- --only antigravity` | No |
 | **Antigravity 2.0** *(explicit selection)* | `npx -y github:JuliusBrussee/caveman -- --only antigravity-2` | No |
 
+Not in the table, with their own steps below: [Claude apps (claude.ai, desktop, mobile, Cowork)](#claude-apps-claudeai-desktop-mobile-cowork), [GitHub Copilot in VS Code](#github-copilot-in-vs-code-agent-plugin), [nanocoder](#nanocoder), and [dev containers](#dev-containers-codespaces-remote-machines).
+
+Already inside a Claude Code session? The same Claude Code install as slash commands:
+
+```text
+/plugin marketplace add JuliusBrussee/caveman
+/plugin install caveman@caveman
+```
+
 "Soft probe" = installer won't auto-detect these without `--only <id>` because there's no reliable always-on signal (no CLI / config-dir-only). Pass the flag when you want them.
 
-For "auto-activates? No" agents, invoke the Caveman skill using the host's skill menu, `/caveman` where supported, or a prompt naming the skill. Enable skills first if your host requires it: Augment has a Skills beta setting; AiderDesk requires Skills Tools in the active agent profile; custom Kiro agents need skill resources.
+For "auto-activates? No" agents, invoke the Caveman skill using the host's skill menu, `/caveman` where supported (`$caveman` in Codex), or a prompt naming the skill. Enable skills first if your host requires it: Augment has a Skills beta setting; AiderDesk requires Skills Tools in the active agent profile; custom Kiro agents need skill resources.
 
 **Pick the mode new sessions start in.** Put `{"defaultMode": "ultracave"}` (or `"caveman"`, `"megacave"`, `"off"`) in `~/.config/caveman/config.json`, or in a `.caveman.json` at a project root for just that project.
 
@@ -208,6 +217,78 @@ to normal prose, say `stop caveman` in a session, or switch the plugin off for
 good with `agy plugin disable caveman` (`enable` turns it back on).
 `--uninstall` runs `agy plugin uninstall caveman`. This is separate from the
 **Antigravity IDE** and **Antigravity 2.0** rows, which copy skills only.
+
+### Claude apps: claude.ai, desktop, mobile, Cowork
+
+Nothing to install on your phone or inside Cowork. Add caveman to your Claude account once, from a browser or the desktop app, and it follows the account:
+
+1. On [claude.ai](https://claude.ai) or in the Claude desktop app, open **Customize > Plugins**.
+2. Pick **Add > Add marketplace** and enter `JuliusBrussee/caveman`.
+3. Add **Caveman** from that marketplace.
+4. Turn on **Settings > Capabilities > Code execution and file creation**. Claude's skills need it.
+
+Then:
+
+- **Chat** (web, desktop, Android, iOS): chat has no startup hook, so caveman waits until asked. Start a chat with `/caveman` (pick it from the `/` menu) or say "caveman mode". Want it in every chat? Paste the text of [`src/rules/caveman-activate.md`](src/rules/caveman-activate.md) into your personal preferences in Settings.
+- **Cowork**: start a new task, then use `/caveman` or say "caveman mode".
+- **Claude Code**: the account copy arrives the next time you start Claude Code signed in to that account. If you also installed caveman from the Claude Code command line, check `claude plugin list` and disable one copy, so the rules don't load twice.
+
+Why a command-line install didn't show up: plugins installed from the Claude Code command line stay on that one machine and never reach your Claude account, so the apps and Cowork can't see them.
+
+> Steps follow Claude's [plugin docs](https://claude.com/docs/plugins/overview). We have not yet checked them end to end on a real account: the marketplace add from this repo, the skill appearing on Android, and whether caveman's auto-start runs in Cowork. If a step differs for you, [open an issue](https://github.com/JuliusBrussee/caveman/issues).
+
+### GitHub Copilot in VS Code (agent plugin)
+
+VS Code can install plugins in Claude's format, and this repo is one.
+
+1. Turn on agent plugins with the `chat.plugins.enabled` setting.
+2. Open the Command Palette, run **Chat: Install Plugin From Source**, and paste `https://github.com/JuliusBrussee/caveman`.
+3. In Copilot Chat, pick `caveman` from the `/` menu or say "caveman mode".
+
+Expect skills only, and no auto-start: VS Code reads a Claude plugin's hooks from a file caveman does not ship. We have not tested this path yet. For caveman on every Copilot reply in one repo, run `npx -y github:JuliusBrussee/caveman -- --only copilot --with-init` at the repo root. It writes Copilot's rule file, `.github/copilot-instructions.md`, and also adds rule files for Cursor, Windsurf, Cline and `AGENTS.md`.
+
+### Kiro (IDE and CLI)
+
+`npx skills add JuliusBrussee/caveman -a kiro-cli -g` puts caveman in `~/.kiro/skills/`. Kiro IDE and kiro-cli both load skills from there, so one install covers both. Say "caveman mode" to start it.
+
+Want it on for every Kiro chat? Add a global steering file with `inclusion: always`:
+
+```bash
+mkdir -p ~/.kiro/steering
+printf '%s\n' '---' 'inclusion: always' '---' '' > ~/.kiro/steering/caveman.md
+curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/main/src/rules/caveman-activate.md >> ~/.kiro/steering/caveman.md
+```
+
+The steering format comes from [Kiro's docs](https://kiro.dev/docs/steering/); we have not tested it in Kiro ourselves. Delete the file to turn it off.
+
+### nanocoder
+
+No native install. nanocoder reads the `AGENTS.md` at your project root into its system prompt (its `nano` profile leaves it out unless you turn on **Include AGENTS.md**). Put caveman's always-on rule there, once per repo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/main/src/rules/caveman-activate.md >> AGENTS.md
+```
+
+Run it once; a second run adds a second copy. `npx -y github:JuliusBrussee/caveman -- --with-init` is safe to re-run and writes the same rule into `AGENTS.md`, but it also installs caveman into every other agent it finds on your machine and adds rule files for Cursor, Windsurf, Cline and Copilot. Not tested in nanocoder by us yet.
+
+### Dev containers, Codespaces, remote machines
+
+A dev container has its own home folder. Caveman installed on your laptop (`~/.codex/skills`, `~/.claude`, and so on) is not inside it. Two ways that work:
+
+1. **Ship caveman with the repo.** At the repo root, run the skills install *without* `-g`, then commit the folder it creates. Every container and teammate gets caveman. For Codex:
+
+   ```bash
+   npx skills add JuliusBrussee/caveman -a codex --copy
+   ```
+
+   Codex reads project skills from `.agents/skills/`. Skill files copied anywhere else are not found.
+2. **Install when the container is built.** In `.devcontainer/devcontainer.json` (the image needs Node.js):
+
+   ```json
+   "postCreateCommand": "npx -y skills add JuliusBrussee/caveman --skill '*' -a codex -g -y"
+   ```
+
+Swap `codex` for your agent's profile from the table above. Claude Code inside a container needs its own install too: run the Claude Code plugin commands, or the installer, inside the container.
 
 ## Manual install (no `curl | bash`)
 
@@ -332,11 +413,14 @@ update — hooks are read once at session start.
 | **Gemini CLI** | The Gemini CLI owns its extensions — see `gemini extensions --help` for its update subcommand |
 | **Installed via `npx skills add`** | Re-run the same `npx skills add` command — it overwrites in place |
 | **Hooks / opencode / OpenClaw / rule files** | Re-run the installer; it is idempotent for everything it owns |
+| **`caveman` CLI** (proxy, learn, shrink, browse) | `npm install -g @caveman-ai/cli@latest` (or `bun add -g @caveman-ai/cli@latest`) |
 
 ```bash
 # Re-run the installer (safe to repeat — overwrites only installer-owned files)
 npx -y github:JuliusBrussee/caveman
 ```
+
+The `caveman` CLI has its own version number. `caveman --version` shows the CLI release (2.x), not the Caveman release (3.x), and re-running the installer does not update the CLI. Use the npm (or bun) command above for that.
 
 ## Uninstall
 
@@ -399,6 +483,10 @@ Caveman turns itself on through small Node.js scripts, so auto-activation needs 
 That's intended. Mode is per window. Say `/caveman` in the window you want it in.
 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.caveman-sessions/` has one file per session
 if you want to see the current state of each.
+
+**"I also run ponytail (or another style plugin). Which one wins?"**
+
+Both apply. Ponytail decides how much code gets written; caveman decides how the reply reads. Ponytail's own instructions say to pair it with caveman. Want only one? Say `stop caveman` in that window, or set `"defaultMode": "manual"` in `~/.config/caveman/config.json` so caveman starts off until you type `/caveman`.
 
 **"I said 'stop caveman' and it came back on its own."**
 
