@@ -18,7 +18,7 @@ Display this reference card when invoked. One-shot — do NOT change mode, write
 | **megacave** | `/megacave` (alias `/caveman wenyan`) | Classical Chinese 文言文. Far fewer characters, technical terms verbatim. |
 
 Mode stick until changed or session end.
-`/caveman status` reports current mode without changing it. Claude Code and the standalone OpenCode plugin read stored state; other hosts use conversation context and report `unknown` if no mode is known.
+`/caveman status` reports current mode without changing it. Claude Code and the standalone OpenCode plugin read stored state; other hosts answer from the conversation and mark it `(not tracked by this host)`.
 
 ## Skills
 

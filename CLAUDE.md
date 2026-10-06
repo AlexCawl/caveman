@@ -334,7 +334,7 @@ Three self-contained skills, each 1:1 with a stored mode id: `caveman` (default 
 
 ### Auto-clarity rule
 
-Caveman drops to normal prose for: security warnings, irreversible action confirmations, multi-step sequences where fragment ambiguity risks misread, user confused or repeating question. Resumes after. Defined in skill — preserve in any SKILL.md edit.
+Caveman drops to normal prose for: security warnings, irreversible action confirmations, multi-step sequences where fragment ambiguity risks misread, user confused or repeating question, questions the agent asks the user. Resumes after. Defined in skill — preserve in any SKILL.md edit.
 
 ### caveman-compress
 

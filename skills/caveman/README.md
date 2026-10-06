@@ -34,7 +34,7 @@ stop caveman          # back to normal prose
 ```
 
 Claude Code and the standalone OpenCode plugin read stored mode state. Other
-hosts report the mode known in the conversation, or `unknown` if none is known.
+hosts answer from the conversation and mark it `(not tracked by this host)`.
 
 Want Claude Code sessions to start with normal prose? Set
 `{"defaultMode":"manual"}` in `.caveman.json` for one project or
