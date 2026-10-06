@@ -288,13 +288,15 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		// raw, and a conversation is held to the form its longest lineage was
 		// cached in (raw_pin.go): once a turn of it streamed, it stays raw. A
 		// stream after compressed turns is the one bust this path cannot avoid.
-		streamRaw = serverRetrieve && meta.Stream && s.prefixCache != nil
 		serverRetrieveAllowed := serverRetrieve && !meta.Stream && !s.heldRawByStream(adapter, meta, body)
 		// Marker-only compression needs a recovery path the caller can actually reach.
 		// PAYG keeps its pre-existing MCP-recovery rule; subscription and OAuth go
 		// exclusively through the live-zone predicate above (which itself requires MCP
 		// recovery), so neither can ever compress with no way back to the elided bytes.
 		markerOnlyAllowed := (s.mcpRecoveryAvailable(body) && authMode != AuthModeOAuth && authMode != AuthModeSubscription) || nonPAYGLiveZone
+		// A stream carrying the caveman MCP tool compresses on the marker path,
+		// so it did not go out raw for being a stream.
+		streamRaw = serverRetrieve && meta.Stream && s.prefixCache != nil && !markerOnlyAllowed
 		if (markerOnlyAllowed || serverRetrieveAllowed) && s.rawPinned(adapter, meta, body) {
 			// The provider accepted this conversation only raw once (see
 			// raw_pin.go): what it cached is the original bytes, so everything

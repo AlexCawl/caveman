@@ -507,7 +507,9 @@ func (h *invariantHarness) sendBody(body []byte, session string, o sendOpts) (in
 			client:    body,
 			forwarded: attempts[len(attempts)-1].body,
 			rawRetry:  len(attempts) > 1,
-			streamRaw: h.payg && bytes.Contains(body, []byte(`"stream":true`)),
+			// A PAYG stream is raw only when it went out as sent: one carrying
+			// the caveman MCP tool compresses on the marker path instead.
+			streamRaw: h.payg && bytes.Contains(body, []byte(`"stream":true`)) && bytes.Equal(attempts[len(attempts)-1].body, body),
 			group:     o.group,
 		})
 	}
@@ -936,6 +938,52 @@ func TestCachePrefixInvariant(t *testing.T) {
 // interleaved is a Claude Code process: the main thread, two subagents with
 // their own system prompts, a haiku side request and the prompt-suggestion fork,
 // all on one session (or none).
+// TestPAYGStreamWithMCPToolIsNotAStreamSwitch: a PAYG proxy without
+// CAVEMAN_RECOVERY=mcp still compresses a stream that carries the namespaced
+// caveman MCP retrieve tool, on the marker path. Such a stream went out
+// replaced, so it is neither a stream switch nor a stream-raw lineage, and a
+// bust caveman causes on it must be reported as caveman's.
+func TestPAYGStreamWithMCPToolIsNotAStreamSwitch(t *testing.T) {
+	h := newInvariantHarness(t)
+	h.payg = true
+	h.restart("")
+	c := newCCConversation("You are Claude Code.", "sess-payg-mcp")
+	c.stream = true
+	c.toolResult(filler("turn one"))
+	withMCP := func() []byte {
+		return bytes.Replace(c.body(), []byte(`"tools":[`),
+			[]byte(`"tools":[{"name":"mcp__caveman__caveman_retrieve","description":"Recover elided bytes","input_schema":{"type":"object"}},`), 1)
+	}
+	_, first := h.sendBody(withMCP(), c.session, sendOpts{})
+	if !bytes.Contains(first[0].body, []byte("<<ccr:")) {
+		t.Fatalf("test setup: the MCP-carrying stream should compress on the marker path:\n%.300s", first[0].body)
+	}
+	if cause := h.sink.last(t).CacheBustCause; cause == bustCauseStreamSwitch {
+		t.Fatalf("a compressed stream was recorded as %q", cause)
+	}
+	if h.srv.heldRawByStream(h.srv.adapters[0], providers.RequestMetadata{Provider: "anthropic", Model: c.model, Stream: true}, withMCP()) {
+		t.Fatal("a compressed stream recorded a stream-raw lineage")
+	}
+	c.toolResult(filler("turn two"))
+	h.sendBody(withMCP(), c.session, sendOpts{})
+	h.assert()
+
+	// The store loses every replacement row: turn 3 re-sends the cached blocks
+	// raw, a bust caveman caused.
+	h.cache.mu.Lock()
+	for k := range h.cache.entries {
+		if !strings.HasPrefix(k, rawPinScope+":") && !strings.HasPrefix(k, lineageScope+":") {
+			delete(h.cache.entries, k)
+		}
+	}
+	h.cache.mu.Unlock()
+	c.user(filler("turn three"))
+	h.sendBody(withMCP(), c.session, sendOpts{})
+	if cause := h.sink.last(t).CacheBustCause; cause != bustCauseCaveman {
+		t.Fatalf("a caveman bust on a compressed stream was recorded as %q, want %q", cause, bustCauseCaveman)
+	}
+}
+
 func interleaved(h *invariantHarness, session string) {
 	main := newCCConversation("You are Claude Code.", session)
 	explore := newCCConversation("You are an Explore subagent.", session)
