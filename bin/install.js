@@ -250,10 +250,11 @@ const PROVIDERS = [
   { id: 'roo',        label: 'Roo Code',            mech: 'npx skills add (roo)',          detect: 'vscode-ext:roo||vscode-ext:rooveterinaryinc.roo-cline||cursor-ext:roo', profile: 'roo' },
   { id: 'augment',    label: 'Augment Code',        mech: 'npx skills add (augment)',      detect: 'vscode-ext:augment||jetbrains-plugin:augment', profile: 'augment' },
 
-  // GitHub Copilot: detected via VS Code / Cursor extension dirs (no `gh` CLI
-  // needed). The old `command:copilot` soft probe never fired for most users
-  // because Copilot ships as an editor extension, not a CLI (issue #336).
-  { id: 'copilot',    label: 'GitHub Copilot',      mech: 'npx skills add (github-copilot)', detect: 'vscode-ext:github.copilot||vscode-ext:github.copilot-chat||cursor-ext:github.copilot', profile: 'github-copilot' },
+  // GitHub Copilot: the standalone Copilot CLI (`copilot` binary, reads the
+  // profile's ~/.copilot/skills) or the VS Code / Cursor extension dirs (no
+  // `gh` CLI needed). The extension probes came first because Copilot used to
+  // ship only as an editor extension (#336); the CLI probe is back for #1189.
+  { id: 'copilot',    label: 'GitHub Copilot',      mech: 'npx skills add (github-copilot)', detect: 'command:copilot||vscode-ext:github.copilot||vscode-ext:github.copilot-chat||cursor-ext:github.copilot', profile: 'github-copilot' },
 
   // CLI agents — require the binary. The `||dir:~/.foo` fallbacks were the
   // main source of false positives (warp, kiro, junie etc. leave config dirs
@@ -2098,12 +2099,12 @@ async function main() {
     for (const [id, why] of ctx.results.failed) process.stderr.write(`    • ${id} — ${why}\n`);
   }
   if (!ctx.results.installed.length && !ctx.results.skipped.length && !ctx.results.failed.length) {
-    process.stdout.write('  nothing detected. run with --list to see all 30+ supported agents,\n');
+    process.stdout.write('  no agents detected. run with --list to see all 30+ supported agents,\n');
     process.stdout.write('  or pass --only <agent> to force a specific target.\n');
   }
   process.stdout.write('\n');
   ctx.note("  start any session and say 'caveman mode', or run /caveman in Claude Code");
-  ctx.note('  measure what caveman save you: run /caveman-stats (numbers are estimates)');
+  ctx.note('  measure what caveman save you: run /caveman-stats');
   ctx.note('  verified team savings coming soon — join waitlist: https://caveman.so');
   ctx.note(`  uninstall: npx -y github:${REPO} -- --uninstall`);
 
