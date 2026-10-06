@@ -50,7 +50,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Oh My Pi (OMP)** | `npx -y github:JuliusBrussee/caveman -- --only omp` *(or `node bin/install.js --only omp` from a clone)* | Yes (native OMP plugin) |
 | **OpenClaw** | `npx -y github:JuliusBrussee/caveman -- --only openclaw` | Yes (workspace skill + SOUL.md) |
 | **Hermes Agent** | `npx -y github:JuliusBrussee/caveman -- --only hermes` *(or `node bin/install.js --only hermes` from a clone)* | Yes (native skills, enabled on load) |
-| **Codex CLI** | `npx skills add JuliusBrussee/caveman -a codex -g` | Per-session: `/caveman` |
+| **Codex CLI** | `npx skills add JuliusBrussee/caveman -a codex -g` | Per-session: `$caveman` (Codex calls skills with `$`, not `/`) |
 | **Cursor** | `npx skills add JuliusBrussee/caveman -a cursor -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Windsurf** | `npx skills add JuliusBrussee/caveman -a windsurf -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Cline** | `npx skills add JuliusBrussee/caveman -a cline -g` | Per-session by default; `--with-init` for an always-on rule file |
@@ -92,7 +92,7 @@ Already inside a Claude Code session? The same Claude Code install as slash comm
 
 "Soft probe" = installer won't auto-detect these without `--only <id>` because there's no reliable always-on signal (no CLI / config-dir-only). Pass the flag when you want them.
 
-For "auto-activates? No" agents, invoke the Caveman skill using the host's skill menu, `/caveman` where supported, or a prompt naming the skill. Enable skills first if your host requires it: Augment has a Skills beta setting; AiderDesk requires Skills Tools in the active agent profile; custom Kiro agents need skill resources.
+For "auto-activates? No" agents, invoke the Caveman skill using the host's skill menu, `/caveman` where supported (`$caveman` in Codex), or a prompt naming the skill. Enable skills first if your host requires it: Augment has a Skills beta setting; AiderDesk requires Skills Tools in the active agent profile; custom Kiro agents need skill resources.
 
 Continue needs physical skill directories because its current loader skips per-skill symlinks. The unified installer copies into `CONTINUE_GLOBAL_DIR/skills` (default `~/.continue/skills`) and follows AiderDesk's `AIDER_DESK_HOME_DIR` / `AIDER_DESK_DIR` overrides. It also honors `IFLOW_HOME`, Crush's exact `CRUSH_SKILLS_DIR`, and `GROK_HOME` (Grok Build reads `GROK_HOME/skills`, default `~/.grok/skills`). Use the same environment when uninstalling — for a relative override, that means the same working directory too, since the path resolves against `cwd`. Existing unowned skill directories or symlinks produce a conflict rather than being silently replaced. See the [vendor discovery matrix](docs/technical/installer-provider-discovery.md) for sources and product limits.
 

@@ -82,7 +82,7 @@ Every reply runs a check before it sends: opener that announces the plan, delete
 npx skills add JuliusBrussee/caveman -g
 ```
 
-Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [30+ more](./INSTALL.md). Type `/caveman` if it doesn't start on its own. Say `stop caveman` to go back. One rock. That it.
+Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [30+ more](./INSTALL.md). Type `/caveman` (`$caveman` in Codex) if it doesn't start on its own. Say `stop caveman` to go back. One rock. That it.
 
 <details>
 <summary><strong>Other ways in</strong>: Claude Code plugin, Gemini, every agent at once, Windows, uninstall</summary>
