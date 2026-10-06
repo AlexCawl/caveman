@@ -46,6 +46,10 @@ function parseWindowsNodeShim(source) {
   //   SET "NPX_CLI_JS=%~dp0\node_modules\npm\bin\npx-cli.js"
   // and launches `"%NODE_EXE%" "%NPX_CLI_JS%" %*`. Only that assignment is
   // accepted — arbitrary variable expansion stays rejected.
+  // ponytail: the stock shim also asks npm-prefix.js for a globally upgraded
+  // npm (NPM_PREFIX_NPX_CLI_JS) and prefers that; we always take the copy
+  // bundled with Node. Same `npx`, possibly an older npm. Mirror the prefix
+  // lookup if a bundled-npx bug ever bites.
   const npmNpx = source.match(/SET\s+"NPX_CLI_JS=%~dp0\\([^"\r\n]+\.js)"/i);
   if (npmNpx && /"%NODE_EXE%"\s+"%NPX_CLI_JS%"\s+%\*/i.test(source)) return npmNpx[1];
   return null;
