@@ -209,6 +209,31 @@ test('reports no-session when no .jsonl exists', (tmp) => {
   assert.match(err.stderr, /no Claude Code session found/);
 });
 
+// Without --session-file, the current project's transcript beats a newer one
+// from another project. Claude Code's folder name replaces every
+// non-alphanumeric character with '-', so a dot in the path must not defeat it.
+test('manual run prefers the current project transcript over a newer one elsewhere (#563)', (tmp) => {
+  const claudeDir = path.join(tmp, '.claude');
+  const cwd = path.join(tmp, 'my.repo');
+  fs.mkdirSync(cwd, { recursive: true });
+  const slug = fs.realpathSync(cwd).replace(/[^A-Za-z0-9]/g, '-');
+  const write = (dir, name, outputTokens, mtimeSec) => {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, JSON.stringify({ type: 'assistant', message: { usage: { output_tokens: outputTokens } } }));
+    fs.utimesSync(file, mtimeSec, mtimeSec);
+  };
+  const now = Math.floor(Date.now() / 1000);
+  write(path.join(claudeDir, 'projects', slug), 'a.jsonl', 111, now - 3600);
+  write(path.join(claudeDir, 'projects', '-elsewhere'), 'b.jsonl', 999, now);
+  const out = execFileSync(process.execPath, [STATS, '--host', 'claude'], {
+    encoding: 'utf8', cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: claudeDir },
+  });
+  assert.match(out, /a\.jsonl/);
+  assert.doesNotMatch(out, /b\.jsonl/);
+  assert.match(out, /Output tokens:\s+111/);
+});
+
 test('mode tracker delivers /caveman-stats via additionalContext', (tmp) => {
   const sess = makeSession(tmp, [
     { type: 'assistant', message: { usage: { output_tokens: 100 } } },

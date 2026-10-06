@@ -84,7 +84,9 @@ function findRecentSession(claudeDir) {
 
   // Session dirs are flat (UUID.jsonl files directly inside project slug dir).
   // Try CWD-scoped project first so multi-project setups don't bleed across.
-  // CWD slug: /home/dave → -home-dave  (replace every / with -)
+  // Current Claude Code names the folder by replacing every non-alphanumeric
+  // character with '-' (/a/my.repo → -a-my-repo, C:\x → C--x); older
+  // versions replaced only the separators and kept dots. Try both.
   function newestInDir(dir) {
     let names;
     try { names = fs.readdirSync(dir); } catch { return null; }
@@ -99,9 +101,11 @@ function findRecentSession(claudeDir) {
     return best ? best.file : null;
   }
 
-  const cwdSlug = process.cwd().replace(/\//g, '-');
-  const cwdResult = newestInDir(path.join(projectsDir, cwdSlug));
-  if (cwdResult) return cwdResult;
+  const cwd = process.cwd();
+  for (const slug of new Set([cwd.replace(/[^A-Za-z0-9]/g, '-'), cwd.replace(/[\\/]/g, '-')])) {
+    const cwdResult = newestInDir(path.join(projectsDir, slug));
+    if (cwdResult) return cwdResult;
+  }
 
   // Fall back: global walk (original behaviour, covers non-standard CWDs)
   let entries;
