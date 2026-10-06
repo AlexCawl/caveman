@@ -782,7 +782,9 @@ function copilotHome() {
 function installCopilotCliHook(ctx) {
   const { note, warn, opts, results, repoRoot } = ctx;
   const root = copilotHome();
-  if (opts.withHooks === false || !(hasCmd('copilot') || fs.existsSync(root))) return;
+  // No bare ~/.copilot probe: `npx skills add -a github-copilot -g` has just
+  // created ~/.copilot/skills, and VS Code uses that folder too.
+  if (opts.withHooks === false || !(hasCmd('copilot') || process.env.COPILOT_HOME)) return;
   if (!repoRoot) {
     note('  Copilot CLI hook needs the caveman package files; skipped.');
     return;

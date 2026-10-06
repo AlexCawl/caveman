@@ -152,7 +152,7 @@ see the rules twice, turn one of them off.
 ### GitHub Copilot CLI
 
 `--only copilot` installs the skills for every Copilot surface. If the Copilot
-CLI is on your machine (`copilot` on PATH, or `~/.copilot` exists), it also adds
+CLI is on your machine (`copilot` on PATH, or `COPILOT_HOME` set), it also adds
 a session hook so every new `copilot` session starts in caveman mode — no
 `/caveman` needed. It follows your configured default (`CAVEMAN_DEFAULT_MODE`,
 a repo `.caveman.json`, or your user config), so `"defaultMode": "off"` keeps

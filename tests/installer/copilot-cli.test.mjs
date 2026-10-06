@@ -23,7 +23,11 @@ function fixture(t, { copilotBin = true, copilotHome = true } = {}) {
   fs.mkdirSync(home);
   const bin = path.join(dir, 'bin');
   const npxLog = path.join(dir, 'npx.json');
-  nodeStub(bin, 'npx', `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(npxLog)}, JSON.stringify(ARGV));`);
+  // Like the real skills CLI, whose github-copilot globalSkillsDir is
+  // ~/.copilot/skills: a bare ~/.copilot says nothing about the Copilot CLI.
+  nodeStub(bin, 'npx', `import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+    fs.writeFileSync(${JSON.stringify(npxLog)}, JSON.stringify(ARGV));
+    fs.mkdirSync(path.join(os.homedir(), '.copilot', 'skills', 'caveman'), { recursive: true });`);
   if (copilotBin) nodeStub(bin, 'copilot', 'process.exit(0);');
   // Only the stubs (and node, which Windows shims need by name) on PATH.
   const base = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
@@ -87,7 +91,8 @@ test('no Copilot CLI and no COPILOT_HOME: skills only, no hook', (t) => {
   const { home, run } = fixture(t, { copilotBin: false, copilotHome: false });
   const r = run('--only', 'copilot');
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.equal(fs.existsSync(path.join(home, '.copilot')), false);
+  assert.equal(fs.existsSync(path.join(home, '.copilot', 'skills', 'caveman')), true, 'stub wrote the skills');
+  assert.deepEqual(fs.readdirSync(path.join(home, '.copilot')), ['skills']);
 });
 
 test('--no-hooks skips the hook', (t) => {
