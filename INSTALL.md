@@ -54,7 +54,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Cursor** | `npx skills add JuliusBrussee/caveman -a cursor -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Windsurf** | `npx skills add JuliusBrussee/caveman -a windsurf -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Cline** | `npx skills add JuliusBrussee/caveman -a cline -g` | Per-session by default; `--with-init` for an always-on rule file |
-| **GitHub Copilot** | `npx -y github:JuliusBrussee/caveman -- --only copilot --with-init` | Repo-wide instructions via `--with-init` |
+| **GitHub Copilot** | `npx -y github:JuliusBrussee/caveman -- --only copilot --with-init` | Copilot CLI: Yes (session hook). VS Code: repo-wide instructions via `--with-init` |
 | **Continue** | `npx -y github:JuliusBrussee/caveman -- --only continue` | No — invoke the Caveman skill |
 | **Kilo Code** | `npx skills add JuliusBrussee/caveman -a kilo -g` | No |
 | **Roo Code** | `npx skills add JuliusBrussee/caveman -a roo -g` | No |
@@ -123,6 +123,22 @@ use `--only omp --force`; the ownership journal records a backup for restoration
 on uninstall. Failed registration retains the owned package, journal, and backups
 so OMP cannot be left pointing at deleted files. Fix the reported host error and
 rerun the install, or uninstall. Failed deregistration retains those files too.
+
+### GitHub Copilot CLI
+
+`--only copilot` installs the skills for every Copilot surface. If the Copilot
+CLI is on your machine (`copilot` on PATH, or `~/.copilot` exists), it also adds
+a session hook so every new `copilot` session starts in caveman mode — no
+`/caveman` needed. It follows your configured default (`CAVEMAN_DEFAULT_MODE`,
+a repo `.caveman.json`, or your user config), so `"defaultMode": "off"` keeps
+sessions normal. Checked with Copilot CLI 1.0.92.
+
+Files, all owned by the installer and removed by `--uninstall`:
+`$COPILOT_HOME/hooks/caveman.json` (default `~/.copilot/hooks/`) and
+`$COPILOT_HOME/caveman/`. Other files in `hooks/` are never touched. Skip the
+hook with `--no-hooks`. VS Code reads the same `hooks/` folder, but its
+documented session output is shaped differently and this path is untested
+there: for VS Code Copilot Chat, use `--with-init` for always-on.
 
 ## Manual install (no `curl | bash`)
 
@@ -272,6 +288,7 @@ What it removes:
 - The Claude Code plugin and the Gemini CLI extension (if installed).
 - The opencode native plugin (`~/.config/opencode/plugins/caveman/`, the `plugin` and `mcp.caveman-shrink` entries from `opencode.json`, our skill/agent/command files, the caveman block from `AGENTS.md`, and the opencode flag file).
 - The Oh My Pi plugin (`omp plugin uninstall caveman`) and Caveman's managed OMP plugin package at `~/.omp/caveman-plugin/`.
+- The Copilot CLI session hook: `$COPILOT_HOME/hooks/caveman.json` and `$COPILOT_HOME/caveman/` (default `~/.copilot/`).
 - The OpenClaw workspace skill folder and the marker-fenced block from `~/.openclaw/workspace/SOUL.md` (when present).
 - All mode state in `$CLAUDE_CONFIG_DIR`: the `.caveman-sessions/` directory (one file per window), `.caveman-active`, `.caveman-active.prev`, `.caveman-mode-log.jsonl`, `.caveman-statusline-suffix`, `.caveman-nudge-shown`, and `.caveman-statusline-stale`.
 

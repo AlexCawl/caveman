@@ -28,6 +28,7 @@ const OWNED = require('./lib/owned-install');
 const PROVIDER_SKILLS = require('./lib/provider-skills');
 const { transformOpencodeAgentFrontmatter } = require('./lib/opencode-agent');
 const CURSOR_NATIVE = require('./lib/cursor-native');
+const HOST_HOOKS = require('./lib/host-hooks');
 const PORTABLE = require('./lib/portable-process');
 const PLATFORM_PATHS = require('./lib/platform-paths');
 const { parseCommandArgs } = require('./lib/command-args');
@@ -253,9 +254,9 @@ const PROVIDERS = [
   { id: 'augment',    label: 'Augment Code',        mech: 'npx skills add (augment)',      detect: 'vscode-ext:augment||jetbrains-plugin:augment', profile: 'augment' },
 
   // GitHub Copilot: detected via VS Code / Cursor extension dirs (no `gh` CLI
-  // needed). The old `command:copilot` soft probe never fired for most users
-  // because Copilot ships as an editor extension, not a CLI (issue #336).
-  { id: 'copilot',    label: 'GitHub Copilot',      mech: 'npx skills add (github-copilot)', detect: 'vscode-ext:github.copilot||vscode-ext:github.copilot-chat||cursor-ext:github.copilot', profile: 'github-copilot' },
+  // needed), or the standalone Copilot CLI binary. A `command:copilot`-only
+  // probe never fired for editor-only users (issue #336).
+  { id: 'copilot',    label: 'GitHub Copilot',      mech: 'npx skills add (github-copilot)', detect: 'vscode-ext:github.copilot||vscode-ext:github.copilot-chat||cursor-ext:github.copilot||command:copilot', profile: 'github-copilot' },
 
   // CLI agents — require the binary. The `||dir:~/.foo` fallbacks were the
   // main source of false positives (warp, kiro, junie etc. leave config dirs
@@ -737,6 +738,7 @@ function installViaSkills(ctx, prov) {
   if (spawnOk(r)) {
     results.installed.push(prov.id);
     if (prov.id === 'cursor') installCursorNative(ctx);
+    if (prov.id === 'copilot') installCopilotCliHook(ctx);
   }
   else results.failed.push([prov.id, `npx skills add (${prov.profile}) failed`]);
   process.stdout.write('\n');
@@ -763,6 +765,55 @@ function installCursorNative(ctx) {
   } catch (error) {
     warn(`  Cursor agents/hook were not installed: ${error.message}`);
     results.failed.push(['cursor (agents + hook)', error.message]);
+  }
+}
+
+// GitHub Copilot CLI always-on. User hooks load from $COPILOT_HOME/hooks/*.json
+// (default ~/.copilot/hooks/) and sessionStart consumes a top-level
+// additionalContext. Both files are owned whole, so nothing is merged.
+// https://docs.github.com/en/copilot/reference/hooks-configuration
+const COPILOT_HOOK_FILE = 'hooks/caveman.json';
+
+function copilotHome() {
+  return process.env.COPILOT_HOME || path.join(os.homedir(), '.copilot');
+}
+
+function installCopilotCliHook(ctx) {
+  const { note, warn, opts, results, repoRoot } = ctx;
+  const root = copilotHome();
+  if (opts.withHooks === false || !(hasCmd('copilot') || fs.existsSync(root))) return;
+  if (!repoRoot) {
+    note('  Copilot CLI hook needs the caveman package files; skipped.');
+    return;
+  }
+  const node = absoluteNodePath();
+  const hook = {
+    version: 1,
+    hooks: {
+      sessionStart: [{
+        type: 'command',
+        bash: HOST_HOOKS.hookCommand(root, 'copilot', node, 'posix'),
+        powershell: HOST_HOOKS.hookCommand(root, 'copilot', node, 'win32'),
+        timeoutSec: 10,
+      }],
+    },
+  };
+  if (opts.dryRun) {
+    note(`  would install the Copilot CLI sessionStart hook at ${path.join(root, COPILOT_HOOK_FILE)}`);
+    return;
+  }
+  try {
+    OWNED.installOwned({
+      root, integration: 'copilot-cli', force: opts.force, note,
+      operations: [
+        HOST_HOOKS.payloadOperation(repoRoot),
+        { relativePath: COPILOT_HOOK_FILE, write: (stage) => fs.writeFileSync(stage, JSON.stringify(hook, null, 2) + '\n') },
+      ],
+    });
+    note('  Copilot CLI: new sessions start in caveman mode');
+  } catch (error) {
+    warn(`  Copilot CLI hook was not installed: ${error.message}`);
+    results.failed.push(['copilot (CLI hook)', error.message]);
   }
 }
 
@@ -1766,6 +1817,16 @@ function uninstall(ctx) {
   } catch (error) {
     cleanupFailed = true;
     warn(`  Cursor cleanup incomplete; left integration untouched: ${error.message}`);
+  }
+
+  // Copilot CLI sessionStart hook — same journal/digest contract.
+  try {
+    const removed = OWNED.uninstallOwned({ root: copilotHome(), integration: 'copilot-cli', dryRun: opts.dryRun, note, warn });
+    if (removed.hadJournal && removed.changed.length === 0) ok('  removed the caveman Copilot CLI hook');
+    if (removed.changed.length) cleanupFailed = true;
+  } catch (error) {
+    cleanupFailed = true;
+    warn(`  Copilot CLI cleanup incomplete; left integration untouched: ${error.message}`);
   }
 
   // opencode native install — ownership journal is authority. Never infer
