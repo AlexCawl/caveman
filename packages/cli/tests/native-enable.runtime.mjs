@@ -1144,6 +1144,9 @@ test("enable/disable opencode installs one native plugin, routed providers and r
   assert.equal(installed.provider.openai.options.baseURL, "http://127.0.0.1:8787/w/opencode/openai/v1");
   assert.equal(installed.provider.openai.options.keep, true);
   assert.equal(installed.provider.anthropic.options.baseURL, "http://127.0.0.1:8787/w/opencode/anthropic/v1");
+  // opencode-go serves OpenAI and Anthropic wire shapes from opencode.ai, so it
+  // needs the proxy's opencode-go mount, not the openai/anthropic routes (#1090).
+  assert.equal(installed.provider["opencode-go"].options.baseURL, "http://127.0.0.1:8787/w/opencode/compat/opencode-go/v1");
   assert.equal(installed.provider.custom.options.baseURL, "https://custom.example");
   assert.match(installed.mcp.caveman.command[0], /caveman-mcp/);
   const pluginPath = join(configDir, "plugins", "caveman-native.js");
@@ -1199,6 +1202,7 @@ test("enable/disable opencode installs one native plugin, routed providers and r
   assert.equal(restored.provider.openai.options.baseURL, "https://openai.before");
   assert.equal(restored.provider.openai.options.later, 1);
   assert.equal(restored.provider.anthropic, undefined);
+  assert.equal(restored.provider["opencode-go"], undefined);
   assert.equal(restored.provider.custom.options.baseURL, "https://custom.example");
   assert.equal(restored.mcp.other.command[0], "other");
   assert.equal(restored.mcp.later.command[0], "later");
@@ -1468,6 +1472,33 @@ test("doctor reports opencode degraded after the host upgrades past the installe
 
   assert.equal((await run(["doctor", "opencode", "--fix"], fx.env)).code, 0);
   assert.match(readFileSync(pluginPath, "utf8"), /async setup\(ctx\)/, "--fix regenerates against the new host major");
+  assert.equal(JSON.parse((await run(["doctor", "opencode"], fx.env)).stdout).state, "installed");
+});
+
+test("doctor flags an opencode install that predates the opencode-go route and --fix adds it", async () => {
+  const fx = fixture();
+  const configDir = join(fx.home, ".config", "opencode");
+  mkdirSync(configDir, { recursive: true });
+  const configPath = join(configDir, "opencode.json");
+  writeFileSync(configPath, JSON.stringify({}) + "\n");
+  assert.equal((await run(["enable", "opencode"], fx.env)).code, 0);
+
+  // Rewind config and journal to what an enable before #1090 wrote.
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  delete config.provider["opencode-go"];
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  const journalPath = join(fx.home, ".caveman", "integrations", "opencode.json");
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  const op = journal.operations.find((item) => item.kind === "opencode-config");
+  delete op.owned.routes["opencode-go"];
+  delete op.owned.previous_routes["opencode-go"];
+  writeFileSync(journalPath, JSON.stringify(journal, null, 2));
+
+  const doctor = JSON.parse((await run(["doctor", "opencode"], fx.env)).stdout);
+  assert.equal(doctor.state, "degraded");
+  assert.equal(doctor.components.routing, false);
+  assert.equal((await run(["doctor", "opencode", "--fix"], fx.env)).code, 0);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).provider["opencode-go"].options.baseURL, "http://127.0.0.1:8787/w/opencode/compat/opencode-go/v1");
   assert.equal(JSON.parse((await run(["doctor", "opencode"], fx.env)).stdout).state, "installed");
 });
 

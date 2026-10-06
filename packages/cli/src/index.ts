@@ -7994,6 +7994,18 @@ export default {
 `;
 }
 
+// opencode-go serves OpenAI and Anthropic wire shapes from opencode.ai, so it
+// rides the proxy's built-in /compat/opencode-go mount (same one Pi uses), which
+// keeps the caller's credential and forwards OpenCode's session headers (#1090).
+function opencodeNativeRoutes(gw: string): Record<string, string> {
+  const base = appendUrlPath(gw, "/w/opencode");
+  return {
+    openai: appendUrlPath(base, "/openai/v1"),
+    anthropic: appendUrlPath(base, "/anthropic/v1"),
+    "opencode-go": appendUrlPath(base, "/compat/opencode-go/v1"),
+  };
+}
+
 function opencodeNativeMutations(gw: string, mcpBinary: string): NativeMutation[] {
   const configPath = join(homedir(), ".config", "opencode", "opencode.json");
   const before = fileBytes(configPath);
@@ -8006,8 +8018,7 @@ function opencodeNativeMutations(gw: string, mcpBinary: string): NativeMutation[
   }
   const providers = root.provider && typeof root.provider === "object" && !Array.isArray(root.provider) ? root.provider as Record<string, unknown> : {};
   const previousRoutes: Record<string, unknown> = {};
-  const base = appendUrlPath(gw, "/w/opencode");
-  const routes = { openai: appendUrlPath(base, "/openai/v1"), anthropic: appendUrlPath(base, "/anthropic/v1") };
+  const routes = opencodeNativeRoutes(gw);
   for (const [providerID, route] of Object.entries(routes)) {
     const provider = providers[providerID] && typeof providers[providerID] === "object" && !Array.isArray(providers[providerID]) ? providers[providerID] as Record<string, unknown> : {};
     const options = provider.options && typeof provider.options === "object" && !Array.isArray(provider.options) ? provider.options as Record<string, unknown> : {};
@@ -9027,7 +9038,7 @@ function restoreNativeOperation(operation: NativeJournal["operations"][number]):
     const providers = root.provider && typeof root.provider === "object" && !Array.isArray(root.provider) ? root.provider as Record<string, unknown> : {};
     const routes = operation.owned?.routes && typeof operation.owned.routes === "object" && !Array.isArray(operation.owned.routes) ? operation.owned.routes as Record<string, unknown> : {};
     const previousRoutes = operation.owned?.previous_routes && typeof operation.owned.previous_routes === "object" && !Array.isArray(operation.owned.previous_routes) ? operation.owned.previous_routes as Record<string, unknown> : {};
-    for (const providerID of ["openai", "anthropic"]) {
+    for (const providerID of Object.keys(routes)) {
       const provider = providers[providerID] && typeof providers[providerID] === "object" && !Array.isArray(providers[providerID]) ? providers[providerID] as Record<string, unknown> : {};
       const options = provider.options && typeof provider.options === "object" && !Array.isArray(provider.options) ? provider.options as Record<string, unknown> : {};
       if (options.baseURL !== undefined && options.baseURL !== routes[providerID]) {
@@ -9261,7 +9272,7 @@ function nativeIntegrationStatus(agent: NativeAgent) {
           const providers = root.provider && typeof root.provider === "object" && !Array.isArray(root.provider) ? root.provider as Record<string, unknown> : {};
           const routes = operation.owned?.routes && typeof operation.owned.routes === "object" && !Array.isArray(operation.owned.routes) ? operation.owned.routes as Record<string, unknown> : {};
           const mcp = root.mcp && typeof root.mcp === "object" && !Array.isArray(root.mcp) ? root.mcp as Record<string, unknown> : {};
-          owned = ["openai", "anthropic"].every((providerID) => {
+          owned = Object.keys(routes).every((providerID) => {
             const provider = providers[providerID] && typeof providers[providerID] === "object" && !Array.isArray(providers[providerID]) ? providers[providerID] as Record<string, unknown> : {};
             const options = provider.options && typeof provider.options === "object" && !Array.isArray(provider.options) ? provider.options as Record<string, unknown> : {};
             return options.baseURL === routes[providerID];
@@ -9297,7 +9308,7 @@ function nativeIntegrationStatus(agent: NativeAgent) {
   const mcp = probeMcpBinary();
   const expectedRoute = agent === "codex"
     ? codexGatewayBase(gatewayURL(), detectCodexWrapAuthMode() === "subscription")
-    : appendUrlPath(gatewayURL(), agent === "claude" ? "/w/claude" : agent === "hermes" ? "/w/hermes/v1" : agent === "gemini" ? "/w/gemini" : agent === "opencode" ? "/w/opencode" : agent === "pi" ? "/w/pi" : "/w/aider/openai/v1");
+    : appendUrlPath(gatewayURL(), agent === "claude" ? "/w/claude" : agent === "hermes" ? "/w/hermes/v1" : agent === "gemini" ? "/w/gemini" : agent === "pi" ? "/w/pi" : "/w/aider/openai/v1");
   const routeKind: NativeMutation["kind"] = agent === "claude" ? "claude-settings" : agent === "codex" ? "codex-config" : agent === "hermes" ? "hermes-config" : agent === "gemini" ? "gemini-env" : agent === "opencode" ? "opencode-config" : agent === "pi" ? "pi-extension" : "aider-config";
   const routeOperation = journal?.operations.find((operation) => operation.kind === routeKind);
   // Pi's artifact encodes no route: the extension resolves the gateway at
@@ -9338,8 +9349,7 @@ function nativeIntegrationStatus(agent: NativeAgent) {
     return (semver[0]! >= 2) === installedV2;
   })();
   const routeHealthy = ownedHealthy && (agent === "opencode"
-    ? (routeOperation?.owned?.routes as Record<string, unknown> | undefined)?.openai === appendUrlPath(expectedRoute, "/openai/v1")
-      && (routeOperation?.owned?.routes as Record<string, unknown> | undefined)?.anthropic === appendUrlPath(expectedRoute, "/anthropic/v1")
+    ? Object.entries(opencodeNativeRoutes(gatewayURL())).every(([providerID, route]) => (routeOperation?.owned?.routes as Record<string, unknown> | undefined)?.[providerID] === route)
     : agent === "pi" ? piBundleCurrent : routeOperation?.owned?.route === expectedRoute);
   const proxyHealthy = wrapMode(gatewayURL()) === "managed" || Boolean(probeProxyVersion()?.capabilities.includes("native_runtime_v1"));
   const recoveryHealthy = agent === "aider" || Boolean(mcp?.probe.current);

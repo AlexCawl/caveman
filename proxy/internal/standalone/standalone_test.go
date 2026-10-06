@@ -1553,6 +1553,25 @@ func TestStandaloneOpenCodeGoAuthEndToEnd(t *testing.T) {
 			},
 		},
 		{
+			// `caveman enable opencode` and `caveman wrap opencode` route
+			// OpenCode's own opencode-go provider through this mount (#1090).
+			name:     "opencode agent responses forwards the OpenCode session headers",
+			path:     "/w/opencode/compat/opencode-go/v1/responses",
+			body:     responsesBody,
+			response: responsesResponse,
+			inbound: map[string]string{
+				"authorization":      "Bearer sk-inbound",
+				"x-opencode-session": "ses_opencode",
+				"x-opencode-client":  "cli",
+			},
+			wantURL:  "https://opencode.ai/zen/go/v1/responses",
+			wantAuth: "Bearer sk-inbound",
+			wantHeaders: map[string]string{
+				"x-opencode-session": "ses_opencode",
+				"x-opencode-client":  "cli",
+			},
+		},
+		{
 			name:     "responses forwards the OpenCode session headers",
 			path:     "/w/pi/compat/opencode-go/v1/responses",
 			body:     responsesBody,
