@@ -127,6 +127,23 @@ test("release version outranks matching prerelease", { skip: process.platform ==
   assert.match(result.ghCalls, /^issue create/m);
 });
 
+test("broken latest probe opens an issue without copying untrusted probe output", { skip: process.platform === "win32" && "gh stub is a sh script; the reporter runs on POSIX CI only" }, (t) => {
+  // #1054: hermes@main probed broken for weeks and nothing surfaced, because only
+  // `drift` reached gh. A broken @latest is the louder signal, not a quieter one.
+  const artifact = validDrift();
+  Object.assign(resultFor(artifact), {
+    status: "broken",
+    help_ok: false,
+    version_error: "",
+    help_error: "ModuleNotFoundError: No module named 'ruamel' @maintainer",
+  });
+  const result = runReporter(t, artifact);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.ghCalls, /^issue list/m);
+  assert.match(result.ghCalls, /^issue create --title agent-drift: kilo .*fails the latest probe/m);
+  assert.doesNotMatch(result.ghCalls, /ruamel|@maintainer/);
+});
+
 test("workflow passes trusted artifact basename as expected profile id", () => {
   const workflow = readFileSync(join(root, ".github", "workflows", "agent-conformance.yml"), "utf8");
   assert.match(workflow, /expected_id="\$\(basename "\$probe" \.json\)"/);
