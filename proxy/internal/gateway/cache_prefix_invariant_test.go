@@ -16,6 +16,7 @@ import (
 	"github.com/JuliusBrussee/caveman/engine/compressors"
 	"github.com/JuliusBrussee/caveman/proxy/providers"
 	"github.com/JuliusBrussee/caveman/proxy/providers/anthropic"
+	"github.com/JuliusBrussee/caveman/proxy/providers/openai"
 )
 
 // The cache-prefix invariant (#1105): caveman must never change bytes the
@@ -55,6 +56,8 @@ type exchange struct {
 	// group > 0 marks requests that were in flight together. The provider may
 	// have processed either one first, so the rule is checked both ways.
 	group int
+	// wholePrompt: an OpenAI request, which the provider caches whole.
+	wholePrompt bool
 }
 
 type prefixView struct {
@@ -64,11 +67,15 @@ type prefixView struct {
 
 func cachedPrefixView(t testing.TB, x exchange) prefixView {
 	t.Helper()
-	client, cached, ok := anthropic.CachedPrefixComponents(x.client)
+	split := anthropic.CachedPrefixComponents
+	if x.wholePrompt {
+		split = wholePromptComponents
+	}
+	client, cached, ok := split(x.client)
 	if !ok {
 		t.Fatalf("client body has no cached prefix: %.300s", x.client)
 	}
-	forwarded, forwardedCached, ok := anthropic.CachedPrefixComponents(x.forwarded)
+	forwarded, forwardedCached, ok := split(x.forwarded)
 	if !ok || len(forwarded) != len(client) {
 		t.Fatalf("forwarded body does not mirror the client's components (ok=%v %d vs %d): %.300s", ok, len(forwarded), len(client), x.forwarded)
 	}
@@ -1740,5 +1747,89 @@ func TestCachePrefixInvariantPixel(t *testing.T) {
 			tc.run(t, h)
 			h.assert()
 		})
+	}
+}
+
+// codexConversation is a Codex-shaped OpenAI Responses conversation.
+type codexConversation struct {
+	items []string
+	calls int
+}
+
+func (c *codexConversation) user(text string) *codexConversation {
+	if len(c.items) > 0 {
+		c.items = append(c.items, `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done `+strconv.Itoa(len(c.items))+`"}]}`)
+	}
+	c.items = append(c.items, `{"type":"message","role":"user","content":[{"type":"input_text","text":`+jsonText(text)+`}]}`)
+	return c
+}
+
+// parallelTools appends one round of parallel tool calls and their outputs:
+// only the last output is live, the others are history at first sight.
+func (c *codexConversation) parallelTools(outputs ...string) *codexConversation {
+	first := c.calls
+	for range outputs {
+		c.calls++
+		c.items = append(c.items, `{"type":"function_call","name":"shell","call_id":"call_`+strconv.Itoa(c.calls)+`","arguments":"{}"}`)
+	}
+	for i, out := range outputs {
+		c.items = append(c.items, `{"type":"function_call_output","call_id":"call_`+strconv.Itoa(first+i+1)+`","output":`+jsonText(out)+`}`)
+	}
+	return c
+}
+
+func (c *codexConversation) body() string {
+	return `{"model":"gpt-5.5","instructions":"You are Codex.","tools":[{"type":"function","name":"shell","parameters":{"type":"object"}}],"input":[` + strings.Join(c.items, ",") + `]}`
+}
+
+// TestCachePrefixInvariantResponses drives Codex-shaped Responses traffic
+// through the net. OpenAI caches the whole prompt, so every item counts, and
+// parallel tool outputs arrive together with only the newest one live.
+func TestCachePrefixInvariantResponses(t *testing.T) {
+	rt := &captureTransport{}
+	sink := &captureSink{}
+	srv := New(Config{
+		Adapters:       []providers.Adapter{openai.New("https://upstream.test")},
+		Auth:           stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Creds:          stubCreds{key: "sk-byok"},
+		Sink:           sink,
+		Compressor:     &invariantCompressor{},
+		PrefixCache:    newTestPrefixCache(),
+		HTTPClient:     &http.Client{Transport: rt},
+		RecoveryViaMCP: true,
+	})
+	var xs []exchange
+	send := func(c *codexConversation, session string) {
+		t.Helper()
+		serveBody(t, srv, "/v1/responses", c.body(), map[string]string{"authorization": "Bearer sk-byok", "x-cave-session": session})
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		xs = append(xs, exchange{client: []byte(c.body()), forwarded: rt.bodies[len(rt.bodies)-1], wholePrompt: true})
+	}
+
+	shared := filler("output both conversations read")
+	one := (&codexConversation{}).user(filler("fix the failing test"))
+	send(one, "sess-codex-1")
+	send(one.parallelTools(shared, filler("one reads a"), filler("one reads b")), "sess-codex-1")
+	send(one.parallelTools(filler("one reads c"), filler("one reads d")), "sess-codex-1")
+	two := (&codexConversation{}).user(filler("review the change"))
+	send(two.parallelTools(filler("two reads a"), shared), "sess-codex-2") // one's history, two's live output
+	send(one.user(filler("now run the suite")), "sess-codex-1")
+	send(two.user(filler("summarize")), "sess-codex-2")
+
+	compressed := false
+	for _, x := range xs {
+		compressed = compressed || bytes.Contains(x.forwarded, []byte("<<ccr:"))
+	}
+	if !compressed {
+		t.Fatal("scenario never compressed anything, so it proves nothing")
+	}
+	assertCachedPrefixPreserved(t, xs)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for i, row := range sink.rows {
+		if row.CacheBustCause == bustCauseCaveman {
+			t.Errorf("tripwire reported a caveman bust on recorded request %d of %d", i, len(sink.rows))
+		}
 	}
 }
