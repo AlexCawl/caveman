@@ -16,7 +16,7 @@ provenance and PyPI attestations automatically.
 Tags must be annotated, GitHub-verified, and point to a commit on `main`. The
 workflow rejects a tag whose version differs from the package metadata.
 
-| Tag | Artifact | Latest published (2026-09-24) | In this branch (Caveman 3.0.0) | GitHub Release |
+| Tag | Artifact | Latest published (2026-09-24) | In this branch (Caveman 3.2.0) | GitHub Release |
 |---|---|---|---|---|
 | `sdk-ts-v*` | npm `@caveman-ai/sdk` | `1.1.0` | `1.2.0` | Yes |
 | `sdk-python-v*` | PyPI `caveman-sdk` | `1.1.0` | `1.2.0` | Yes |
@@ -26,7 +26,7 @@ workflow rejects a tag whose version differs from the package metadata.
 | `pi-v*` | npm `@caveman-ai/pi` | `0.1.1` | `0.2.0` | No |
 | `bin-v*` | Go binaries and container image | `bin-v1.1.7` (`bin-v1.1.8` was pinned, never tagged) | `bin-v2.0.2` (pinned in `packages/cli/BINARY_RELEASE`) | Yes, with the binaries |
 | `cli-v*` | npm `@caveman-ai/cli` | `1.3.4` (hand-published) | `2.0.1` | No |
-| `v*` | Caveman product (installer, plugin, skills) | `v2.7.0` | `v3.0.0` | Yes, "Latest" |
+| `v*` | Caveman product (installer, plugin, skills) | `v2.7.0` | `v3.2.0` | Yes, "Latest" |
 
 `tests/verify_repo.py` checks that each SDK and middleware package's version,
 version constant (`SDK_VERSION`, `MIDDLEWARE_VERSION`), and top `CHANGELOG.md`
