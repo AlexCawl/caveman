@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -676,5 +677,94 @@ func TestOpenCodeChatGPTSubscriptionDetection(t *testing.T) {
 				t.Fatalf("isOpenCodeChatGPTSubscription() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func chatGPTCompressServer(transport http.RoundTripper) *Server {
+	return New(Config{
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Sink:            &captureSink{},
+		Compressor:      &liveZoneCompressor{},
+		PrefixCache:     newTestPrefixCache(),
+		RecoveryViaMCP:  true,
+		ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+		HTTPClient:      &http.Client{Transport: transport},
+	})
+}
+
+func chatGPTTurn(texts ...string) string {
+	items := make([]string, 0, len(texts))
+	for _, text := range texts {
+		items = append(items, `{"type":"message","role":"user","content":[{"type":"input_text","text":"`+text+`"}]}`)
+	}
+	return `{"model":"gpt-5.5","input":[` + strings.Join(items, ",") + `]}`
+}
+
+func serveChatGPT(srv *Server, body string, headers ...string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", strings.NewReader(body))
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Set(headers[i], headers[i+1])
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// TestChatGPTRateLimit429IsReturnedNotReplayed: raw bytes cannot beat a rate
+// limit, and replaying them sends the provider a raw prefix in place of the
+// compressed one it cached.
+func TestChatGPTRateLimit429IsReturnedNotReplayed(t *testing.T) {
+	var calls int
+	srv := chatGPTCompressServer(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"30"}},
+			Body: io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)), Request: r}, nil
+	}))
+	rec := serveChatGPT(srv, chatGPTTurn(strings.Repeat("codex tool output ", 40)))
+	if rec.Code != http.StatusTooManyRequests || calls != 1 {
+		t.Fatalf("status/calls = %d/%d, want the rate limit returned after one call", rec.Code, calls)
+	}
+}
+
+// TestChatGPTAcceptedRawRetryPinsTheConversation: once the backend accepted a
+// conversation only as raw bytes, that is what it cached, so the next turn goes
+// out raw instead of re-substituting the replacements.
+func TestChatGPTAcceptedRawRetryPinsTheConversation(t *testing.T) {
+	first, second, third := strings.Repeat("codex first output ", 40), strings.Repeat("codex second output ", 40), strings.Repeat("codex third output ", 40)
+	rt := &captureTransport{statuses: []int{http.StatusOK, http.StatusBadRequest, http.StatusOK, http.StatusOK}}
+	srv := chatGPTCompressServer(rt)
+	serveChatGPT(srv, chatGPTTurn(first))
+	serveChatGPT(srv, chatGPTTurn(first, second))
+	serveChatGPT(srv, chatGPTTurn(first, second, third))
+
+	if len(rt.bodies) != 4 || !bytes.Equal(rt.bodies[2], []byte(chatGPTTurn(first, second))) {
+		t.Fatalf("test setup: want a rejected transformed turn 2 and its accepted raw retry, got %d calls", len(rt.bodies))
+	}
+	if !bytes.Equal(rt.bodies[3], []byte(chatGPTTurn(first, second, third))) {
+		t.Fatalf("the turn after an accepted raw retry must go out raw:\n%s", rt.bodies[3])
+	}
+}
+
+// TestChatGPTEpochVetoKeepsSubstitutions: a declared epoch that drifted may
+// veto new compression only; the replacement an earlier turn was cached with
+// is still re-sent.
+func TestChatGPTEpochVetoKeepsSubstitutions(t *testing.T) {
+	first, second := strings.Repeat("codex first output ", 40), strings.Repeat("codex second output ", 40)
+	rt := &captureTransport{}
+	srv := chatGPTCompressServer(rt)
+	epoch := func(digest string) []string {
+		return []string{"x-cave-cache-epoch", "epoch-1", "x-cave-cache-prefix-sha256", strings.Repeat(digest, 64)}
+	}
+	serveChatGPT(srv, chatGPTTurn(first), epoch("a")...)
+	serveChatGPT(srv, chatGPTTurn(first, second), epoch("b")...)
+
+	if len(rt.bodies) != 2 || strings.Contains(string(rt.bodies[0]), first) {
+		t.Fatal("test setup: want turn 1 compressed")
+	}
+	if strings.Contains(string(rt.bodies[1]), first) {
+		t.Fatalf("an epoch veto dropped turn 1's cached replacement:\n%s", rt.bodies[1])
+	}
+	if !strings.Contains(string(rt.bodies[1]), second) {
+		t.Fatalf("an epoch veto must still stop new compression:\n%s", rt.bodies[1])
 	}
 }

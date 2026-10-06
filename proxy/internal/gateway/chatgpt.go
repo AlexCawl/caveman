@@ -78,6 +78,7 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	var requestBodyTracker *eofTrackingReader
 	transform := providers.TransformResult{OptimizerIDs: []string{}}
 	var comp *compressionOutcome
+	var meta providers.RequestMetadata
 	adapter := openai.New(s.chatGPTUpstream)
 	compressEligible := r.Method == http.MethodPost && rc.RuntimeMode == "compress" && suffix == "/responses" &&
 		// nil body: this route exists only for subscription wrap, which proves
@@ -93,12 +94,16 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 			transform.Body = originalBody
 			headersForInspect := r.Header.Clone()
 			headersForInspect.Set("x-cave-route-path", suffix)
-			meta, inspectErr := adapter.InspectRequest(r.Context(), bytes.NewReader(originalBody), headersForInspect)
+			var inspectErr error
+			meta, inspectErr = adapter.InspectRequest(r.Context(), bytes.NewReader(originalBody), headersForInspect)
+			// As in proxy.go: a conversation pinned raw goes out as sent, and an
+			// epoch veto stops only new compression, never a substitution.
 			if inspectErr == nil {
 				meta.Endpoint = suffix
 				meta.SessionID = evidence.SessionID
-				if s.cacheEpochAllows(r, adapter, meta, originalBody, evidence.SessionID) {
-					comp = s.compressRequest(adapter, originalBody, meta, &transform, requestID, lockedRoutes)
+				if !s.rawPinned(adapter, meta, originalBody) {
+					allowNew := s.cacheEpochAllows(r, adapter, meta, originalBody, evidence.SessionID)
+					comp = s.rewriteRequest(adapter, originalBody, meta, &transform, requestID, lockedRoutes, allowNew)
 				}
 			}
 			reqBody = bytes.NewReader(transform.Body)
@@ -178,7 +183,9 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	}
 	// OAuth backends can reject byte-modified requests for undocumented reasons.
 	// Retry once with exact original bytes, then disclose/record no optimization.
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 && comp != nil && originalBody != nil {
+	// A rate-limit 429 is returned instead, and an accepted retry pins the
+	// conversation raw, as in proxy.go.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 && comp != nil && originalBody != nil && !rateLimited(resp) {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
 		retryResp, doErr := s.doUpstream(r.Context(), func() (*http.Request, error) {
@@ -194,6 +201,9 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, r, http.StatusBadGateway, "cave_upstream_unreachable", "ChatGPT upstream is unreachable.")
 			s.recordChatGPT(rc, r, requestID, traceID, suffix, start, 0, "cave_upstream_unreachable", reqCapture, reqHash.Sum(nil), reqHash.Sum(nil), true, nil, 0, false, nil, nil, compressEligible, originalBody)
 			return
+		}
+		if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
+			s.pinRaw(adapter, meta, originalBody, transform.Body)
 		}
 		resp = retryResp
 		transform = providers.TransformResult{Body: originalBody, OptimizerIDs: []string{}}
