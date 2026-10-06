@@ -154,10 +154,27 @@ CLI and the npm launchers check that signature against the public key compiled
 into them before installing any binary. The signed manifest also covers the
 license files attached to every binary release: `LICENSE` (Apache-2.0),
 `LICENSE-MIT` (the pre-3.0.0 MIT text), `NOTICE`, `LICENSING.md`, the third-party notices for the embedded pixel renderer,
-its fonts, and `caveman-browse`, and `THIRD_PARTY_GO_LICENSES.tar.gz`: the
-license texts of every third-party Go module the six binaries link on any
-platform, plus the Go runtime's, collected with a pinned
-`github.com/google/go-licenses/v2@v2.0.1`.
+its fonts, and `caveman-browse`, the notices for what `zig cc` links into the
+cgo binaries (`LICENSE.zig`, `COPYRIGHT.musl`, `COPYING.mingw-w64`), and
+`THIRD_PARTY_GO_LICENSES.tar.gz`: the license texts of every third-party Go
+module the six binaries link on any platform, plus the Go runtime's, collected
+with a pinned `github.com/google/go-licenses/v2@v2.0.1`.
+
+`caveman-proxy` and `caveman-engine` are cgo builds, so they carry the
+tree-sitter code compressor (TypeScript, JavaScript, Python, Rust, Java, C,
+C++); `scripts/build-release-binaries.mjs` cross-compiles them with `zig cc`
+(static musl on Linux, mingw-w64 on Windows, macOS 12 floor, no debug info so
+two builds produce the same bytes) and refuses any zig but
+`RELEASE_ZIG_VERSION`, which both workflows download by sha256. The other four
+binaries stay pure Go, and so does the container image (`Dockerfile`), whose
+code compressor therefore parses Go only; the release notes say so. The workflow runs the linux/amd64 engine's embedded evals
+and requires the Linux cgo binaries (amd64 and arm64) to be static before
+anything is signed. On every PR, engine-ci's `release-shape` job builds the
+linux/amd64 set, runs the release-shape tests and evals, and checks that set is
+static; the cross-build of all six targets runs only after merge. Locally:
+`ZIG=/path/to/zig node scripts/build-release-binaries.mjs --test` builds the
+host target, runs the `TestReleaseShape*` tests with the release flags, and runs
+the built engine's evals.
 
 Optional platform code signing runs when its secrets exist on the
 `binary-release` environment and is skipped when they don't:
