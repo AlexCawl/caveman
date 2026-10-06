@@ -229,6 +229,17 @@ const PAYLOAD_WATCHDOG_MS = 2000;
 // and the watchdog's 'unknown') reads instead of re-deriving.
 const RESET_SOURCES = new Set(['startup', 'clear']);
 
+// The configured default, except that headless `claude -p` and Agent SDK
+// sessions (#377) start under the manual policy: they are often tool probes
+// that parse the reply. Interactive entrypoints (cli, claude-vscode,
+// claude-desktop, ...) never match; CAVEMAN_DEFAULT_MODE in env opts back in.
+function startMode(sessionCwd) {
+  const mode = getDefaultMode(sessionCwd);
+  if (mode !== 'off' && !process.env.CAVEMAN_DEFAULT_MODE
+      && /^sdk-/.test(process.env.CLAUDE_CODE_ENTRYPOINT || '')) return 'manual';
+  return mode;
+}
+
 function activate(payload, timedOut) {
   // Unknown, not startup: we never saw the payload, so we cannot claim to know
   // what kind of session event this was — and 'unknown' must not reset, or a
@@ -294,7 +305,7 @@ if (process.stdin.isTTY) {
 function run(source, sessionCwd, sessionId) {
 let mode;
 if (RESET_SOURCES.has(source)) {
-  mode = getDefaultMode(sessionCwd);
+  mode = startMode(sessionCwd);
   // Sweep stale per-session files only when a session genuinely begins, not on
   // every compaction — those are frequent in a long session and this walks a
   // directory inside a 5s hook budget.
@@ -313,7 +324,7 @@ if (RESET_SOURCES.has(source)) {
   } else {
     // resume/fork can carry a session id we have never seen (a fork gets a new
     // one). With nothing stored anywhere, fall back to the configured default.
-    mode = getDefaultMode(sessionCwd);
+    mode = startMode(sessionCwd);
   }
 }
 

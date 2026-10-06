@@ -20,6 +20,10 @@ const { spawnSync } = require('child_process');
 const HOOKS_DIR = path.resolve(__dirname, '..', 'src', 'hooks');
 const SKILL_SRC = path.resolve(__dirname, '..', 'skills');
 
+// A headless runner exports CLAUDE_CODE_ENTRYPOINT=sdk-*, which starts
+// SessionStart under the manual policy (#377). Spawns copy process.env.
+delete process.env.CLAUDE_CODE_ENTRYPOINT;
+
 let passed = 0;
 let failed = 0;
 

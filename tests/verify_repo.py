@@ -27,6 +27,10 @@ for _stream in (sys.stdout, sys.stderr):
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# A headless runner exports CLAUDE_CODE_ENTRYPOINT=sdk-*, which starts
+# SessionStart under the manual policy (#377) and would fail the hook flow.
+os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
 
 class CheckFailure(RuntimeError):
     pass

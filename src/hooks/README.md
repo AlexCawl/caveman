@@ -46,6 +46,13 @@ session's mode. Doing that is how an explicit "stop caveman" used to get
 silently undone by the next auto-compaction. `clear` counts as a fresh start,
 since it is an explicit user reset.
 
+**Headless sessions start off.** `claude -p` and Agent SDK sessions
+(`CLAUDE_CODE_ENTRYPOINT=sdk-cli`, `sdk-ts`, `sdk-py`) are often tools that
+probe Claude and parse the reply, so they start under the `manual` policy:
+nothing injected until an explicit `/caveman`. Interactive surfaces (terminal,
+VS Code, desktop) are unaffected. Set `CAVEMAN_DEFAULT_MODE=<mode>` in the
+environment to opt a headless run back in.
+
 ### `caveman-mode-tracker.js` — UserPromptSubmit hook
 
 - Fires on every user prompt, checks for `/caveman`, `/ultracave`, `/megacave` commands and natural-language activation/deactivation phrases ("talk like caveman", "stop caveman", "normal mode")
