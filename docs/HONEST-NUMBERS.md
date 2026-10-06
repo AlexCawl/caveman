@@ -13,7 +13,7 @@ see [Product model](technical/product-model.md).
 
 | What | Number | How measured | Source |
 |---|---|---|---|
-| Output reduction vs a plain `Answer concisely.` control | caveman 3%, ultracave 35%, megacave 9% at the median (n=10, single run, output length only, tiktoken o200k approximation) | `evals/llm_run.py` on claude-opus-5-5 with host settings isolated; `evals/measure.py` | [`evals/snapshots/results.json`](../evals/snapshots/results.json) |
+| Output reduction vs a plain `Answer concisely.` control | caveman 3%, ultracave 35%, megacave 9% at the median (n=10, single run, output length only, tiktoken o200k approximation; measured on the 3.1.0 skill text, not re-run since the 3.2.0 rule changes) | `evals/llm_run.py` on claude-opus-5-5 with host settings isolated; `evals/measure.py` | [`evals/snapshots/results.json`](../evals/snapshots/results.json) |
 | Output reduction vs default verbose replies (no benchmark harness run) | Not published | `benchmarks/` harness exists, but the repository has no committed reviewed raw result | [`benchmarks/`](../benchmarks/) |
 | Input reduction from the skill | 0% | It's an output-style instruction | Not applicable |
 | Input cost the skill *adds* | Not measured yet | `evals/llm_run.py` now stores the usage Claude Code reports for every call, and `evals/measure.py` reports the median input tokens the skill adds against the terse control. The committed snapshot predates usage capture. File size is not a billed token count, and real agents differ in when they inject rules and how they cache | [`evals/README.md`](../evals/README.md) |

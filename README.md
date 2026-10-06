@@ -89,10 +89,10 @@ Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [
 
 <br>
 
-Claude on the web, the phone app, or Cowork? No terminal. Add caveman to your Claude account once, in Customize > Plugins: [steps](./INSTALL.md#claude-apps-claudeai-desktop-mobile-cowork).
+Claude on the web, the phone app, or Cowork? No terminal. Add caveman to your Claude account once, in Customize > Plugins: [steps](./INSTALL.md#claude-apps-claudeai-desktop-mobile-cowork). Not tested end to end yet.
 
 ```bash
-# Claude Code plugin, auto-starts every session, subagents too
+# Claude Code plugin, auto-starts every interactive session, subagents too
 claude plugin marketplace add JuliusBrussee/caveman && claude plugin install caveman@caveman
 
 # Gemini CLI
@@ -159,7 +159,7 @@ Two findings shaped caveman. Adobe found that cavemanning *your* prompt makes an
 | `/caveman` | 4,119 |
 | `/ultracave` | **2,693** |
 
-New models already know "be concise", so that line is the real baseline. On top of it, `/caveman` cuts 3% more at the median and `/ultracave` cuts 35% more. [Harness](./evals/README.md)
+New models already know "be concise", so that line is the real baseline. On top of it, `/caveman` cuts 3% more at the median and `/ultracave` cuts 35% more. Measured on the 3.1.0 skill text, not yet re-run on this release's. [Harness](./evals/README.md)
 
 <!-- BENCHMARK-TABLE-START -->
 <!-- BENCHMARK-TABLE-END -->
@@ -171,7 +171,7 @@ New models already know "be concise", so that line is the real baseline. On top 
 | A web page the agent reads (`caveman browse`, 200-row table) | **121 tokens instead of 15,704** for a Playwright snapshot, 129.8× smaller. Tiny forms lose 2.3×. [Bench](./browse/BENCHMARK.md) |
 | Memory files like `CLAUDE.md` (`/caveman-compress`) | **4,138 tokens instead of 6,198** across five fixtures, 22.8% to 49.1% smaller per file, with every heading, code block, and path intact. [Bench](./skills/caveman-compress/README.md#benchmarks) |
 
-The rules add about 1,000 input tokens to every call. If you pay per request instead of per token (GitHub Copilot premium requests), a shorter answer costs the same, so skip it. Every case where caveman loses: [HONEST-NUMBERS.md](./docs/HONEST-NUMBERS.md).
+The `/caveman` rules are about 1,160 tokens of text (tiktoken count). What that adds to your bill depends on caching; not measured yet. If you pay per request instead of per token (GitHub Copilot premium requests), a shorter answer costs the same, so skip it. Every case where caveman loses: [HONEST-NUMBERS.md](./docs/HONEST-NUMBERS.md).
 
 ## Big rock: the proxy
 
