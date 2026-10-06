@@ -8,6 +8,7 @@ output is empty or identical to the input, and a backup-write that drops
 bytes is detected before the input is overwritten.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -709,6 +710,90 @@ class CompressSafetyTests(unittest.TestCase):
         )
 if __name__ == "__main__":
     unittest.main()
+
+
+class NocompressRegionTests(unittest.TestCase):
+    """<!-- nocompress --> ... <!-- /nocompress --> keeps a region verbatim (#163)."""
+
+    REGION = (
+        "<!-- nocompress -->\n"
+        "<example>\n"
+        "This very long prose line must stay exactly as written.\n"
+        '{"key": [1, 2, 3]}\n'
+        "</example>\n"
+        "<!-- /nocompress -->\n"
+    )
+    ORIGINAL = (
+        "# Title\n\nThis very long prose line should be compressed down.\n\n"
+        + REGION
+        + "\nAnother very long prose line to compress here.\n"
+    )
+
+    def _run(self, text, call_claude, validate=None):
+        tmp = tempfile.TemporaryDirectory()
+        data_home = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(data_home.cleanup)
+        path = Path(tmp.name) / "task.md"
+        path.write_text(text, encoding="utf-8", newline="")
+        patches = [
+            mock.patch.dict(os.environ, {"XDG_DATA_HOME": data_home.name, "LOCALAPPDATA": data_home.name}),
+            mock.patch.object(compress_mod, "call_claude", side_effect=call_claude),
+        ]
+        if validate is not None:
+            patches.append(mock.patch.object(compress_mod, "validate", side_effect=validate))
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            ok = compress_mod.compress_file(path)
+            backup = compress_mod.backup_dir_for(path.resolve()) / "task.original.md"
+            return ok, path, backup.exists()
+
+    @staticmethod
+    def _fake_model(prompt):
+        # "Compresses" every prose line it can see, so an unmasked region
+        # would come back rewritten. Markers pass through untouched.
+        text = prompt.split("TEXT:\n", 1)[1].rstrip("\n")
+        return "\n".join(
+            "Short." if "very long prose" in line else line for line in text.splitlines()
+        ) + "\n"
+
+    def test_region_is_hidden_from_the_model_and_restored_byte_identical(self):
+        prompts = []
+
+        def fake_model(prompt):
+            prompts.append(prompt)
+            return self._fake_model(prompt)
+
+        ok, path, _ = self._run(self.ORIGINAL, fake_model)
+        self.assertTrue(ok)
+        self.assertNotIn("must stay exactly", prompts[0])
+        self.assertEqual(
+            path.read_text(encoding="utf-8"),
+            "# Title\n\nShort.\n\n" + self.REGION + "\nShort.\n",
+        )
+
+    def test_unclosed_region_aborts_before_model_call_and_backup(self):
+        text = "# Title\n\n<!-- nocompress -->\nKeep me.\n\nSome long prose body to compress.\n"
+        call = mock.Mock()
+        with self.assertRaisesRegex(ValueError, "unclosed <!-- nocompress --> region"):
+            self._run(text, call)
+        call.assert_not_called()
+
+    def test_fix_attempt_that_rewrites_the_region_is_skipped(self):
+        # validate() never looks at prose, and the fix prompt sends the region
+        # unmasked, so a repair that compresses it must be rejected here.
+        first = "# Title\n\nShort.\n\n" + self.REGION + "\nShort.\n"
+        bad_fix = first.replace("must stay exactly as written", "stay")
+        invalid = mock.Mock(is_valid=False, errors=["heading mismatch"], warnings=[])
+        valid = mock.Mock(is_valid=True, errors=[], warnings=[])
+        ok, path, _ = self._run(
+            self.ORIGINAL,
+            lambda prompt: self._fake_model(prompt) if "TEXT:" in prompt else bad_fix,
+            validate=[invalid, valid],
+        )
+        self.assertTrue(ok)
+        self.assertIn(self.REGION, path.read_text(encoding="utf-8"))
 
 
 class OpenAICompatProviderTests(unittest.TestCase):

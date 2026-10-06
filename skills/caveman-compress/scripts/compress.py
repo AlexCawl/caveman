@@ -717,12 +717,15 @@ STRICT RULES:
 - Do NOT modify anything inside ``` code blocks
 - Do NOT modify anything inside a 4-space-indented code block either — those are code too, and they are validated
 - Do NOT modify anything inside inline backticks
+- Do NOT add new ``` fences around content that is not already fenced, even if it looks like code or JSON
+- Do NOT create, remove, reword or promote headings; keep existing # headings exactly
+- Do NOT convert XML-like tags (e.g. <example>, <section>) into headings or other markdown; leave them as plain text
 - Preserve ALL URLs exactly
 - Preserve ALL headings exactly
 - Preserve file paths and commands
 - Return ONLY the compressed markdown body — do NOT wrap the entire output in a ```markdown fence or any other fence. Inner code blocks from the original stay as-is; do not add a new outer fence around the whole file.
 
-Only compress natural language.
+Only compress natural language prose. Never restructure, add formatting, or improve organization.
 
 TEXT:
 {original}
@@ -760,10 +763,14 @@ Return ONLY the fixed compressed file. No explanation.
 
 CODE_MARKER_PREFIX = "@@CAVEMAN_PRESERVED_CODE_"
 FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})(?:[^\r\n]*)$")
+# Whole-line tags only, at most 3 spaces in (4+ is an indented code block).
+NOCOMPRESS_OPEN_RE = re.compile(r"^[ ]{0,3}<!--\s*nocompress\s*-->\s*$", re.IGNORECASE)
+NOCOMPRESS_CLOSE_RE = re.compile(r"^[ ]{0,3}<!--\s*/nocompress\s*-->\s*$", re.IGNORECASE)
 
 
 def mask_code_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
-    """Replace fenced and four-space-indented code with opaque line markers."""
+    """Replace fenced and four-space-indented code, and <!-- nocompress -->
+    regions, with opaque line markers."""
     if CODE_MARKER_PREFIX in text:
         raise ValueError("Input contains reserved Caveman code-preservation marker")
     lines = text.splitlines(keepends=True)
@@ -772,17 +779,25 @@ def mask_code_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
     i = 0
     while i < len(lines):
         line_without_newline = lines[i].rstrip("\r\n")
-        fence = FENCE_OPEN_RE.match(line_without_newline)
+        nocompress = NOCOMPRESS_OPEN_RE.match(line_without_newline)
+        fence = not nocompress and FENCE_OPEN_RE.match(line_without_newline)
         indented = bool(line_without_newline) and (
             line_without_newline.startswith("    ") or line_without_newline.startswith("\t")
         )
-        if not fence and not indented:
+        if not nocompress and not fence and not indented:
             out.append(lines[i])
             i += 1
             continue
 
         start = i
-        if fence:
+        if nocompress:
+            i += 1
+            while i < len(lines) and not NOCOMPRESS_CLOSE_RE.match(lines[i].rstrip("\r\n")):
+                i += 1
+            if i == len(lines):
+                raise ValueError(f"unclosed <!-- nocompress --> region starting at line {start + 1}")
+            i += 1
+        elif fence:
             fence_run = fence.group(1)
             close_re = re.compile(
                 rf"^[ ]{{0,3}}{re.escape(fence_run[0])}{{{len(fence_run)},}}[ \t]*$"
@@ -905,6 +920,10 @@ def _compress_file_locked(filepath: Path) -> bool:
     provider = configured_provider()
     print(f"Compressing with {provider}...")
     masked_body, code_blocks = mask_code_blocks(body)
+    nocompress_regions = [
+        block for _, block in code_blocks
+        if NOCOMPRESS_OPEN_RE.match(block.split("\n", 1)[0])
+    ]
     masked_compressed = call_claude(build_compress_prompt(masked_body))
     try:
         compressed_body = restore_code_blocks(masked_compressed, code_blocks)
@@ -1008,6 +1027,13 @@ def _compress_file_locked(filepath: Path) -> bool:
         # frontmatter is split off to compare like against like.
         _, fixed_body = split_frontmatter(fixed)
         if not _is_smaller_than_body(fixed_body, body):
+            print("   Skipping this attempt.")
+            continue
+
+        # The fix prompt carries <!-- nocompress --> regions unmasked and
+        # validate() never compares prose, so check them verbatim here.
+        if any(block.rstrip("\n") not in fixed for block in nocompress_regions):
+            print("❌ Fix attempt aborted: output changed a <!-- nocompress --> region.")
             print("   Skipping this attempt.")
             continue
 

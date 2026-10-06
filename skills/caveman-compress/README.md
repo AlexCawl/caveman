@@ -177,6 +177,17 @@ Caveman compress natural language. It never touch:
 - Headings (exact text preserved)
 - Tables (structure preserved, cell text compressed)
 - Dates, version numbers, numeric values
+- Anything you wrap in `<!-- nocompress -->` ... `<!-- /nocompress -->`
+
+Want a part left exactly as written (an `<example>` block, a prompt template)? Wrap it. Each tag go on its own line. Model never see what inside; it come back byte for byte. Forget the closing tag and compress stop before touching file.
+
+```markdown
+<!-- nocompress -->
+<example>
+Reply in this exact format.
+</example>
+<!-- /nocompress -->
+```
 
 ## Why This Matter
 
