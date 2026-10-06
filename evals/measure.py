@@ -151,8 +151,8 @@ def print_usage(usage: dict) -> None:
     print()
     print("**Claude-reported usage (`claude -p --output-format json`), against the terse control:**")
     print()
-    print("| Skill | Billed output, median | Billed output, mean | Output tokens (skill / terse) | Input added by skill, median |")
-    print("|-------|-----------------------|---------------------|-------------------------------|------------------------------|")
+    print("| Skill | Output reduction, median | Output reduction, mean | Output tokens (skill / terse) | Input added by skill, median |")
+    print("|-------|--------------------------|------------------------|-------------------------------|------------------------------|")
     rows = []
     for skill, cells in usage.items():
         if skill in ("__baseline__", "__terse__"):
@@ -169,7 +169,8 @@ def print_usage(usage: dict) -> None:
         )
     print()
     print(
-        "_Billed output includes any thinking tokens. Input added = per-prompt "
+        "_Output tokens are Claude's billed count and include any thinking tokens. "
+        "Reduction = `1 - skill / terse` per prompt. Input added = per-prompt "
         "(input + cache-creation + cache-read tokens) of the skill arm minus the "
         "terse arm; the baseline arm runs Claude Code's default system prompt, "
         "so its input is not comparable._"
