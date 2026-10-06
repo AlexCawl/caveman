@@ -270,7 +270,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --latest=false \
             --title "$GITHUB_REF_NAME" \
-            --notes "Signed Caveman runtime companions for macOS, Linux, and Windows. The binaries are licensed under the Apache License 2.0 (LICENSE, NOTICE); see LICENSING.md and the attached third-party notices."
+            --notes "Signed Caveman runtime companions for macOS, Linux, and Windows. The binaries are licensed under the Apache License 2.0 (LICENSE, NOTICE); see LICENSING.md and the attached third-party notices. The ghcr.io caveman-proxy image is still built without cgo, so its code compressor handles Go source only; the caveman-proxy and caveman-engine binaries here also compress TypeScript, JavaScript, Python, Rust, Java and C/C++."
       # Last: `latest` moves only to an image that is signed and whose release
       # exists. Same digest as the version tag; no rebuild. Only a stable tag
       # that is the highest stable bin-v* moves it, so an older-line patch or a

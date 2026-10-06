@@ -166,9 +166,12 @@ C++); `scripts/build-release-binaries.mjs` cross-compiles them with `zig cc`
 (static musl on Linux, mingw-w64 on Windows, macOS 12 floor, no debug info so
 two builds produce the same bytes) and refuses any zig but
 `RELEASE_ZIG_VERSION`, which both workflows download by sha256. The other four
-binaries stay pure Go. The workflow runs the linux/amd64 engine's embedded evals
-and requires the Linux cgo binaries to be static before anything is signed;
-engine-ci's `release-shape` job does the same on every PR. Locally:
+binaries stay pure Go, and so does the container image (`Dockerfile`), whose
+code compressor therefore parses Go only; the release notes say so. The workflow runs the linux/amd64 engine's embedded evals
+and requires the Linux cgo binaries (amd64 and arm64) to be static before
+anything is signed. On every PR, engine-ci's `release-shape` job builds the
+linux/amd64 set, runs the release-shape tests and evals, and checks that set is
+static; the cross-build of all six targets runs only after merge. Locally:
 `ZIG=/path/to/zig node scripts/build-release-binaries.mjs --test` builds the
 host target, runs the `TestReleaseShape*` tests with the release flags, and runs
 the built engine's evals.
