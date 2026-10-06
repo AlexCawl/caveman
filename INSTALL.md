@@ -50,6 +50,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Oh My Pi (OMP)** | `npx -y github:JuliusBrussee/caveman -- --only omp` *(or `node bin/install.js --only omp` from a clone)* | Yes (native OMP plugin) |
 | **OpenClaw** | `npx -y github:JuliusBrussee/caveman -- --only openclaw` | Yes (workspace skill + SOUL.md) |
 | **Hermes Agent** | `npx -y github:JuliusBrussee/caveman -- --only hermes` *(or `node bin/install.js --only hermes` from a clone)* | Yes (native skills, enabled on load) |
+| **Antigravity CLI** (`agy`) | `npx -y github:JuliusBrussee/caveman -- --only antigravity-cli` | Yes ([agy plugin](#antigravity-cli)) |
 | **Codex CLI** | `npx skills add JuliusBrussee/caveman -a codex -g` | Per-session: `/caveman` |
 | **Cursor** | `npx -y github:JuliusBrussee/caveman -- --only cursor` *(or the [Cursor plugin](#cursor))* | Yes (session hook) |
 | **Windsurf** | `npx skills add JuliusBrussee/caveman -a windsurf -g` | Per-session by default; `--with-init` for an always-on rule file |
@@ -163,6 +164,19 @@ Files, all owned by the installer and removed by `--uninstall`:
 hook with `--no-hooks`. VS Code reads the same `hooks/` folder, but its
 documented session output is shaped differently and this path is untested
 there: for VS Code Copilot Chat, use `--with-init` for always-on.
+
+### Antigravity CLI
+
+With `agy` on your PATH, `--only antigravity-cli` builds a small `caveman`
+plugin (the skills plus one always-on rule) and installs it with
+`agy plugin install`. Every new `agy` session then talks caveman. Checked with
+agy 1.2.17.
+
+The rule is fixed text, so `defaultMode` settings do not reach it. To go back
+to normal prose, say `stop caveman` in a session, or switch the plugin off for
+good with `agy plugin disable caveman` (`enable` turns it back on).
+`--uninstall` runs `agy plugin uninstall caveman`. This is separate from the
+**Antigravity IDE** and **Antigravity 2.0** rows, which copy skills only.
 
 ## Manual install (no `curl | bash`)
 
@@ -312,6 +326,7 @@ What it removes:
 - The Claude Code plugin and the Gemini CLI extension (if installed).
 - The opencode native plugin (`~/.config/opencode/plugins/caveman/`, the `plugin` and `mcp.caveman-shrink` entries from `opencode.json`, our skill/agent/command files, the caveman block from `AGENTS.md`, and the opencode flag file).
 - The Oh My Pi plugin (`omp plugin uninstall caveman`) and Caveman's managed OMP plugin package at `~/.omp/caveman-plugin/`.
+- The Antigravity CLI plugin (`agy plugin uninstall caveman`).
 - Cursor: the Cavecrew agents in `~/.cursor/agents/`, `~/.cursor/caveman/`, and caveman's entry in `~/.cursor/hooks.json`.
 - The Copilot CLI session hook: `$COPILOT_HOME/hooks/caveman.json` and `$COPILOT_HOME/caveman/` (default `~/.copilot/`).
 - The OpenClaw workspace skill folder and the marker-fenced block from `~/.openclaw/workspace/SOUL.md` (when present).

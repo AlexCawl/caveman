@@ -263,6 +263,7 @@ const PROVIDERS = [
   // behind on uninstall).
   { id: 'hermes',     label: 'Hermes Agent',        mech: 'native hermes skills copy',     detect: 'command:hermes' },
   { id: 'aider-desk', label: 'Aider Desk',          mech: 'native skills copy',   detect: 'command:aider-desk||macapp:aider-desk', profile: 'aider-desk' },
+  { id: 'antigravity-cli', label: 'Antigravity CLI', mech: 'agy plugin install',           detect: 'command:agy' },
   { id: 'amp',        label: 'Sourcegraph Amp',     mech: 'npx skills add (amp)',          detect: 'command:amp',             profile: 'amp' },
   { id: 'bob',        label: 'IBM Bob',             mech: 'npx skills add (bob)',          detect: 'command:bob', profile: 'bob' },
   { id: 'crush',      label: 'Crush',               mech: 'npx skills add (crush)',        detect: 'command:crush', profile: 'crush' },
@@ -876,6 +877,60 @@ function installHermes(ctx) {
     results.failed.push(['hermes', 'copy failed: ' + err.message]);
   }
 
+  process.stdout.write('\n');
+}
+
+// ── Antigravity CLI (agy) plugin ───────────────────────────────────────────
+// `agy plugin install <dir>` copies a plugin into agy's own plugin root, so the
+// staging copy is temporary and agy owns the lifecycle. Always-on comes from
+// the plugin's rules/AGENTS.md, which agy merges into the active rule set while
+// the plugin is enabled; agy has no session-start hook (PreInvocation runs
+// before every model call). Checked live with agy 1.2.17: caveman voice with
+// the rule, normal prose without it or with the plugin disabled.
+const AGY_PLUGIN_NAME = 'caveman';
+const AGY_SKILL_DIRS = HERMES_SKILL_DIRS;
+
+function installAntigravityCli(ctx) {
+  const { say, note, warn, opts, repoRoot, results } = ctx;
+  results.detected++;
+  say('→ Antigravity CLI detected');
+  if (!repoRoot) {
+    warn('  Antigravity CLI install needs the caveman package files.');
+    results.failed.push(['antigravity-cli', 'native install requires local repo clone']);
+    process.stdout.write('\n');
+    return;
+  }
+  if (opts.dryRun) {
+    note(`  would stage a ${AGY_PLUGIN_NAME} plugin (${AGY_SKILL_DIRS.length} skills + rules/AGENTS.md)`);
+    runSpawn('agy', ['plugin', 'install', `<staging>/${AGY_PLUGIN_NAME}`], null, true);
+    results.installed.push('antigravity-cli');
+    process.stdout.write('\n');
+    return;
+  }
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'caveman-agy-'));
+  try {
+    const pluginDir = path.join(staging, AGY_PLUGIN_NAME);
+    fs.mkdirSync(path.join(pluginDir, 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'plugin.json'), JSON.stringify({
+      name: AGY_PLUGIN_NAME,
+      description: 'Caveman: terse replies, every technical fact kept',
+    }, null, 2) + '\n');
+    fs.copyFileSync(path.join(repoRoot, 'src', 'rules', 'caveman-activate.md'), path.join(pluginDir, 'rules', 'AGENTS.md'));
+    for (const name of AGY_SKILL_DIRS) {
+      fs.cpSync(path.join(repoRoot, 'skills', name), path.join(pluginDir, 'skills', name), { recursive: true });
+    }
+    if (spawnOk(runSpawn('agy', ['plugin', 'install', pluginDir], null, false))) {
+      results.installed.push('antigravity-cli');
+      note('  new agy sessions start in caveman mode; `agy plugin disable caveman` turns it off');
+    } else {
+      results.failed.push(['antigravity-cli', 'agy plugin install failed']);
+    }
+  } catch (error) {
+    warn(`  Antigravity CLI install failed: ${error.message}`);
+    results.failed.push(['antigravity-cli', error.message]);
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
   process.stdout.write('\n');
 }
 
@@ -1819,6 +1874,16 @@ function uninstall(ctx) {
     warn(`  Cursor cleanup incomplete; left integration untouched: ${error.message}`);
   }
 
+  // Antigravity CLI plugin. agy owns its copy; same idempotency probe as gemini.
+  if (hasCmd('agy')) {
+    const probe = captureSpawn('agy', ['plugin', 'list']);
+    if (spawnOk(probe) && /"name":\s*"caveman"/.test(probe.stdout || '')) {
+      const r = runSpawn('agy', ['plugin', 'uninstall', AGY_PLUGIN_NAME], null, opts.dryRun);
+      if (spawnOk(r)) ok('  removed the Antigravity CLI plugin');
+      else cleanupFailed = true;
+    }
+  }
+
   // Copilot CLI sessionStart hook — same journal/digest contract.
   try {
     const removed = OWNED.uninstallOwned({ root: copilotHome(), integration: 'copilot-cli', dryRun: opts.dryRun, note, warn });
@@ -2176,6 +2241,7 @@ async function main() {
     if (prov.id === 'omp')      { installOmp(ctx); continue; }
     if (prov.id === 'openclaw') { installOpenclaw(ctx); continue; }
     if (prov.id === 'hermes')   { installHermes(ctx); continue; }
+    if (prov.id === 'antigravity-cli') { installAntigravityCli(ctx); continue; }
     if (prov.profile || PROVIDER_SKILLS.usesNativeSkills(prov.id)) { installViaSkills(ctx, prov); continue; }
   }
 
