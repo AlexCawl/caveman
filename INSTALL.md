@@ -89,6 +89,8 @@ For "auto-activates? No" agents, invoke the Caveman skill using the host's skill
 
 **Pick the mode new sessions start in.** Put `{"defaultMode": "ultracave"}` (or `"caveman"`, `"megacave"`, `"off"`) in `~/.config/caveman/config.json`, or in a `.caveman.json` at a project root for just that project.
 
+Scripted Claude Code runs (`claude -p` and the Agent SDK) start with caveman off whatever that file says, so tools that read Claude's reply get plain text. Type `/caveman` in the prompt, or set `CAVEMAN_DEFAULT_MODE=caveman` (or another mode) in their environment, to turn it on.
+
 **Subagents.** Some agents hand parts of a job to helper agents ("subagents"). Whether the helpers talk caveman depends on the host:
 
 - **Claude Code**: yes. Each subagent starts in the mode of the window that spawned it. Say "stop caveman" and new subagents start normal too. Cavecrew agents keep their own caveman voice.
