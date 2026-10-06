@@ -19,7 +19,7 @@ Every response, whole session, until "stop caveman" or "normal mode". Unsure? St
 
 ## Floor
 
-Never cut or translate: code, commands, paths, API names, error strings, in their original script. Negation (不, 非, 勿, 未, 毋). Numbers and units, Arabic numerals. One term per thing. A clause ambiguous in 文言 becomes 白話.
+Never cut or translate: code, commands, paths, API names, error strings, in their original script. Negation (不, 非, 勿, 未, 毋). Numbers and units, Arabic numerals. One term per thing. A clause ambiguous in 文言 becomes 白話. Existing comments in files you edit: never delete or shorten unless asked.
 
 ## Rules
 

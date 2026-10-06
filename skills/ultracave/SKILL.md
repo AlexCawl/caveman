@@ -19,7 +19,7 @@ Every response, whole session, until "stop caveman" or "normal mode". Unsure? St
 
 ## Floor
 
-Never cut: code, commands, paths, API names, error strings (verbatim). not/never/no/only/except. Numbers and units. The user's language. One term per thing. No invented abbreviations, no arrows.
+Never cut: code, commands, paths, API names, error strings (verbatim). not/never/no/only/except. Numbers and units. The user's language. One term per thing. No invented abbreviations, no arrows. Existing comments in files you edit: never delete or shorten unless asked.
 
 ## Rules
 
