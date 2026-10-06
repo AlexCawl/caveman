@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/JuliusBrussee/caveman/engine/compressors"
 	"github.com/JuliusBrussee/caveman/proxy/providers"
 	"github.com/JuliusBrussee/caveman/proxy/providers/anthropic"
 )
@@ -201,7 +202,7 @@ func (c *ccConversation) body() []byte {
 	}
 	return []byte(`{"model":"` + c.model + `","max_tokens":1024,` +
 		`"system":[{"type":"text","text":` + jsonText(c.system) + `,"cache_control":{"type":"ephemeral"}}],` +
-		`"tools":[{"name":"Read","description":"Read a file","input_schema":{"type":"object"}}],` +
+		`"tools":[{"name":"Read","description":"Read a file","input_schema":{"type":"object","title":"Read args"}}],` +
 		`"messages":[` + strings.Join(parts, ",") + `]}`)
 }
 
@@ -240,6 +241,10 @@ func (c *invariantCompressor) StoreOriginal(body []byte) (string, error) {
 		return "", errTestPrefixCacheDown
 	}
 	return contentHandle(body), nil
+}
+
+func (c *invariantCompressor) StripToolSchema(tools []byte) ([]byte, bool) {
+	return compressors.StripToolSchemaAnnotations(tools)
 }
 
 type invariantTagKey struct{}
@@ -286,6 +291,8 @@ type invariantHarness struct {
 	cache *testPrefixCache
 	rt    *invariantTransport
 	srv   *Server
+	// strip turns on the tool-schema annotation strip.
+	strip bool
 
 	mu   sync.Mutex
 	tag  int
@@ -310,14 +317,19 @@ func (h *invariantHarness) restart(nonce string) {
 	h.comp.mu.Lock()
 	h.comp.nonce = nonce
 	h.comp.mu.Unlock()
+	strip := ""
+	if h.strip {
+		strip = toolSchemaStripMode
+	}
 	h.srv = New(Config{
-		Adapters:       []providers.Adapter{anthropic.New("https://upstream.test")},
-		Auth:           stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
-		Creds:          passthroughTestCreds{},
-		Compressor:     h.comp,
-		PrefixCache:    h.cache,
-		HTTPClient:     &http.Client{Transport: h.rt},
-		RecoveryViaMCP: true,
+		Adapters:        []providers.Adapter{anthropic.New("https://upstream.test")},
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Creds:           passthroughTestCreds{},
+		Compressor:      h.comp,
+		PrefixCache:     h.cache,
+		HTTPClient:      &http.Client{Transport: h.rt},
+		RecoveryViaMCP:  true,
+		ToolSchemaStrip: strip,
 	})
 }
 
@@ -598,6 +610,27 @@ func TestCachePrefixInvariant(t *testing.T) {
 			h.send(a.toolResult(filler("a reads z")), sendOpts{})
 			h.send(b.user(filler("b wraps up")), sendOpts{})
 		}},
+		{"tool-schema strip through a store failure and a raw retry", func(t *testing.T, h *invariantHarness) {
+			h.strip = true
+			h.restart("")
+			main := newCCConversation("You are Claude Code.", session)
+			sub := newCCConversation("You are Claude Code.", session) // same catalog, own thread
+			h.send(main.user(filler("strip 1")), sendOpts{})
+			h.comp.mu.Lock()
+			h.comp.failStore = true
+			h.comp.mu.Unlock()
+			h.send(main.user(filler("strip 2 while CCR is down")), sendOpts{})
+			h.comp.mu.Lock()
+			h.comp.failStore = false
+			h.comp.mu.Unlock()
+			h.send(sub.user(filler("sub 1")), sendOpts{})
+			h.send(main.user(filler("strip 3")), sendOpts{respond: rejectTransformed(http.StatusBadRequest, nil)})
+			h.send(main.user(filler("strip 4")), sendOpts{})
+			h.send(sub.user(filler("sub 2")), sendOpts{})
+			if !bytes.Contains(h.xs[0].forwarded, []byte(`"input_schema":{"type":"object"}`)) {
+				t.Fatalf("test setup: the catalog was not stripped:\n%.400s", h.xs[0].forwarded)
+			}
+		}},
 		{"two sessions sharing file contents", func(t *testing.T, h *invariantHarness) {
 			file := filler("package main shared file contents")
 			one := newCCConversation("You are Claude Code in repo one.", "sess-one")
@@ -679,6 +712,10 @@ func FuzzCachePrefixInvariant(f *testing.F) {
 			script = script[:80]
 		}
 		h := newInvariantHarness(t)
+		if len(script) > 0 && script[0]&1 == 1 {
+			h.strip = true
+			h.restart("")
+		}
 		w := newFuzzWorld()
 		for i := 0; i+1 < len(script); i += 2 {
 			w.step(h, script[i], script[i+1])
