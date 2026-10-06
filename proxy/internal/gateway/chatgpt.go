@@ -85,11 +85,12 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	// The recovery proof is checked after the read: a manually started proxy has
 	// no CAVEMAN_RECOVERY stamp, and the request's own Caveman MCP retrieve tool
 	// (top-level tools or Codex's input[] additional_tools) then proves it, the
-	// same rule the generic route applies. Eligible means the whole gate passed;
-	// skipReason says why an eligible-looking request was not compressed.
+	// same rule the generic route applies. Eligible means the request reached
+	// compressRequest (the generic route's denominator), whether or not it shrank;
+	// skipReason says why a candidate was not compressed.
 	compressCandidate := r.Method == http.MethodPost && rc.RuntimeMode == "compress" && suffix == "/responses" &&
 		s.compressor != nil && s.liveZoneConfigured(adapter) && compiledPlanAllowed
-	compressEligible := compressCandidate && s.recoveryViaMCP
+	compressEligible := false
 	skipReason := ""
 	if compressCandidate {
 		captured, readErr := io.ReadAll(io.LimitReader(r.Body, chatGPTCaptureLimit+1))
@@ -103,13 +104,10 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 			transform.Body = originalBody
 
 			logicalBody, requestEncoding, decodable := decodeChatGPTRequestBody(originalBody, r.Header.Get("Content-Encoding"))
-			if decodable && !compressEligible {
-				compressEligible = s.mcpRecoveryAvailable(logicalBody)
-			}
 			switch {
 			case !decodable:
 				skipReason = "content_encoding_unsupported"
-			case !compressEligible:
+			case !s.mcpRecoveryAvailable(logicalBody):
 				skipReason = "recovery_unproven"
 			default:
 				transform.Body = logicalBody
@@ -127,6 +125,7 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 				case !s.cacheEpochAllows(r, adapter, meta, logicalBody, evidence.SessionID):
 					skipReason = "cache_epoch_diverged"
 				default:
+					compressEligible = true
 					comp = s.compressRequest(adapter, logicalBody, meta, &transform, requestID, lockedRoutes)
 					if comp == nil {
 						skipReason = "nothing_compressible"

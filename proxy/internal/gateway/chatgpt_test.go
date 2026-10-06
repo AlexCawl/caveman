@@ -1209,25 +1209,50 @@ func TestChatGPTUnprovenRecoveryToolsStayExact(t *testing.T) {
 	}
 }
 
-// An encoding the proxy cannot decode stays exact pass-through, and the log
-// names the reason instead of reporting an eligible request that shrank nothing.
-func TestChatGPTUndecodableEncodingLogsSkipReason(t *testing.T) {
-	wire := []byte("not a zstd frame")
-	rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
-	srv, sink, logs := chatgptCompressServer(rt, true)
-	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(wire))
-	req.Header.Set("Content-Encoding", "zstd")
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
+// A stamped request that never reaches the compressor forwards its exact wire
+// bytes, names the reason in the log, and is not counted eligible: eligible
+// means the request reached compressRequest, the generic route's denominator.
+func TestChatGPTSkippedStampedRequestIsNotEligible(t *testing.T) {
+	compressible := `{"model":"gpt-5.5","input":"` + strings.Repeat("codex desktop tool output ", 40) + `"}`
+	bigLogical := []byte(`{"model":"gpt-5.5","input":"` + strings.Repeat("a", chatGPTCaptureLimit) + `"}`)
+	for _, tt := range []struct {
+		name     string
+		wire     []byte
+		encoding string
+		headers  map[string]string
+		reason   string
+	}{
+		{name: "undecodable zstd", wire: []byte("not a zstd frame"), encoding: "zstd", reason: "content_encoding_unsupported"},
+		{name: "gzip forwards as sent", wire: []byte("\x1f\x8bgzip bytes"), encoding: "gzip", reason: "content_encoding_unsupported"},
+		{name: "identity over the wire cap", wire: bigLogical, reason: "body_over_limit"},
+		{name: "cache epoch without digest", wire: []byte(compressible), headers: map[string]string{"x-cave-cache-epoch": "epoch-without-digest"}, reason: "cache_epoch_diverged"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+			srv, sink, logs := chatgptCompressServer(rt, true)
+			req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(tt.wire))
+			if tt.encoding != "" {
+				req.Header.Set("Content-Encoding", tt.encoding)
+			}
+			for name, value := range tt.headers {
+				req.Header.Set(name, value)
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK || len(rt.bodies) != 1 || !bytes.Equal(rt.bodies[0], wire) {
-		t.Fatalf("undecodable body changed: status=%d body=%q", rec.Code, rt.bodies[0])
-	}
-	if got := chatgptProxyLogLine(t, logs)["skip_reason"]; got != "content_encoding_unsupported" {
-		t.Fatalf("skip_reason = %v, want content_encoding_unsupported", got)
-	}
-	if row := sink.last(t); !row.CompressionEligible || row.CompressionTokensBefore != 0 {
-		t.Fatalf("stamped recovery + undecodable body: eligible/before = %v/%d", row.CompressionEligible, row.CompressionTokensBefore)
+			if rec.Code != http.StatusOK || len(rt.bodies) != 1 || !bytes.Equal(rt.bodies[0], tt.wire) {
+				t.Fatalf("skipped request changed bytes: status=%d calls=%d", rec.Code, len(rt.bodies))
+			}
+			if got := rt.headers[0].Get("Content-Encoding"); got != tt.encoding {
+				t.Fatalf("Content-Encoding = %q, want %q", got, tt.encoding)
+			}
+			if got := chatgptProxyLogLine(t, logs)["skip_reason"]; got != tt.reason {
+				t.Fatalf("skip_reason = %v, want %s", got, tt.reason)
+			}
+			if row := sink.last(t); row.CompressionEligible || row.CompressionTokensBefore != 0 {
+				t.Fatalf("eligible/before = %v/%d, want false/0", row.CompressionEligible, row.CompressionTokensBefore)
+			}
+		})
 	}
 }
 
