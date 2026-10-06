@@ -51,7 +51,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **OpenClaw** | `npx -y github:JuliusBrussee/caveman -- --only openclaw` | Yes (workspace skill + SOUL.md) |
 | **Hermes Agent** | `npx -y github:JuliusBrussee/caveman -- --only hermes` *(or `node bin/install.js --only hermes` from a clone)* | Yes (native skills, enabled on load) |
 | **Codex CLI** | `npx skills add JuliusBrussee/caveman -a codex -g` | Per-session: `/caveman` |
-| **Cursor** | `npx skills add JuliusBrussee/caveman -a cursor -g` | Per-session by default; `--with-init` for an always-on rule file |
+| **Cursor** | `npx -y github:JuliusBrussee/caveman -- --only cursor` *(or the [Cursor plugin](#cursor))* | Yes (session hook) |
 | **Windsurf** | `npx skills add JuliusBrussee/caveman -a windsurf -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Cline** | `npx skills add JuliusBrussee/caveman -a cline -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **GitHub Copilot** | `npx -y github:JuliusBrussee/caveman -- --only copilot --with-init` | Copilot CLI: Yes (session hook). VS Code: repo-wide instructions via `--with-init` |
@@ -124,6 +124,30 @@ on uninstall. Failed registration retains the owned package, journal, and backup
 so OMP cannot be left pointing at deleted files. Fix the reported host error and
 rerun the install, or uninstall. Failed deregistration retains those files too.
 
+### Cursor
+
+Two ways in. Pick one: with both, every chat gets the rules twice.
+
+- **Installer.** `npx -y github:JuliusBrussee/caveman -- --only cursor` adds
+  the skills, the Cavecrew agents (`~/.cursor/agents/`) and a session hook
+  (`~/.cursor/hooks.json` plus `~/.cursor/caveman/`). The Cursor editor, the
+  Agents Window and `cursor-agent` all read these. `--no-hooks` installs the
+  agents without the hook. `--uninstall` removes only caveman's entry from
+  `hooks.json`; your other hooks stay.
+- **Plugin.** This repo is a Cursor plugin (`.cursor-plugin/plugin.json`: the
+  skills plus the same session hook). Clone it into
+  `~/.cursor/plugins/local/caveman`, then run **Developer: Reload Window**. For
+  the CLI: `cursor-agent --plugin-dir ~/.cursor/plugins/local/caveman`.
+
+Either way, each new chat starts in your configured default mode
+(`CAVEMAN_DEFAULT_MODE`, a repo `.caveman.json`, or your user config);
+`"defaultMode": "off"` keeps chats normal. Checked with `cursor-agent`
+2026.09.18. Cursor does not read rule files from `~/.cursor/rules/` (user rules
+live in Settings), so the per-repo `.cursor/rules/caveman.mdc` from
+`--with-init` stays the rule-file option. Not checked: the Cursor editor's
+import of Claude Code hooks. If you also have caveman's Claude Code hooks and
+see the rules twice, turn one of them off.
+
 ### GitHub Copilot CLI
 
 `--only copilot` installs the skills for every Copilot surface. If the Copilot
@@ -189,7 +213,7 @@ The installer preserves each quoted path as one argument. For arguments containi
 
 ## Always-on rules
 
-For agents without a hook system (Cursor, Windsurf, Cline, Copilot, and friends), the always-on path is a static rule file. Two ways:
+For agents without a hook system (Windsurf, Cline, Copilot in VS Code, and friends), the always-on path is a static rule file. Two ways:
 
 ```bash
 # Drop rule files into the current repo
@@ -288,6 +312,7 @@ What it removes:
 - The Claude Code plugin and the Gemini CLI extension (if installed).
 - The opencode native plugin (`~/.config/opencode/plugins/caveman/`, the `plugin` and `mcp.caveman-shrink` entries from `opencode.json`, our skill/agent/command files, the caveman block from `AGENTS.md`, and the opencode flag file).
 - The Oh My Pi plugin (`omp plugin uninstall caveman`) and Caveman's managed OMP plugin package at `~/.omp/caveman-plugin/`.
+- Cursor: the Cavecrew agents in `~/.cursor/agents/`, `~/.cursor/caveman/`, and caveman's entry in `~/.cursor/hooks.json`.
 - The Copilot CLI session hook: `$COPILOT_HOME/hooks/caveman.json` and `$COPILOT_HOME/caveman/` (default `~/.copilot/`).
 - The OpenClaw workspace skill folder and the marker-fenced block from `~/.openclaw/workspace/SOUL.md` (when present).
 - All mode state in `$CLAUDE_CONFIG_DIR`: the `.caveman-sessions/` directory (one file per window), `.caveman-active`, `.caveman-active.prev`, `.caveman-mode-log.jsonl`, `.caveman-statusline-suffix`, `.caveman-nudge-shown`, and `.caveman-statusline-stale`.
