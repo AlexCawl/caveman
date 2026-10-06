@@ -1110,6 +1110,26 @@ func TestRateLimit429IsReturnedNotReplayed(t *testing.T) {
 	}
 }
 
+// TestOpaque429WithRateLimitHeadersIsRetriedRaw: Anthropic puts its
+// anthropic-ratelimit-* headers on every response, not only on rate limits, so
+// they cannot tell a rate limit from the opaque 429 the raw retry exists for.
+// Only Retry-After can: a rate limit carries it, the spend-cap 429 does not
+// (and replaying that one raw is harmless).
+func TestOpaque429WithRateLimitHeadersIsRetriedRaw(t *testing.T) {
+	h := newInvariantHarness(t)
+	main := newCCConversation("You are Claude Code.", "sess-opaque-429")
+	h.send(main.user(filler("turn one")), sendOpts{})
+	opaque := rejectTransformed(http.StatusTooManyRequests, http.Header{
+		"Anthropic-Ratelimit-Requests-Limit":     {"4000"},
+		"Anthropic-Ratelimit-Requests-Remaining": {"3999"},
+	})
+	status, attempts := h.send(main.user(filler("turn two")), sendOpts{respond: opaque})
+	if status != http.StatusOK || len(attempts) != 2 {
+		t.Fatalf("an opaque 429 must take the raw retry: client status %d after %d upstream attempts, want 200 after 2", status, len(attempts))
+	}
+	h.assert()
+}
+
 // TestAcceptedRawRetryPinsTheConversationRaw: once the provider accepted a
 // request only in its original form, that is what it cached, so every later
 // request extending it goes out raw too. The pin follows the conversation, not

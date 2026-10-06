@@ -626,22 +626,13 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// rateLimited reports a 429 that says it is a rate limit: a Retry-After or one
-// of Anthropic's rate-limit headers. The opaque 429 the fail-open retry exists
-// for carries neither.
+// rateLimited reports a 429 that says it is a rate limit: it carries
+// Retry-After, which Anthropic documents on every rate-limit 429. The
+// anthropic-ratelimit-* headers prove nothing: Anthropic sends them on every
+// response. A 429 without Retry-After (the opaque one, the spend cap) gets
+// the raw retry; replaying the spend cap raw only fails again.
 func rateLimited(resp *http.Response) bool {
-	if resp.StatusCode != http.StatusTooManyRequests {
-		return false
-	}
-	if resp.Header.Get("Retry-After") != "" {
-		return true
-	}
-	for name := range resp.Header {
-		if strings.HasPrefix(strings.ToLower(name), "anthropic-ratelimit-") {
-			return true
-		}
-	}
-	return false
+	return resp.StatusCode == http.StatusTooManyRequests && resp.Header.Get("Retry-After") != ""
 }
 
 func providerHeaderError(w http.ResponseWriter, r *http.Request, err error) {

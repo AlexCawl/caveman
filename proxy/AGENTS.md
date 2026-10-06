@@ -48,9 +48,10 @@ the managed gateway (the managed gateway imports them from here). `caveman start
   `proxyconnect` (a proxy that is down fails as the latter, never as a dial). A failed upload/header read or truncated response
   does not prove an inference was unprocessed; do not automatically replay it.
   An explicit transformed-request 4xx still retries once with original bytes —
-  except a 429 that says it is a rate limit (`Retry-After` or
-  `anthropic-ratelimit-*`), which is returned as-is; an accepted retry pins the
-  conversation raw (`internal/gateway/raw_pin.go`).
+  except a 429 that carries `Retry-After` (a rate limit; Anthropic sends its
+  `anthropic-ratelimit-*` headers on every response, so they prove nothing),
+  which is returned as-is; an accepted retry pins the conversation raw
+  (`internal/gateway/raw_pin.go`).
   See `docs/technical/proxy-reliability.md` at the repository root.
 - **byte-safe**: `record` mode never transforms; on transform error the ORIGINAL bytes are forwarded (HTTP 200, fail-open) — never a 400. The one carve-out: bytes the provider already cached in replaced form are re-sent replaced, because forwarding the original there busts the prefix (see cache safety).
 - **request-wide opt-out**: `x-cave-transforms: caveman.pass-through.v1` suppresses every request transform path — compress, pixel, and provider-native — not only compiled plan routes. Tests cover all three modes.
