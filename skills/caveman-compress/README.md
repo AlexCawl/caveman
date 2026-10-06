@@ -91,6 +91,30 @@ skills/caveman-compress/
 
 Requires Python 3.10 or newer.
 
+### Provider / model
+
+Default path uses Claude: `ANTHROPIC_API_KEY` + Anthropic SDK when set, else `claude --print`.
+
+To use opencode instead (any model opencode can reach, free ones included):
+
+```bash
+export CAVEMAN_COMPRESS_PROVIDER=opencode
+export CAVEMAN_COMPRESS_MODEL=opencode/big-pickle   # any id from `opencode models`
+```
+
+To use a local model (or any OpenAI-compatible server) instead:
+
+```bash
+export CAVEMAN_COMPRESS_PROVIDER=openai-compat
+export CAVEMAN_COMPRESS_MODEL=qwen3:8b                         # required
+export CAVEMAN_COMPRESS_ENDPOINT=http://localhost:11434/v1     # default (Ollama)
+# export CAVEMAN_COMPRESS_API_KEY=...                          # optional, sent as Bearer token
+```
+
+Common endpoints: Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`, llama.cpp server `http://localhost:8080/v1`, vLLM `http://localhost:8000/v1`. Nothing leaves your machine with a local server. A non-local `http://` endpoint sends the file in plaintext; use `https://` for remote servers. Small local models get it wrong more often; when they do, validation fails and your file stays untouched.
+
+`CAVEMAN_MODEL` is the fallback when `CAVEMAN_COMPRESS_MODEL` is unset. On the Claude path the model also applies to `claude --print`. The opencode path needs opencode 2.x (it uses `opencode run --standalone`).
+
 ## Usage
 
 ```
@@ -124,12 +148,12 @@ acquire cross-session lock on the file  (waits up to 15 min if another run holds
         ↓
 detect file type        (no tokens)
         ↓
-Claude compresses       (tokens: one call)
+configured provider compresses       (tokens: one call)
         ↓
 validate output         (no tokens)
   checks: headings, code blocks, URLs, file paths, bullets
         ↓
-if errors: Claude fixes cherry-picked issues only   (tokens: targeted fix)
+if errors: configured provider fixes cherry-picked issues only   (tokens: targeted fix)
   does NOT recompress; only patches broken parts
         ↓
 retry up to 2 times
@@ -153,6 +177,17 @@ Caveman compress natural language. It never touch:
 - Headings (exact text preserved)
 - Tables (structure preserved, cell text compressed)
 - Dates, version numbers, numeric values
+- Anything you wrap in `<!-- nocompress -->` ... `<!-- /nocompress -->`
+
+Want a part left exactly as written (an `<example>` block, a prompt template)? Wrap it. Each tag go on its own line. Model never change what inside; it come back byte for byte. Model can still read it if first try need fixing, so not hiding place for secrets. Forget the closing tag and compress stop before touching file.
+
+```markdown
+<!-- nocompress -->
+<example>
+Reply in this exact format.
+</example>
+<!-- /nocompress -->
+```
 
 ## Why This Matter
 
