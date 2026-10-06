@@ -11753,7 +11753,7 @@ export function hermesHome(env: NodeJS.ProcessEnv = process.env, platform: NodeJ
   const override = env.HERMES_HOME?.trim();
   if (override) {
     const lookup = (whole: string, name: string) => env[name] ?? whole;
-    let expanded = override.replace(/\$(\w+)|\$\{([^}]*)\}/g, (whole, bare, braced) => lookup(whole, bare ?? braced));
+    let expanded = override.replace(/\$(\w+)|\$\{([^{}$]*)\}/g, (whole, bare, braced) => lookup(whole, bare ?? braced));
     if (platform === "win32") expanded = expanded.replace(/%([^%]+)%/g, lookup);
     return resolve(expanded.replace(/^~(?=$|[\\/])/, homedir()));
   }

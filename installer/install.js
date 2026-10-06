@@ -985,7 +985,7 @@ function hermesConfigDir() {
   const override = (process.env.HERMES_HOME || '').trim();
   if (!override) return path.join(os.homedir(), '.hermes', 'skills');
   const lookup = (whole, name) => (process.env[name] !== undefined ? process.env[name] : whole);
-  let home = override.replace(/\$(\w+)|\$\{([^}]*)\}/g, (whole, bare, braced) => lookup(whole, bare !== undefined ? bare : braced));
+  let home = override.replace(/\$(\w+)|\$\{([^{}$]*)\}/g, (whole, bare, braced) => lookup(whole, bare !== undefined ? bare : braced));
   if (process.platform === 'win32') home = home.replace(/%([^%]+)%/g, lookup);
   return path.join(home.replace(/^~(?=$|[\\/])/, os.homedir()), 'skills');
 }
