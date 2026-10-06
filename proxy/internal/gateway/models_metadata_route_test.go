@@ -130,8 +130,8 @@ func TestAnthropicModelsMetadataRoute(t *testing.T) {
 // /v1/models is both OpenAI's and Anthropic's catalog route, and the real
 // standalone proxy registers Anthropic first. Picking by registration order
 // sent Hermes's OpenAI/router bearer to api.anthropic.com. The caller's wire
-// protocol decides instead: anthropic-version means Anthropic, a Google key
-// matches neither, anything else is OpenAI.
+// protocol decides instead: anthropic-version or x-api-key means Anthropic, a
+// Google key (header or ?key=) matches neither, anything else is OpenAI.
 func TestBareModelsRouteChoosesAdapterByProtocol(t *testing.T) {
 	var reached []string
 	upstream := func(name string) *httptest.Server {
@@ -161,9 +161,13 @@ func TestBareModelsRouteChoosesAdapterByProtocol(t *testing.T) {
 		{"openai agent mount", "/w/hermes/v1/models/Main", map[string]string{"authorization": "Bearer sk-router"}, "openai /v1/models/Main"},
 		{"openai prefixed ignores protocol", "/openai/v1/models", map[string]string{"anthropic-version": "2023-06-01"}, "openai /v1/models"},
 		{"anthropic bare", "/v1/models", map[string]string{"anthropic-version": "2023-06-01", "x-api-key": "sk-ant"}, "anthropic /v1/models"},
+		// curl and thin clients often omit anthropic-version (the adapter fills in
+		// a default); x-api-key is Anthropic's header, so it never reaches OpenAI.
+		{"anthropic key without version", "/v1/models", map[string]string{"x-api-key": "sk-ant"}, "anthropic /v1/models"},
 		{"anthropic agent mount", "/w/claude/v1/models/claude-opus-5", map[string]string{"anthropic-version": "2023-06-01"}, "anthropic /v1/models/claude-opus-5"},
 		{"anthropic prefixed", "/anthropic/v1/models", nil, "anthropic /v1/models"},
 		{"google key matches neither", "/v1/models", map[string]string{"x-goog-api-key": "AIza-test"}, ""},
+		{"google query key matches neither", "/v1/models?key=AIza-test", nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reached = nil
