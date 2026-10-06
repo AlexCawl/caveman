@@ -17,12 +17,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const INSTALLER = path.join(ROOT, 'bin', 'install.js');
 const HOOK_REL = 'caveman/hooks/codex-sessionstart.js';
 
-function sandbox(t) {
+function sandbox(t, codexDir = 'codex home') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'caveman codex hooks '));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const bin = path.join(dir, 'bin');
   nodeStub(bin, 'npx', 'process.exit(0);');
-  const codexHome = path.join(dir, 'codex home');
+  const codexHome = path.join(dir, codexDir);
   fs.mkdirSync(codexHome);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     key.toLowerCase() !== 'path' && !key.startsWith('CAVEMAN_') && key !== 'CLAUDE_PLUGIN_ROOT'));
@@ -52,7 +52,9 @@ test('codex install merges exactly one SessionStart hook, even when run twice', 
   const ours = readHooks().hooks.SessionStart.filter(isOurs);
   assert.equal(ours.length, 1, JSON.stringify(readHooks()));
   assert.equal(ours[0].hooks[0].type, 'command');
-  assert.match(ours[0].matcher, /startup/);
+  // compact too: Codex 0.160 sends SessionStart source "compact", and
+  // compaction is what prunes the injected ruleset.
+  assert.equal(ours[0].matcher, 'startup|resume|clear|compact');
   for (const rel of [HOOK_REL, 'caveman/hooks/caveman-config.js', 'caveman/hooks/package.json',
     'caveman/skills/caveman/SKILL.md', 'caveman/skills/ultracave/SKILL.md', 'caveman/skills/megacave/SKILL.md']) {
     assert.ok(fs.existsSync(path.join(codexHome, ...rel.split('/'))), `${rel} missing`);
@@ -120,4 +122,38 @@ test('unparseable hooks.json is left alone and nothing is installed', (t) => {
   assert.match(r.stdout + r.stderr, /codex-hooks/);
   assert.equal(fs.readFileSync(hooksPath, 'utf8'), '{ not json');
   assert.deepEqual(fs.readdirSync(codexHome), ['hooks.json']);
+});
+
+// hookCommand escapes $, ", backtick and backslash in the command it writes, so
+// matching our entry on the raw script path missed it: a re-run duplicated the
+// entry and uninstall left it dangling at a deleted payload.
+test('a CODEX_HOME containing $ still gets one entry and a clean uninstall', (t) => {
+  const { codexHome, hooksPath, readHooks, run } = sandbox(t, 'co$dex home');
+  for (let i = 0; i < 2; i++) assert.equal(run('--only', 'codex').status, 0);
+  assert.equal(readHooks().hooks.SessionStart.filter(isOurs).length, 1, JSON.stringify(readHooks()));
+  const r = run('--uninstall');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(fs.existsSync(hooksPath), false, fs.existsSync(hooksPath) ? fs.readFileSync(hooksPath, 'utf8') : '');
+  assert.deepEqual(fs.readdirSync(codexHome), []);
+});
+
+// A user who never installed the caveman Codex hook owns their hooks.json;
+// a broken one is not an incomplete caveman uninstall.
+test('uninstall ignores an unparseable hooks.json caveman never wrote', (t) => {
+  const { hooksPath, run } = sandbox(t);
+  fs.writeFileSync(hooksPath, '{ broken');
+  const r = run('--uninstall');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout + r.stderr, /hooks\.json/);
+  assert.equal(fs.readFileSync(hooksPath, 'utf8'), '{ broken');
+});
+
+test('uninstall keeps the payload when our hooks.json turns unparseable', (t) => {
+  const { hooksPath, codexHome, run } = sandbox(t);
+  assert.equal(run('--only', 'codex').status, 0);
+  fs.writeFileSync(hooksPath, '{ broken');
+  const r = run('--uninstall');
+  assert.notEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout + r.stderr, /could not parse/);
+  assert.ok(fs.existsSync(path.join(codexHome, ...HOOK_REL.split('/'))), 'payload must stay while hooks.json may point at it');
 });

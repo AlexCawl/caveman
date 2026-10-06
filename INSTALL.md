@@ -109,8 +109,8 @@ Each row prints the agent id, profile slug (where applicable), and whether it wa
 
 With `codex` on your PATH, `npx -y github:JuliusBrussee/caveman -- --only codex`
 installs the skills and a small start-of-session hook. Every new Codex session
-(and every `/clear`) then starts in caveman, following your configured default
-mode — including `off`. Codex asks you to review new hooks: run `/hooks` once in
+(and every `/clear` or context compaction) then starts in caveman, following
+your configured default mode — including `off`. Codex asks you to review new hooks: run `/hooks` once in
 Codex and trust the caveman one. Hooks are on by default in current Codex; if
 `codex features list` shows `hooks` off, add `[features] hooks = true` to
 `~/.codex/config.toml`.

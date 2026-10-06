@@ -761,11 +761,13 @@ function codexHookScript(home) {
 
 // Drop every SessionStart handler that runs our script, and any group it
 // leaves empty. Returns the index of the first group that held one, or -1.
+// Match the quoted path exactly as installCodexHook writes it: hookCommand
+// escapes $ " ` \ and turns Windows separators into /.
 function stripCodexHook(doc, script) {
   const list = doc.hooks && doc.hooks.SessionStart;
   if (!Array.isArray(list)) return -1;
-  const needle = script.replace(/\\/g, '/');
-  const ours = (h) => h && typeof h.command === 'string' && h.command.replace(/\\/g, '/').includes(needle);
+  const needle = PLATFORM_PATHS.hookCommand(script, []);
+  const ours = (h) => h && typeof h.command === 'string' && h.command.includes(needle);
   const at = list.findIndex((e) => e && Array.isArray(e.hooks) && e.hooks.some(ours));
   if (at === -1) return -1;
   doc.hooks.SessionStart = list.filter((e) => {
@@ -830,7 +832,8 @@ function installCodexHook(ctx) {
     if (!doc.hooks) doc.hooks = {};
     const list = doc.hooks.SessionStart || [];
     list.splice(at === -1 ? list.length : Math.min(at, list.length), 0, {
-      matcher: 'startup|resume|clear',
+      // compact: Codex 0.160 sends it, and compaction prunes the injected ruleset.
+      matcher: 'startup|resume|clear|compact',
       hooks: [{ type: 'command', command: 'node ' + PLATFORM_PATHS.hookCommand(script, []), timeout: 5, statusMessage: 'Loading caveman mode' }],
     });
     doc.hooks.SessionStart = list;
@@ -2009,7 +2012,9 @@ function uninstall(ctx) {
   const cxHome = codexHome();
   const cxHooks = path.join(cxHome, 'hooks.json');
   let cxClean = true;
-  if (fs.existsSync(cxHooks)) {
+  // The entry is written only after the payload journal, so no journal means
+  // caveman never installed the hook: leave a user's hooks.json alone, even broken.
+  if (fs.existsSync(OWNED.journalPaths(cxHome, 'codex-hooks').journalPath) && fs.existsSync(cxHooks)) {
     const doc = SETTINGS.readSettings(cxHooks);
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
       cxClean = false;
