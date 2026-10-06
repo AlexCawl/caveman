@@ -56,13 +56,16 @@ function parseArgs(argv) {
 
 function build({ out, targets }) {
   mkdirSync(out, { recursive: true });
+  // The pinned release tag, so a released binary's `version` names its
+  // release instead of the "dev" default in main.go.
+  const ldflags = `-X main.version=${readFileSync(join(root, "packages", "cli", "BINARY_RELEASE"), "utf8").trim()}`;
   const artifacts = [];
   for (const [goos, arch] of targets) {
     for (const [name, packagePath] of RELEASE_BINARIES) {
       const artifact = releaseArtifactName(name, goos, arch);
       const output = join(out, artifact);
       process.stderr.write(`build ${artifact}\n`);
-      const result = spawnSync("go", ["build", "-trimpath", "-o", output, packagePath], {
+      const result = spawnSync("go", ["build", "-trimpath", "-ldflags", ldflags, "-o", output, packagePath], {
         cwd: root,
         env: { ...process.env, CGO_ENABLED: "0", GOOS: goos, GOARCH: arch },
         stdio: "inherit",
