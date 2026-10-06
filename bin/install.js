@@ -1117,7 +1117,7 @@ function installOpencode(ctx) {
     for (const f of OPENCODE_AGENT_FILES) {
       const src = path.join(agentSrcDir, f);
       if (!fs.existsSync(src)) continue;
-      const body = transformOpencodeAgentFrontmatter(fs.readFileSync(src, 'utf8'));
+      const body = transformOpencodeAgentFrontmatter(fs.readFileSync(src, 'utf8'), { subagent: true });
       operations.push({
         relativePath: `agents/${f}`,
         write: (stage) => fs.writeFileSync(stage, body, { mode: 0o600, flag: 'wx' }),
