@@ -7,10 +7,17 @@ import { readFileSync } from "node:fs";
 
 const read = (relative) => readFileSync(new URL(`../../${relative}`, import.meta.url), "utf8");
 
-for (const skill of ["caveman", "ultracave", "megacave", "caveman-help"]) {
-  test(`${skill} SKILL.md: hook-less status is marked, not unknown`, () => {
-    const body = read(`skills/${skill}/SKILL.md`);
+for (const file of [
+  "skills/caveman/SKILL.md",
+  "skills/ultracave/SKILL.md",
+  "skills/megacave/SKILL.md",
+  "skills/caveman-help/SKILL.md",
+  // Ships inside dist/caveman.skill next to the SKILL.md.
+  "skills/caveman/README.md",
+]) {
+  test(`${file}: hook-less status is marked, not unknown`, () => {
+    const body = read(file).replace(/\s+/g, " ");
     assert.ok(body.includes("(not tracked by this host)"), "names the no-hook marker");
-    assert.doesNotMatch(body, /Caveman mode: unknown|report `unknown`/);
+    assert.doesNotMatch(body, /Caveman mode: unknown|report `unknown`|or `unknown`/);
   });
 }
