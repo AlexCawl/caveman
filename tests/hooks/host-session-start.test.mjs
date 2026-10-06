@@ -143,3 +143,24 @@ test('Cursor plugin manifest wires the shared hook, and no hooks/hooks.json exis
   assert.match(JSON.parse(r.stdout).additional_context, /CAVEMAN MODE ACTIVE — mode: caveman/);
   assert.equal(fs.existsSync(path.join(ROOT, 'hooks/hooks.json')), false);
 });
+
+test('owned install reads its pinned skill before the host skills folder', (t) => {
+  const { dir, env } = fixture(t);
+  // <host>/caveman/hooks/ is the installed payload; <host>/skills/ holds the
+  // unpinned `npx skills add` copy that must not win.
+  const host = path.join(dir, '.cursor');
+  const hooks = path.join(host, 'caveman', 'hooks');
+  fs.mkdirSync(hooks, { recursive: true });
+  for (const f of ['caveman-host-session-start.js', 'caveman-config.js', 'package.json']) {
+    fs.copyFileSync(path.join(ROOT, 'src/hooks', f), path.join(hooks, f));
+  }
+  for (const [where, text] of [[path.join(host, 'caveman', 'skills'), 'PINNED RULES'], [path.join(host, 'skills'), 'UPSTREAM RULES']]) {
+    fs.mkdirSync(path.join(where, 'caveman'), { recursive: true });
+    fs.writeFileSync(path.join(where, 'caveman', 'SKILL.md'), `---\nname: caveman\n---\n${text}\n`);
+  }
+  const r = spawnSync(process.execPath, [path.join(hooks, 'caveman-host-session-start.js'), 'cursor'], {
+    env, cwd: dir, input: '{}', encoding: 'utf8', timeout: 5000,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(JSON.parse(r.stdout).additional_context, /PINNED RULES$/);
+});

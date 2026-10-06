@@ -18,6 +18,9 @@
 
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
 const OUTPUT_KEYS = { cursor: 'additional_context', copilot: 'additionalContext' };
 const RULESET_MODES = ['caveman', 'ultracave', 'megacave'];
 const PAYLOAD_WATCHDOG_MS = 2000;
@@ -32,7 +35,14 @@ function sessionContext(payload) {
     .find((value) => typeof value === 'string' && value) || process.cwd();
   const mode = getDefaultMode(cwd);
   if (!RULESET_MODES.includes(mode)) return null;
-  const ruleset = loadRuleset(mode, __dirname);
+  // The owned install (<host>/caveman/hooks/) ships its pinned skills one level
+  // up; the shared resolver would try <host>/skills/ first, which is the
+  // host's unpinned `npx skills add` copy. A plugin layout has no ../skills.
+  let ruleset = null;
+  try {
+    ruleset = fs.readFileSync(path.join(__dirname, '..', 'skills', mode, 'SKILL.md'), 'utf8')
+      .replace(/^---[\s\S]*?---\s*/, '');
+  } catch (e) { ruleset = loadRuleset(mode, __dirname); }
   if (!ruleset) return null;
   // The banner already names the mode. A separate `Caveman mode: <mode>` line
   // got echoed at the top of ordinary answers in Copilot CLI live runs, so
