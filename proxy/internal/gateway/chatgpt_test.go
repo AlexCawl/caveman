@@ -1230,3 +1230,26 @@ func TestChatGPTUndecodableEncodingLogsSkipReason(t *testing.T) {
 		t.Fatalf("stamped recovery + undecodable body: eligible/before = %v/%d", row.CompressionEligible, row.CompressionTokensBefore)
 	}
 }
+
+// An explicit Content-Encoding: identity is a plain body. The generic route
+// accepts it, and /chatgpt compressed it before it learned to decode zstd.
+func TestChatGPTExplicitIdentityEncodingCompresses(t *testing.T) {
+	live := strings.Repeat("codex identity tool output ", 40)
+	body := `{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"` + live + `"}]}]}`
+	rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+	srv, sink, logs := chatgptCompressServer(rt, true)
+	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", strings.NewReader(body))
+	req.Header.Set("Content-Encoding", "Identity")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
+		t.Fatalf("status/calls = %d/%d", rec.Code, len(rt.bodies))
+	}
+	if upstream := string(rt.bodies[0]); strings.Contains(upstream, live) || !strings.Contains(upstream, "<<ccr:") {
+		t.Fatalf("identity body was not compressed (skip_reason %v): %s", chatgptProxyLogLine(t, logs)["skip_reason"], upstream)
+	}
+	if row := sink.last(t); !row.CompressionEligible || row.CompressionTokensBefore <= row.CompressionTokensAfter {
+		t.Fatalf("compression accounting missing: %+v", row)
+	}
+}

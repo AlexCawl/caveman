@@ -15,8 +15,8 @@ const (
 
 func decodeChatGPTRequestBody(wire []byte, contentEncoding string) ([]byte, chatGPTRequestEncoding, bool) {
 	switch encoding := chatGPTRequestEncoding(strings.ToLower(strings.TrimSpace(contentEncoding))); encoding {
-	case chatGPTRequestIdentity:
-		return wire, encoding, true
+	case chatGPTRequestIdentity, "identity":
+		return wire, chatGPTRequestIdentity, true
 	case chatGPTRequestZstd:
 		decoder, err := zstd.NewReader(
 			nil,
