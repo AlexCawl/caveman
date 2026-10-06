@@ -8,6 +8,7 @@ output is empty or identical to the input, and a backup-write that drops
 bytes is detected before the input is overwritten.
 """
 
+import io
 import os
 import stat
 import sys
@@ -534,25 +535,31 @@ class CompressSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "ANTHROPIC_API_KEY is required"):
                 compress_mod.call_claude(PROMPT_TEXT)
 
-    def test_opencode_prompt_cleanup_failure_is_reported(self):
+    def test_opencode_cleanup_failure_does_not_mask_the_real_error(self):
+        # A failed temp-file unlink in the finally block used to raise its own
+        # RuntimeError, replacing the opencode failure the user needs to see.
         prompt_paths = []
+        failure = compress_mod.subprocess.CalledProcessError(
+            1, [OPENCODE_BIN, "run"], stderr="model not found",
+        )
 
         def run_opencode(command, **kwargs):
             prompt_paths.append(Path(command[command.index(OPENCODE_FILE_ARG) + 1]))
-            return mock.Mock(stdout=OPENCODE_OUTPUT)
+            raise failure
 
         try:
             with llm_env(CAVEMAN_COMPRESS_PROVIDER=OPENCODE_PROVIDER), \
                  mock.patch.object(compress_mod.subprocess, "run", side_effect=run_opencode), \
-                 mock.patch.object(Path, "unlink", side_effect=OSError("denied")):
-                with self.assertRaisesRegex(
-                    RuntimeError,
-                    "Failed to delete temporary opencode prompt",
-                ):
+                 mock.patch.object(Path, "unlink", side_effect=OSError("denied")), \
+                 mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                with self.assertRaisesRegex(RuntimeError, "opencode call failed:\nmodel not found"):
                     compress_mod.call_claude(PROMPT_TEXT)
         finally:
             for prompt_path in prompt_paths:
                 prompt_path.unlink(missing_ok=True)
+
+        self.assertIn("warning: could not delete temporary opencode prompt", stderr.getvalue())
+        self.assertIn(str(prompt_paths[0]), stderr.getvalue())
 
     def test_opencode_prompt_is_removed_when_write_fails(self):
         prompt_paths = []

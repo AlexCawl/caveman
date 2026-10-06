@@ -608,12 +608,15 @@ def call_opencode_cli(prompt: str) -> str:
         return run_cli(OPENCODE_CLI, args)
     finally:
         if prompt_path is not None:
+            # Warn, never raise: raising here would replace the real opencode
+            # error (or a good result) with a cleanup failure.
             try:
                 prompt_path.unlink(missing_ok=True)
-            except OSError as error:
-                raise RuntimeError(
-                    f"Failed to delete temporary opencode prompt: {prompt_path}"
-                ) from error
+            except OSError:
+                print(
+                    f"warning: could not delete temporary opencode prompt {prompt_path}",
+                    file=sys.stderr,
+                )
 
 
 def call_claude(prompt: str) -> str:
