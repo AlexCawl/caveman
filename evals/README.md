@@ -54,7 +54,8 @@ installed could reach every arm. `llm_run.py` now isolates each call
 ## Files
 
 - `prompts/<lang>.txt` — fixed list of dev questions, one per line.
-  `en.txt` is the default; `pt.txt` is Brazilian Portuguese.
+  `en.txt` is the default; `pt.txt` is Brazilian Portuguese; `fr.txt`
+  is French and mirrors `en.txt` line for line.
 - `llm_run.py` — runs `claude -p --system-prompt-file …` per (prompt, arm),
   captures real LLM output, writes `snapshots/results.json` along with
   metadata (model, CLI version, language, generation timestamp).
@@ -98,7 +99,9 @@ CAVEMAN_EVAL_LANG=pt uv run --with tiktoken python evals/measure.py
 The terse control is translated per language (`TERSE_PREFIXES` in
 `llm_run.py`): an English "Answer concisely." on a Portuguese question
 also nudges the model toward English, which would be a second variable.
-The skill text itself stays in English, as shipped.
+A language with no translated control, or no `prompts/<lang>.txt`, stops
+before any call instead of falling back to English. The skill text
+itself stays in English, as shipped.
 
 Why a separate language matters: SKILL.md promises "compress the style,
 not the language", and the rules target English function words
@@ -122,9 +125,10 @@ Append a line to `prompts/<lang>.txt`, then refresh that language's snapshot.
 
 ## Adding a language
 
-Add `prompts/<lang>.txt`, add the translated terse control to
-`TERSE_PREFIXES` in `llm_run.py`, run with `CAVEMAN_EVAL_LANG=<lang>`
-and commit `snapshots/results.<lang>.json`.
+Add `prompts/<lang>.txt` (ideally mirroring `en.txt` line for line),
+add the translated terse control to `TERSE_PREFIXES` in `llm_run.py`,
+run with `CAVEMAN_EVAL_LANG=<lang>` and commit
+`snapshots/results.<lang>.json`.
 
 ## Adding a skill
 

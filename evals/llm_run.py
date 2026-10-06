@@ -67,6 +67,7 @@ SKILLS = EVALS.parent / "skills"
 TERSE_PREFIXES = {
     "en": "Answer concisely.",
     "pt": "Responda de forma concisa.",
+    "fr": "Réponds de façon concise.",
 }
 
 LANG = os.environ.get("CAVEMAN_EVAL_LANG", "en")
@@ -117,6 +118,12 @@ def claude_version() -> str:
 
 def main() -> None:
     # Checked here, not at import, so tests can import the module.
+    if not PROMPTS.exists():
+        available = sorted(p.stem for p in (EVALS / "prompts").glob("*.txt"))
+        raise SystemExit(
+            f"No prompt set at {PROMPTS}. "
+            f"CAVEMAN_EVAL_LANG={LANG!r}; available: {', '.join(available)}"
+        )
     if LANG not in TERSE_PREFIXES:
         raise SystemExit(
             f"CAVEMAN_EVAL_LANG={LANG}: no terse control in TERSE_PREFIXES; "
