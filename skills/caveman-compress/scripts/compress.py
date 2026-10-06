@@ -395,14 +395,21 @@ OPENCODE_CLI = "opencode"
 OPENCODE_RUN_ARG = "run"
 OPENCODE_STANDALONE_ARG = "--standalone"
 OPENCODE_FILE_ARG = "--file"
+OPENCODE_AGENT_ARG = "--agent"
+OPENCODE_AGENT = "caveman-compress"
 MODEL_ARG = "--model"
 OPENCODE_PROMPT_PREFIX = ".caveman-compress-prompt-"
 OPENCODE_PROMPT_SUFFIX = ".md"
 OPENCODE_PROMPT_MESSAGE = "Follow the attached prompt exactly. Return only the final answer."
-# The compressed file is untrusted input sent as a prompt to opencode's agent,
-# which by default can edit files and run bash. claude --print never
-# auto-approves those tools; deny them here for the same guarantee.
-OPENCODE_PERMISSION_DENY = {"edit": "deny", "bash": "deny", "webfetch": "deny"}
+# The compressed file is untrusted input sent as a prompt to opencode's agent.
+# opencode 2.x allows every action not explicitly denied (bash, edit,
+# websearch, MCP tools, subagents), so deny all of them: compression needs no
+# tools. Probed on 2.0.22 --standalone: no tools are offered to the model and
+# the --file attachment is still read. A per-agent rule is applied after the
+# global one and the last match wins, so the user's own
+# `agent.build.permission` could re-allow a tool for the default agent; the
+# deny is therefore also bound to OPENCODE_AGENT, an agent only we define.
+OPENCODE_PERMISSION_DENY = {"*": "deny"}
 
 # Output ceiling for one SDK call: the max output of the default model
 # (claude-sonnet-4-5). A body that needs more is refused in call_claude(),
@@ -604,12 +611,25 @@ def call_opencode_cli(prompt: str) -> str:
     model = configured_model()
     if model:
         args.extend([MODEL_ARG, model])
+    args.extend([OPENCODE_AGENT_ARG, OPENCODE_AGENT])
     # --standalone: the shared background service ignores this process's env
     # (verified on opencode 2.0.22), so the deny config only binds a private
     # server. Never pass --auto. Any inline config the user set is kept.
     args.append(OPENCODE_STANDALONE_ARG)
-    config = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
+    try:
+        config = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
+    except ValueError:
+        config = None
+    if not isinstance(config, dict):
+        raise RuntimeError(
+            "OPENCODE_CONFIG_CONTENT must be a strict JSON object (no comments or "
+            "trailing commas) so compress can add its tool-deny rule; fix or unset it."
+        )
     config["permission"] = OPENCODE_PERMISSION_DENY
+    config["agent"] = {
+        **(config.get("agent") or {}),
+        OPENCODE_AGENT: {"permission": OPENCODE_PERMISSION_DENY},
+    }
     env = {**os.environ, "OPENCODE_CONFIG_CONTENT": json.dumps(config)}
 
     prompt_path = None

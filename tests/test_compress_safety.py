@@ -485,7 +485,8 @@ class CompressSafetyTests(unittest.TestCase):
 
     def test_opencode_runs_standalone_with_tools_denied(self):
         # The file being compressed is untrusted input sent as a prompt to
-        # opencode's agent, which by default may edit files and run bash.
+        # opencode's agent. opencode 2.x allows every action not denied
+        # (websearch, MCP tools, subagents...), so deny all of them.
         # The background service ignores the client's env, so the deny
         # config only applies to a private --standalone server.
         completed = mock.Mock(stdout=OPENCODE_OUTPUT)
@@ -498,11 +499,39 @@ class CompressSafetyTests(unittest.TestCase):
         self.assertIn("--standalone", command)
         self.assertNotIn("--auto", command)
         config = json.loads(run.call_args.kwargs["env"]["OPENCODE_CONFIG_CONTENT"])
-        self.assertEqual(
-            config["permission"],
-            {"edit": "deny", "bash": "deny", "webfetch": "deny"},
-        )
+        self.assertEqual(config["permission"], {"*": "deny"})
         self.assertEqual(config["model"], "x/y")  # user's inline config kept
+
+    def test_opencode_runs_a_dedicated_deny_all_agent(self):
+        # opencode applies a per-agent rule after the global one and the last
+        # matching rule wins, so `agent.build.permission.edit: "allow"` in the
+        # user's own config re-enables edit for the default agent (probed on
+        # 2.0.22). An agent only compress defines can't be re-allowed that way.
+        completed = mock.Mock(stdout=OPENCODE_OUTPUT)
+        inline = '{"agent": {"plan": {"model": "x/y"}}}'
+        with llm_env(CAVEMAN_COMPRESS_PROVIDER=OPENCODE_PROVIDER), \
+             mock.patch.dict(os.environ, {"OPENCODE_CONFIG_CONTENT": inline}), \
+             mock.patch.object(compress_mod.subprocess, "run", return_value=completed) as run:
+            compress_mod.call_claude(PROMPT_TEXT)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--agent") + 1], "caveman-compress")
+        config = json.loads(run.call_args.kwargs["env"]["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual(
+            config["agent"],
+            {"plan": {"model": "x/y"}, "caveman-compress": {"permission": {"*": "deny"}}},
+        )
+
+    def test_opencode_unparseable_inline_config_is_named(self):
+        # opencode reads OPENCODE_CONFIG_CONTENT as JSONC; json.loads does not.
+        for bad in ('{"model": "x/y", // pinned\n}', "[]"):
+            with self.subTest(bad=bad), \
+                 llm_env(CAVEMAN_COMPRESS_PROVIDER=OPENCODE_PROVIDER), \
+                 mock.patch.dict(os.environ, {"OPENCODE_CONFIG_CONTENT": bad}), \
+                 mock.patch.object(compress_mod.subprocess, "run") as run:
+                with self.assertRaisesRegex(RuntimeError, "OPENCODE_CONFIG_CONTENT"):
+                    compress_mod.call_claude(PROMPT_TEXT)
+                run.assert_not_called()
 
     def test_compression_status_names_configured_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
