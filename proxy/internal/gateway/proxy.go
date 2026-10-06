@@ -1098,7 +1098,10 @@ func (s *Server) rewriteRequest(
 		if s.prefixCache == nil {
 			return
 		}
-		if stored, err := s.prefixCache.RememberReplacement(scope, blocks[i].content, nil, RawDecisionHandle); err == nil && len(stored) > 0 {
+		stored, err := s.prefixCache.RememberReplacement(scope, blocks[i].content, nil, RawDecisionHandle)
+		if err != nil {
+			s.unpersistedRaw.add(scope, blocks[i].content)
+		} else if len(stored) > 0 {
 			use(i, stored, ccrHandleOf(stored))
 		}
 	}
@@ -1114,6 +1117,9 @@ func (s *Server) rewriteRequest(
 		if len(lockedRoutes) > 0 {
 			route := lockedRoutes[routeByBlock[i]]
 			cacheScope = "locked:" + route.SegmentKind + ":" + route.SegmentID + ":" + route.TransformID + s.toolSchemaCacheScope()
+		}
+		if s.unpersistedRaw.has(cacheScope, block.content) {
+			continue // went out raw while the store could not record it
 		}
 		if s.prefixCache != nil {
 			if stored, handle, hit := s.prefixCache.LookupReplacement(cacheScope, block.content); hit {
@@ -1174,6 +1180,7 @@ func (s *Server) rewriteRequest(
 				if s.logger != nil {
 					s.logger.Warn("prefix replacement store failed for block; keeping block original", "error", redact.Error(err), "request_id", requestID)
 				}
+				s.unpersistedRaw.add(cacheScope, block.content)
 				continue
 			}
 			if len(stored) == 0 {
@@ -1256,6 +1263,55 @@ func joinRecoveryHandles(handles []string) string {
 	}
 	elided := len(uniq) - recoveryHandleListMax
 	return "+" + strconv.Itoa(elided) + "," + strings.Join(uniq[len(uniq)-recoveryHandleListMax:], ",")
+}
+
+// rawMemory holds raw decisions the PrefixCache failed to write, so this
+// process keeps sending those blocks raw even if they come back live (a client
+// re-sending an accepted turn) after the store recovers.
+// ponytail: in-process only; a restart while the store is failing forgets them.
+type rawMemory struct {
+	mu    sync.Mutex
+	keys  map[[32]byte]struct{}
+	order [][32]byte
+}
+
+const rawMemoryCap = 4096
+
+func rawMemoryKey(scope string, content []byte) [32]byte {
+	h := sha256.New()
+	_, _ = h.Write([]byte(scope))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(content)
+	var key [32]byte
+	h.Sum(key[:0])
+	return key
+}
+
+func (m *rawMemory) add(scope string, content []byte) {
+	key := rawMemoryKey(scope, content)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.keys == nil {
+		m.keys = map[[32]byte]struct{}{}
+	}
+	if _, ok := m.keys[key]; ok {
+		return
+	}
+	m.keys[key] = struct{}{}
+	if m.order = append(m.order, key); len(m.order) > rawMemoryCap {
+		delete(m.keys, m.order[0])
+		m.order = m.order[1:]
+	}
+}
+
+func (m *rawMemory) has(scope string, content []byte) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.keys) == 0 {
+		return false
+	}
+	_, ok := m.keys[rawMemoryKey(scope, content)]
+	return ok
 }
 
 // ccrHandleOf reads the handle back out of a replacement's trailing marker.

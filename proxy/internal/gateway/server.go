@@ -331,7 +331,10 @@ type Server struct {
 	// PrefixCache). A nil cache means the proxy cannot maintain a rewrite across
 	// turns, which is what the non-PAYG live-zone paths fail closed on.
 	prefixCache PrefixCache
-	cacheGuard  *cacheguard.Guard
+	// unpersistedRaw remembers blocks that went out raw while prefixCache could
+	// not record it (see rawMemory).
+	unpersistedRaw rawMemory
+	cacheGuard     *cacheguard.Guard
 	// prefixMonitor runs the observe-only per-session prefix-monotonicity check
 	// (see prefix_monitor.go). It flags cache_bust when a request's frozen prefix
 	// does not extend the prior request in the same session.

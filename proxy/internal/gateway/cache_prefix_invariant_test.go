@@ -1000,3 +1000,28 @@ func TestResumedHistoryNeverFlips(t *testing.T) {
 		t.Fatalf("the resumed conversation's own live turn must stay replaced:\n%s", rt.bodies[2])
 	}
 }
+
+// TestUnpersistedRawDecisionHolds: when the replacement store cannot take a
+// write, the turn's new block goes out raw and that decision cannot be stored.
+// If the client then re-sends the accepted turn (an aborted stream, a retry),
+// the block is live again and must still go out raw: the provider cached it so.
+func TestUnpersistedRawDecisionHolds(t *testing.T) {
+	t1, t2 := turnText(1), turnText(2)
+	cache := newTestPrefixCache()
+	rt := prefixStableTransport(3)
+	srv, _ := newPrefixStableServer(&stableCompressor{}, cache, rt)
+
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(t1), subscriptionAgentHeaders)
+	cache.mu.Lock()
+	cache.failWrites = true
+	cache.mu.Unlock()
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(t1, t2), subscriptionAgentHeaders)
+	cache.mu.Lock()
+	cache.failWrites = false
+	cache.mu.Unlock()
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(t1, t2), subscriptionAgentHeaders)
+
+	if !strings.Contains(string(rt.bodies[1]), t2) || !bytes.Equal(rt.bodies[1], rt.bodies[2]) {
+		t.Fatalf("the re-sent turn must reproduce the bytes the provider accepted:\n%s\n%s", rt.bodies[1], rt.bodies[2])
+	}
+}
