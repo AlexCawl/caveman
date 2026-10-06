@@ -317,7 +317,7 @@ resume. If you still see it, check whether `CAVEMAN_DEFAULT_MODE` or a repo-loca
 
 **"OpenCode works, but Caveman sees no traffic."**
 
-`caveman enable opencode` and `caveman opencode` send only OpenCode's `openai`, `anthropic` and `opencode-go` providers through Caveman. Every other provider talks to its service directly, with nothing compressed or counted. That includes a GitHub Copilot sign-in and OpenCode Zen (`opencode/...` models). `caveman doctor opencode` and `caveman status` warn when your active OpenCode model uses one of those providers.
+`caveman enable opencode` and `caveman opencode` send only OpenCode's `openai`, `anthropic` and `opencode-go` providers through Caveman. Every other provider talks to its service directly, with nothing compressed or counted. That includes a GitHub Copilot sign-in and OpenCode Zen (`opencode/...` models). After `caveman enable opencode`, `caveman doctor opencode` and `caveman status` warn when the model in your global OpenCode config uses a provider outside that list, or when no model is set there and none of your OpenCode sign-ins is on it. `caveman opencode` alone does not check.
 
 **"Hooks failing on Windows."**
 
