@@ -23,7 +23,7 @@ const HOOK_FILES = fs.readFileSync(path.join(HOOKS, 'checksums.sha256'), 'utf8')
 function setup({ manifest = true, tamper = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caveman-hook-integrity-'));
   // Detached copy of the installer: no src/hooks beside it, so every hook is remote.
-  fs.cpSync(path.join(REPO_ROOT, 'bin'), path.join(root, 'bin'), { recursive: true });
+  fs.cpSync(path.join(REPO_ROOT, 'installer'), path.join(root, 'installer'), { recursive: true });
   const served = path.join(root, 'served');
   fs.mkdirSync(served);
   for (const f of HOOK_FILES) fs.copyFileSync(path.join(HOOKS, f), path.join(served, f));
@@ -48,7 +48,7 @@ exit 22
   fs.writeFileSync(path.join(configDir, 'settings.json'), '{"theme":"dark"}\n');
   fs.writeFileSync(path.join(configDir, 'hooks', 'caveman-config.js'), '// previous install\n');
   const run = (args = ['--with-hooks'], extraEnv = {}, cwd = undefined) => spawnSync(process.execPath, [
-    path.join(root, 'bin', 'install.js'),
+    path.join(root, 'installer', 'install.js'),
     '--only', 'claude', ...args, '--config-dir', configDir, '--non-interactive', '--no-mcp-shrink',
   ], {
     env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: configDir, NO_COLOR: '1', ...extraEnv },

@@ -48,8 +48,8 @@ fi
 # Clone installs share the unified installer's JSONC parser. A standalone copy
 # without that helper refuses unsupported settings before changing any files.
 SETTINGS_HELPER=""
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../../bin/lib/settings.js" ]; then
-  SETTINGS_HELPER="$SCRIPT_DIR/../../bin/lib/settings.js"
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../../installer/lib/settings.js" ]; then
+  SETTINGS_HELPER="$SCRIPT_DIR/../../installer/lib/settings.js"
 fi
 CAVEMAN_SETTINGS="$SETTINGS" CAVEMAN_HOOKS_DIR="$HOOKS_DIR" CAVEMAN_SETTINGS_HELPER="$SETTINGS_HELPER" node --input-type=commonjs <<'NODE'
 const fs = require('fs');
@@ -69,7 +69,7 @@ try {
   }
 } catch (error) {
   console.error('Cannot install standalone hooks: ' + error.message);
-  console.error('Nothing was changed. For JSONC settings, use bin/install.js from a clone.');
+  console.error('Nothing was changed. For JSONC settings, use installer/install.js from a clone.');
   process.exit(1);
 }
 NODE
@@ -164,7 +164,7 @@ fi
 # Back up existing settings.json before touching it. Back up ONCE: without the
 # guard a --force reinstall overwrites the only pre-caveman copy with the
 # already-merged file, destroying the user's recovery path. Same guard as
-# bin/install.js.
+# installer/install.js.
 if [ ! -f "$SETTINGS.bak" ]; then
   cp "$SETTINGS" "$SETTINGS.bak"
 fi

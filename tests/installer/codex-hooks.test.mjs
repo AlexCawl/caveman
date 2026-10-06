@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { nodeStub } from '../../packages/cli/tests/harness/stub-bin.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const INSTALLER = path.join(ROOT, 'bin', 'install.js');
+const INSTALLER = path.join(ROOT, 'installer', 'install.js');
 const HOOK_REL = 'caveman/hooks/codex-sessionstart.js';
 
 function sandbox(t, codexDir = 'codex home') {

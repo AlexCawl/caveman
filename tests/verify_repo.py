@@ -277,12 +277,23 @@ def verify_synced_files() -> None:
         )
 
     ensure(
-        (ROOT / "bin" / "install.js").exists(),
-        "bin/install.js missing — package.json bin entry would break npx caveman",
+        (ROOT / "installer" / "install.js").exists(),
+        "installer/install.js missing — package.json bin entry would break npx caveman",
     )
     ensure(
-        (ROOT / "bin" / "lib" / "settings.js").exists(),
-        "bin/lib/settings.js missing — installer would crash on JSONC settings.json",
+        (ROOT / "installer" / "lib" / "settings.js").exists(),
+        "installer/lib/settings.js missing — installer would crash on JSONC settings.json",
+    )
+    # The Claude Code plugin root is the repo root (marketplace.json
+    # "source": "./"), so a tracked top-level bin/ ships inside the plugin:
+    # the CLI puts it on every plugin user's PATH, and claude.ai-hosted
+    # marketplaces reject the plugin outright (#1035). Tracked files only —
+    # the gitignored local build outputs (bin/cave, bin/caveman-*) never
+    # reach a marketplace clone.
+    ensure(
+        not run(["git", "ls-files", "--", "bin"]).stdout.strip(),
+        "top-level bin/ ships inside the Claude plugin (plugin root = repo root) "
+        "and claude.ai-hosted marketplaces reject it; see #1035",
     )
 
     print("Synced copies, caveman.skill zip, and installer entrypoints OK")
@@ -387,8 +398,8 @@ def verify_manifests_and_syntax() -> None:
     run(["node", "--check", "src/hooks/caveman-mode-tracker.js"])
     run(["node", "--check", "src/hooks/cavecrew-model-overrides.js"])
     run(["node", "--check", "src/hooks/caveman-host-session-start.js"])
-    run(["node", "--check", "bin/install.js"])
-    run(["node", "--check", "bin/lib/settings.js"])
+    run(["node", "--check", "installer/install.js"])
+    run(["node", "--check", "installer/lib/settings.js"])
     bash = shutil.which("bash")
     if bash is not None:
         run([bash, "-n", "src/hooks/install.sh"])
@@ -419,7 +430,7 @@ def verify_package_contents() -> None:
     ensure(isinstance(payload, list) and len(payload) == 1, "unexpected npm pack manifest")
     files = {entry["path"] for entry in payload[0]["files"]}
     required = {
-        "bin/install.js",
+        "installer/install.js",
         ".codex/codex-sessionstart.js",  # Codex always-on hook payload (#573)
         "agents/cavecrew-investigator.md",
         "agents/cavecrew-builder.md",
@@ -516,10 +527,10 @@ def verify_powershell_static() -> None:
 
     # The per-session store must be cleaned up by every uninstall path, or a
     # reinstall inherits stale modes for session ids that no longer exist.
-    installer_text = (ROOT / "bin/install.js").read_text(encoding="utf-8")
+    installer_text = (ROOT / "installer/install.js").read_text(encoding="utf-8")
     uninstall_sh_text = (ROOT / "src/hooks/uninstall.sh").read_text(encoding="utf-8")
     for name, text in (
-        ("bin/install.js", installer_text),
+        ("installer/install.js", installer_text),
         ("src/hooks/uninstall.sh", uninstall_sh_text),
         ("src/hooks/uninstall.ps1", uninstall_text),
     ):

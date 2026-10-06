@@ -14,8 +14,8 @@ import { createRequire } from 'node:module';
 import { nodeStub, stubEnv } from '../../packages/cli/tests/harness/stub-bin.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const INSTALLER = path.join(ROOT, 'bin/install.js');
-const cursor = createRequire(import.meta.url)(path.join(ROOT, 'bin/lib/cursor-native.js'));
+const INSTALLER = path.join(ROOT, 'installer/install.js');
+const cursor = createRequire(import.meta.url)(path.join(ROOT, 'installer/lib/cursor-native.js'));
 const AGENTS = ['cavecrew-builder.md', 'cavecrew-investigator.md', 'cavecrew-reviewer.md'];
 const FOREIGN = { command: './hooks/user.sh' };
 

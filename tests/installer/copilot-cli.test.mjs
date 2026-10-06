@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { nodeStub, stubEnv } from '../../packages/cli/tests/harness/stub-bin.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const INSTALLER = path.join(ROOT, 'bin/install.js');
+const INSTALLER = path.join(ROOT, 'installer/install.js');
 
 function fixture(t, { copilotBin = true, copilotHome = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'caveman copilot '));

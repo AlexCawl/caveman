@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..');
-const INSTALLER = path.join(REPO_ROOT, 'bin', 'install.js');
+const INSTALLER = path.join(REPO_ROOT, 'installer', 'install.js');
 
 // Derived, not pinned, so this suite tracks the real skills/ set (as
 // provider-skills-integration.test.mjs does) instead of drifting stale
