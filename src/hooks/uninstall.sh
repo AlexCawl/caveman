@@ -1,5 +1,5 @@
 #!/bin/bash
-# caveman — uninstaller for the SessionStart + UserPromptSubmit + SessionEnd hooks
+# caveman — uninstaller for the SessionStart + SubagentStart + UserPromptSubmit + SessionEnd hooks
 # Removes: hook files in ~/.claude/hooks, settings.json entries, and the mode state
 # Usage: bash src/hooks/uninstall.sh
 #   or:  bash <(curl -s https://raw.githubusercontent.com/JuliusBrussee/caveman/main/src/hooks/uninstall.sh)
@@ -51,7 +51,7 @@ if [ -f "$SETTINGS" ]; then
     # session start. Same reason the node -e failure above exits non-zero.
     echo "ERROR: 'node' not found — cannot safely edit settings.json."
     echo "       Nothing was removed. Install node and re-run, or remove the"
-    echo "       caveman SessionStart, UserPromptSubmit, SessionEnd and statusLine"
+    echo "       caveman SessionStart, SubagentStart, UserPromptSubmit, SessionEnd and statusLine"
     echo "       entries from $SETTINGS by hand first."
     exit 1
   else

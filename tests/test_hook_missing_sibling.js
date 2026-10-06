@@ -20,6 +20,10 @@ const { spawnSync } = require('child_process');
 const HOOKS_DIR = path.resolve(__dirname, '..', 'src', 'hooks');
 const SKILL_SRC = path.resolve(__dirname, '..', 'skills');
 
+// A headless runner exports CLAUDE_CODE_ENTRYPOINT=sdk-*, which starts
+// SessionStart under the manual policy (#377). Spawns copy process.env.
+delete process.env.CLAUDE_CODE_ENTRYPOINT;
+
 let passed = 0;
 let failed = 0;
 
@@ -113,6 +117,20 @@ test('CAVEMAN_DEFAULT_MODE=off still opts out without the config module', () => 
     });
     assert.strictEqual(r.status, 0);
     assert.doesNotMatch(r.stdout, /CAVEMAN MODE ACTIVE/, 'off must suppress the ruleset');
+  });
+});
+
+// #621: with no state module there is no session state to inherit, so the
+// SubagentStart path stays silent rather than guessing a mode.
+test('--subagent exits 0 and injects nothing without the config module', () => {
+  withInstall(['caveman-config.js'], ({ hooks }) => {
+    const r = spawnSync(process.execPath, [path.join(hooks, 'caveman-activate.js'), '--subagent'], {
+      input: JSON.stringify({ session_id: 't', cwd: '/tmp', hook_event_name: 'SubagentStart', agent_type: 'Explore' }),
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: hooks },
+    });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.stdout, '');
   });
 });
 

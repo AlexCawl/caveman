@@ -26,6 +26,10 @@ const ACTIVATE = path.join(HOOKS, 'caveman-activate.js');
 const TRACKER = path.join(HOOKS, 'caveman-mode-tracker.js');
 const STATS = path.join(HOOKS, 'caveman-stats.js');
 
+// A headless runner exports CLAUDE_CODE_ENTRYPOINT=sdk-*, which starts
+// SessionStart under the manual policy (#377). Spawns copy process.env.
+delete process.env.CLAUDE_CODE_ENTRYPOINT;
+
 // Well inside the 5s hook budget declared in .claude-plugin/plugin.json. The
 // pre-fix hooks blocked until the host killed them, so they never finished at
 // all; anything near the budget is a regression even if it eventually exits.

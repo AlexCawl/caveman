@@ -27,6 +27,10 @@ for _stream in (sys.stdout, sys.stderr):
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# A headless runner exports CLAUDE_CODE_ENTRYPOINT=sdk-*, which starts
+# SessionStart under the manual policy (#377) and would fail the hook flow.
+os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
 
 class CheckFailure(RuntimeError):
     pass
@@ -702,6 +706,10 @@ def verify_hook_install_flow() -> None:
         hooks = settings["hooks"]
         ensure(settings["statusLine"]["command"] == "bash /tmp/existing-statusline.sh", "install.sh clobbered existing statusLine")
         ensure("SessionStart" in hooks, "SessionStart hook missing after install")
+        ensure(
+            any("--subagent" in h.get("command", "") for e in hooks.get("SubagentStart", []) for h in e.get("hooks", [])),
+            "SubagentStart hook missing after install",
+        )
         ensure("UserPromptSubmit" in hooks, "UserPromptSubmit hook missing after install")
         ensure("SessionEnd" in hooks, "SessionEnd hook missing after install")
 

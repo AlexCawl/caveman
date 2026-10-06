@@ -90,7 +90,7 @@ Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [
 <br>
 
 ```bash
-# Claude Code plugin, auto-starts every session
+# Claude Code plugin, auto-starts every session, subagents too
 claude plugin marketplace add JuliusBrussee/caveman && claude plugin install caveman@caveman
 
 # Gemini CLI
