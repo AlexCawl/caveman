@@ -172,13 +172,15 @@ func TestProxyRecordsCacheBustOnNonExtendingPrefix(t *testing.T) {
 	}
 }
 
-// TestCacheEpochAllowsRunsGuardWithoutHeaders proves SLICE 2 (issue #133): the
-// header-less derived-epoch gate runs for wrap clients (Claude Code/Codex/Gemini),
-// is EXTENSION-TOLERANT (append-only frozen-prefix growth as the cache floor
-// advances stays allowed — the regression the first cut introduced), tolerates
-// another conversation interleaved under the same session (#1094), and still
-// denies a genuine frozen-message change. It never blocks traffic; a denial only
-// forwards original bytes.
+// TestCacheEpochAllowsRunsGuardWithoutHeaders pins what the epoch check may
+// veto. Header-less wrap clients (Claude Code, Codex, Gemini CLI) are always
+// allowed — including when their own prefix diverged. The derived gate that
+// used to refuse them there compared the client's own bytes, so it only ever
+// saw client-caused divergence, and refusing forwarded the original bytes,
+// which dropped every earlier substitution and busted the prefix at the first
+// compressed block (#1105). A framework's explicit declaration is still
+// enforced: a complete one is allowed until its prefix drifts, a partial one
+// fails closed.
 func TestCacheEpochAllowsRunsGuardWithoutHeaders(t *testing.T) {
 	srv := New(Config{
 		Adapters:    []providers.Adapter{anthropic.New("https://upstream.test")},
@@ -186,72 +188,44 @@ func TestCacheEpochAllowsRunsGuardWithoutHeaders(t *testing.T) {
 	})
 	adapter := anthropic.New("https://upstream.test")
 	meta := providers.RequestMetadata{Provider: "anthropic", Endpoint: "/v1/messages"}
-	noHeaderReq := func() *http.Request {
-		return httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	request := func(headers ...string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		for i := 0; i+1 < len(headers); i += 2 {
+			r.Header.Set(headers[i], headers[i+1])
+		}
+		return r
 	}
 
 	turn1 := strings.Repeat("turn one project context ", 30)
 	turn2 := strings.Repeat("turn two file contents ", 30)
-	// Turn 1: floor freezes [system, tools, turn1-user].
 	bodyT1 := []byte(anthropicRawBody("You are Claude Code.", cachedUserMsg(turn1), liveUserMsg("live one")))
-	// Turn 2: the SAME system/tools/turn1 prefix plus new frozen turns (floor advanced).
-	// This is an append-only extension of turn 1's frozen prefix — it MUST be allowed.
 	bodyT2 := []byte(anthropicRawBody("You are Claude Code.",
 		cachedUserMsg(turn1), assistantMsg("assistant one"), cachedUserMsg(turn2), liveUserMsg("live two")))
-	// A side request under the same correlated session with its own system prompt.
-	bodySide := []byte(anthropicRawBody("You are a haiku side request.", cachedUserMsg(turn1), liveUserMsg("classify")))
-	// Turn 3 of the main thread, after the side request interleaved.
-	bodyT3 := []byte(anthropicRawBody("You are Claude Code.",
-		cachedUserMsg(turn1), assistantMsg("assistant one"), cachedUserMsg(turn2), assistantMsg("assistant two"), cachedUserMsg("turn three"), liveUserMsg("live three")))
-	// A genuine divergence: an already-frozen assistant turn was rewritten.
+	// The client rewrote an already-frozen assistant turn.
 	bodyDrift := []byte(anthropicRawBody("You are Claude Code.",
-		cachedUserMsg(turn1), assistantMsg("assistant one REWRITTEN"), cachedUserMsg(turn2), assistantMsg("assistant two"), cachedUserMsg("turn three"), liveUserMsg("live four")))
+		cachedUserMsg(turn1), assistantMsg("assistant one REWRITTEN"), cachedUserMsg(turn2), liveUserMsg("live three")))
 
-	// Self-validate the construction: turn-1's frozen components must be a strict
-	// comma-prefix of turn-2's (append-only), and drift's must not extend turn-3's.
-	_, compsT1, okT1 := providerPrefixEvidence(adapter, bodyT1, meta)
-	_, compsT2, okT2 := providerPrefixEvidence(adapter, bodyT2, meta)
-	_, compsT3, okT3 := providerPrefixEvidence(adapter, bodyT3, meta)
-	_, compsDrift, okD := providerPrefixEvidence(adapter, bodyDrift, meta)
-	if !okT1 || !okT2 || !okT3 || !okD {
-		t.Fatalf("frozen prefix evidence unavailable: t1=%v t2=%v t3=%v drift=%v", okT1, okT2, okT3, okD)
-	}
-	if !strings.HasPrefix(compsT2+",", compsT1+",") {
-		t.Fatalf("test setup: turn 2 must append-only extend turn 1\n t1=%s\n t2=%s", compsT1, compsT2)
-	}
-	if strings.HasPrefix(compsDrift+",", compsT3+",") {
-		t.Fatalf("test setup: drift body must NOT extend turn 3 (assistant turn rewritten)\n t3=%s\n drift=%s", compsT3, compsDrift)
+	for i, body := range [][]byte{bodyT1, bodyT2, bodyDrift, bodyT2} {
+		for _, session := range []string{"", "sess-guard"} {
+			if !srv.cacheEpochAllows(request(), adapter, meta, body, session) {
+				t.Fatalf("header-less request %d (session %q) was refused", i, session)
+			}
+		}
 	}
 
-	// No correlated session id: cannot derive an epoch, so legacy behavior (allow).
-	if !srv.cacheEpochAllows(noHeaderReq(), adapter, meta, bodyT1, "") {
-		t.Fatal("no session id must fall back to legacy allow")
+	declared := func(digest string) *http.Request {
+		return request("x-cave-cache-epoch", "epoch-1", "x-cave-cache-prefix-sha256", strings.Repeat(digest, 64))
 	}
-	// Turn 1 opens the epoch (allowed).
-	if !srv.cacheEpochAllows(noHeaderReq(), adapter, meta, bodyT1, "sess-guard") {
-		t.Fatal("first derived-epoch request must be allowed")
+	if !srv.cacheEpochAllows(declared("a"), adapter, meta, bodyT1, "sess-guard") {
+		t.Fatal("a complete framework declaration must be allowed")
 	}
-	// Turn 2 (append-only growth) must STILL be allowed — this is the fix.
-	if !srv.cacheEpochAllows(noHeaderReq(), adapter, meta, bodyT2, "sess-guard") {
-		t.Fatal("append-only frozen-prefix growth must stay allowed (no turn-2 regression)")
+	if !srv.cacheEpochAllows(declared("a"), adapter, meta, bodyT2, "sess-guard") {
+		t.Fatal("the same declared prefix must stay allowed")
 	}
-	// A side request with its own system prompt is another conversation: allowed,
-	// and it must not displace the main thread's anchor (#1094).
-	if !srv.cacheEpochAllows(noHeaderReq(), adapter, meta, bodySide, "sess-guard") {
-		t.Fatal("a side request under the same session must be allowed")
+	if srv.cacheEpochAllows(declared("b"), adapter, meta, bodyT2, "sess-guard") {
+		t.Fatal("a declared prefix that drifted must veto new compression")
 	}
-	if !srv.cacheEpochAllows(noHeaderReq(), adapter, meta, bodyT3, "sess-guard") {
-		t.Fatal("main-thread growth after an interleaved side request must stay allowed")
-	}
-	// A genuine frozen-component change is denied (forward original bytes).
-	if srv.cacheEpochAllows(noHeaderReq(), adapter, meta, bodyDrift, "sess-guard") {
-		t.Fatal("a changed frozen component must be denied by the derived-epoch gate")
-	}
-	// After the divergence re-anchors, an append-only extension of the NEW prefix is
-	// allowed again — the gate never gets stuck (the old whole-prefix bug).
-	bodyDriftGrown := []byte(anthropicRawBody("You are Claude Code.",
-		cachedUserMsg(turn1), assistantMsg("assistant one REWRITTEN"), cachedUserMsg(turn2), assistantMsg("assistant two"), cachedUserMsg("turn three"), assistantMsg("assistant three"), cachedUserMsg("turn four"), liveUserMsg("live five")))
-	if !srv.cacheEpochAllows(noHeaderReq(), adapter, meta, bodyDriftGrown, "sess-guard") {
-		t.Fatal("gate must re-anchor after divergence and allow subsequent extension")
+	if srv.cacheEpochAllows(request("x-cave-cache-epoch", "epoch-2"), adapter, meta, bodyT1, "sess-guard") {
+		t.Fatal("a partial declaration must fail closed")
 	}
 }

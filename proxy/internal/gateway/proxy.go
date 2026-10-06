@@ -247,24 +247,6 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		if !compiledPlanAllowed {
 			break
 		}
-		// The epoch gate is STATEFUL: derivedEpochAllows re-anchors the stored
-		// prefix on every observe. Calling it twice per request — once with the
-		// client's original body, once with the transformed one — anchored turn
-		// N's baseline to bytes the client never sent, so turn N+1 compared the
-		// original against it, saw divergence, and skipped compression for the
-		// whole turn. That flipped the provider cache prefix the gate exists to
-		// protect, and on a wrapped session with the tool-schema strip enabled it
-		// alternated compression on/off every other turn. Evaluate ONCE, against
-		// the bytes the client actually sent, and reuse the answer. Still lazy:
-		// requests that never reach a transform never anchor.
-		epochChecked, epochOK := false, false
-		epochAllows := func() bool {
-			if !epochChecked {
-				epochChecked = true
-				epochOK = s.cacheEpochAllows(r, adapter, meta, body, evidence.SessionID)
-			}
-			return epochOK
-		}
 		// Subscription-classified traffic falls back to S0 passthrough whenever the
 		// live-zone conditions do not hold (operator off-switch, no schema-aware
 		// prefix stabilizer, no MCP recovery, no durable prefix cache) — the path
@@ -286,12 +268,16 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		// exclusively through the live-zone predicate above (which itself requires MCP
 		// recovery), so neither can ever compress with no way back to the elided bytes.
 		markerOnlyAllowed := (s.mcpRecoveryAvailable(body) && authMode != AuthModeOAuth && authMode != AuthModeSubscription) || nonPAYGLiveZone
-		if (markerOnlyAllowed || serverRetrieveAllowed) && epochAllows() {
-			// The request reached the compression path as a candidate. It is eligible
-			// whether or not compressRequest ultimately shrinks any bytes — the
-			// requests_eligible_for_compression denominator counts candidates, not wins.
-			compressionEligible = true
-			comp = s.compressRequest(adapter, body, meta, &transform, requestID, lockedRoutes)
+		if markerOnlyAllowed || serverRetrieveAllowed {
+			// Substitution is never gated: a block the provider cached in replaced
+			// form is re-sent replaced whatever this request's epoch says, because
+			// forwarding the original there busts the prefix at that block. A
+			// declared framework epoch may veto only NEW compression. An allowed
+			// request is a compression candidate whether or not anything shrinks —
+			// the eligibility denominator counts candidates, not wins.
+			allowNew := s.cacheEpochAllows(r, adapter, meta, body, evidence.SessionID)
+			compressionEligible = allowNew
+			comp = s.rewriteRequest(adapter, body, meta, &transform, requestID, lockedRoutes, allowNew)
 		}
 		if serverRetrieveAllowed {
 			if injected, ok := injectRetrieveTool(meta.Provider, meta.Endpoint, transform.Body); ok {
@@ -314,8 +300,9 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		// stripToolSchema for the determinism invariant that makes a frozen-prefix
 		// rewrite admissible here. It runs last so its byte offsets are computed on
 		// the bytes actually going upstream, and it is skipped under a compiled
-		// Cave Build, whose transform set is locked to what evals approved.
-		if len(lockedRoutes) == 0 && s.toolSchemaStripAllowed(adapter, body, evidence.SessionID) && epochAllows() {
+		// Cave Build, whose transform set is locked to what evals approved. No
+		// epoch gate: a pure function of the catalog must not flip per request.
+		if len(lockedRoutes) == 0 && s.toolSchemaStripAllowed(adapter, body, evidence.SessionID) {
 			if stripped, handle, ok := s.stripToolSchema(transform.Body, meta, requestID); ok {
 				transform.Body = stripped
 				transform.OptimizerIDs = append(transform.OptimizerIDs, toolSchemaStripOptimizerID)
@@ -840,23 +827,18 @@ func validGatewayDigest(value string) bool {
 }
 
 // cacheEpochAllows binds framework-frozen prefix identity to gateway transform
-// authorization without putting prompt bytes in headers or telemetry. Legacy
-// callers that send neither header keep existing provider-adapter enforcement;
-// a partial/invalid framework declaration fails closed to pass-through.
+// authorization without putting prompt bytes in headers or telemetry. It decides
+// only whether a request may compress NEW content; substituting an earlier
+// replacement never asks it. Callers that send neither header are allowed: the
+// derived gate that stood in for them compared the client's own bytes, so it
+// only ever saw client-caused divergence, and its one action — forwarding the
+// original bytes — moved that divergence earlier, to the first block it had
+// compressed (#1105). A partial/invalid framework declaration fails closed.
 func (s *Server) cacheEpochAllows(r *http.Request, adapter providers.Adapter, meta providers.RequestMetadata, body []byte, sessionID string) bool {
 	epoch := strings.TrimSpace(r.Header.Get("x-cave-cache-epoch"))
 	digest := strings.TrimSpace(r.Header.Get("x-cave-cache-prefix-sha256"))
 	if epoch == "" && digest == "" {
-		// Header-less wrap clients (Claude Code, Codex, Gemini CLI) never declare a
-		// cache epoch or prefix digest, so without a derived path the gate never runs
-		// for the wrap's actual users (issue #133). It CANNOT reuse cacheguard.Inspect:
-		// that compares whole-prefix digests for equality, but the Anthropic frozen
-		// prefix grows every turn as the cache floor advances (content_compress.go), so
-		// whole-prefix equality reads legitimate append-only growth as drift and would
-		// skip compression from turn 2 onward — a coverage regression for the exact
-		// clients this path serves. Instead gate on the SAME append-only component
-		// check SLICE 1 uses (derivedEpochAllows).
-		return s.derivedEpochAllows(adapter, meta, body, sessionID)
+		return true
 	}
 	if epoch == "" || digest == "" || s.cacheGuard == nil {
 		return false
@@ -871,41 +853,6 @@ func (s *Server) cacheEpochAllows(r *http.Request, adapter providers.Adapter, me
 		if s.logger != nil {
 			s.logger.Warn("cache epoch rejected transformed request; forwarding original bytes",
 				"warnings", result.Warnings)
-		}
-		return false
-	}
-	return true
-}
-
-// derivedEpochAllows is the compression gate for header-less wrap clients. It reuses
-// SLICE 1's append-only component comparison (prefix_monitor) rather than
-// cacheguard's whole-prefix equality, so it is extension-tolerant: a request whose
-// frozen prefix APPEND-ONLY EXTENDS the stored one is allowed AND re-anchors the
-// stored prefix to the new (longer) one, so a growing Claude Code session keeps
-// compressing every turn instead of getting stuck on turn 1. Only a genuine
-// divergence — a frozen component changed, dropped, or reordered (the same
-// condition SLICE 1 flags as cache_bust) — is drift: compression is skipped and the
-// ORIGINAL bytes are forwarded (byte-safe, blocks nothing, books nothing). The gate
-// re-anchors on divergence too, so a real prefix change resyncs the next turn rather
-// than stalling compression for the rest of the session.
-//
-// With no correlated session, or an adapter that exposes no frozen prefix, it keeps
-// the legacy behavior of leaving provider-adapter enforcement in charge (allow).
-func (s *Server) derivedEpochAllows(adapter providers.Adapter, meta providers.RequestMetadata, body []byte, sessionID string) bool {
-	if sessionID == "" {
-		return true
-	}
-	_, components, boundaryKnown := providerPrefixEvidence(adapter, body, meta)
-	if components == "" || !boundaryKnown {
-		return true
-	}
-	epochID := "wrap:" + sessionID + ":" + meta.Provider + ":" + meta.Endpoint
-	bust, divergingIndex := s.cacheEpochGate.observe(epochID, components)
-	if bust {
-		if s.logger != nil {
-			s.logger.Warn("derived cache epoch prefix diverged; forwarding original bytes",
-				"provider", meta.Provider, "endpoint", meta.Endpoint,
-				"diverging_component_index", divergingIndex)
 		}
 		return false
 	}
@@ -1088,6 +1035,21 @@ func (s *Server) compressRequest(
 	requestID string,
 	lockedRoutes []compiledRoute,
 ) *compressionOutcome {
+	return s.rewriteRequest(adapter, body, meta, transform, requestID, lockedRoutes, true)
+}
+
+// rewriteRequest is compressRequest with the new-compression veto exposed:
+// allowNew=false still substitutes every replacement already emitted, because
+// those bytes are in the provider cache, and compresses nothing new.
+func (s *Server) rewriteRequest(
+	adapter providers.Adapter,
+	body []byte,
+	meta providers.RequestMetadata,
+	transform *providers.TransformResult,
+	requestID string,
+	lockedRoutes []compiledRoute,
+	allowNew bool,
+) *compressionOutcome {
 	if s.compressor == nil {
 		return nil
 	}
@@ -1148,7 +1110,7 @@ func (s *Server) compressRequest(
 		// A frozen block the cache does not know was never compressed by us (or its
 		// entry was evicted): forward the client's original bytes. That is the
 		// re-sync path — it costs one prefix rebuild and is stable from then on.
-		if !block.live {
+		if !block.live || !allowNew {
 			continue
 		}
 		out, tb, ta := []byte(nil), 0, 0

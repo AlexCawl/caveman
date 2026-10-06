@@ -33,10 +33,6 @@ type prefixMonitor struct {
 	// long-running proxy's per-session state stays bounded (mirrors cacheguard).
 	order []string
 	cap   int
-	// observations counts calls that reached the comparison. observe RE-ANCHORS
-	// the baseline, so a caller that runs it twice within one request anchors on
-	// bytes the client never sent; the epoch gate's tests pin the call count.
-	observations int
 }
 
 // defaultPrefixMonitorCap bounds retained sessions. An evicted session's next
@@ -83,7 +79,6 @@ func (m *prefixMonitor) observe(sessionID, componentSHA256 string) (bust bool, d
 	current := strings.Split(componentSHA256, ",")
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.observations++
 	anchors, ok := m.last[sessionID]
 	if !ok {
 		m.put(sessionID, [][]string{current})

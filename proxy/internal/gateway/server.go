@@ -327,12 +327,6 @@ type Server struct {
 	// (see prefix_monitor.go). It flags cache_bust when a request's frozen prefix
 	// does not extend the prior request in the same session.
 	prefixMonitor *prefixMonitor
-	// cacheEpochGate is the compression GATE for header-less wrap clients: a second,
-	// independent prefix monitor keyed on the derived cache epoch. It cannot share
-	// prefixMonitor's state (that one is consulted on every request; this one only
-	// on compress candidates), and unlike cacheguard it tolerates append-only
-	// frozen-prefix growth — see derivedEpochAllows.
-	cacheEpochGate *prefixMonitor
 	// recoveryViaMCP records that the wrapped agent fulfills caveman_retrieve itself
 	// (via the caveman MCP server, sharing the CCR store) — set by `caveman wrap`
 	// when it installed that tool. When true, compress mode reshapes streaming and
@@ -560,7 +554,6 @@ func New(cfg Config) *Server {
 		prefixCache:          cfg.PrefixCache,
 		cacheGuard:           cacheguard.New(),
 		prefixMonitor:        newPrefixMonitor(),
-		cacheEpochGate:       newPrefixMonitor(),
 		recoveryViaMCP:       cfg.RecoveryViaMCP,
 		observeEstimate:      cfg.ObserveEstimate,
 		chatGPTUpstream:      strings.TrimSuffix(upstream, "/"),

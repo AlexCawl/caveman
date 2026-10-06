@@ -829,3 +829,101 @@ func userIndexes(c *ccConversation) []int {
 	}
 	return out
 }
+
+// newestMarkedConversation is the Claude Code shape: only the newest message
+// carries cache_control, so the marker moves forward every turn.
+func newestMarkedConversation(userTexts ...string) string {
+	msgs := make([]string, 0, len(userTexts)*2)
+	for i, text := range userTexts {
+		if i > 0 {
+			msgs = append(msgs, `{"role":"assistant","content":[`+subBlock("assistant "+strconv.Itoa(i))+`]}`)
+		}
+		block := subBlock(text)
+		if i == len(userTexts)-1 {
+			block = subCachedBlock(text)
+		}
+		msgs = append(msgs, `{"role":"user","content":[`+block+`]}`)
+	}
+	return `{"model":"claude-sonnet-4-6","max_tokens":1024,` +
+		`"system":[{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],` +
+		`"messages":[` + strings.Join(msgs, ",") + `]}`
+}
+
+func withHeaders(base map[string]string, extra ...string) map[string]string {
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for i := 0; i+1 < len(extra); i += 2 {
+		out[extra[i]] = extra[i+1]
+	}
+	return out
+}
+
+// TestGateTripKeepsEarlierSubstitutions: a rewind makes the client's own
+// prefix diverge from the previous turn. Whatever the proxy decides about NEW
+// content, it must keep re-sending the replacement turn 1 was cached with.
+func TestGateTripKeepsEarlierSubstitutions(t *testing.T) {
+	t1, t2, t3, t2b := turnText(1), turnText(2), turnText(3), strings.Repeat("turn two rewritten ", 40)
+	rt := prefixStableTransport(4)
+	comp := &stableCompressor{}
+	srv, _ := newPrefixStableServer(comp, newTestPrefixCache(), rt)
+	headers := withHeaders(subscriptionAgentHeaders, "x-cave-session", "sess-rewind")
+
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(t1), headers)
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(t1, t2), headers)
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(t1, t2, t3), headers)
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(t1, t2b), headers)
+
+	if !strings.Contains(string(rt.bodies[3]), comp.expectedReplacement(t, t1)) {
+		t.Fatalf("the rewound request dropped turn 1's cached replacement:\n%s", rt.bodies[3])
+	}
+}
+
+// TestExplicitEpochVetoKeepsSubstitutions: a framework's declared epoch may veto
+// NEW compression, but the replacement it accepted on an earlier turn is already
+// in the provider cache, so it is re-sent either way.
+func TestExplicitEpochVetoKeepsSubstitutions(t *testing.T) {
+	t1, t2 := turnText(1), turnText(2)
+	rt := prefixStableTransport(2)
+	comp := &stableCompressor{}
+	srv, sink := newPrefixStableServer(comp, newTestPrefixCache(), rt)
+	epoch := func(digest string) map[string]string {
+		return withHeaders(subscriptionAgentHeaders, "x-cave-cache-epoch", "epoch-1", "x-cave-cache-prefix-sha256", strings.Repeat(digest, 64))
+	}
+
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(t1), epoch("a"))
+	serveBody(t, srv, "/v1/messages", newestMarkedConversation(t1, t2), epoch("b")) // drift: veto
+
+	second := string(rt.bodies[1])
+	if !strings.Contains(second, comp.expectedReplacement(t, t1)) {
+		t.Fatalf("an epoch veto dropped turn 1's cached replacement:\n%s", second)
+	}
+	if !strings.Contains(second, t2) {
+		t.Fatalf("an epoch veto must still stop NEW compression:\n%s", second)
+	}
+	if sink.last(t).CompressionEligible {
+		t.Fatal("a vetoed request is not a compression candidate")
+	}
+}
+
+// TestToolSchemaStripIgnoresEpochVeto: the strip is a pure function of the tool
+// catalog at the head of the prefix. Gating it per request flipped the catalog
+// between stripped and original, busting the whole prefix.
+func TestToolSchemaStripIgnoresEpochVeto(t *testing.T) {
+	rt := &captureTransport{responses: []string{subMessageRespBody, subMessageRespBody}}
+	srv, _ := newToolSchemaStripServer(t, &toolSchemaStripCompressor{}, rt, Config{RecoveryViaMCP: true, ToolSchemaStrip: toolSchemaStripMode})
+	epoch := func(digest string) map[string]string {
+		return withHeaders(subscriptionAgentHeaders, "x-cave-cache-epoch", "epoch-1", "x-cave-cache-prefix-sha256", strings.Repeat(digest, 64))
+	}
+
+	serveBody(t, srv, "/v1/messages", toolCatalogRequest("first turn"), epoch("a"))
+	serveBody(t, srv, "/v1/messages", toolCatalogRequest("second turn"), epoch("b"))
+
+	stripped := strippedToolCatalog(t)
+	for i, body := range rt.bodies {
+		if !strings.Contains(string(body), `"tools":`+stripped) {
+			t.Fatalf("request %d did not carry the stripped catalog:\n%s", i+1, body)
+		}
+	}
+}
