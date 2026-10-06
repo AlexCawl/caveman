@@ -238,9 +238,9 @@ type RequestRecord struct {
 	CacheBoundaryKnown           bool
 	// CacheBust is set by the observe-only cache tripwire when this request did
 	// not extend the prefix its session cached (see prefix_monitor.go), and
-	// CacheBustCause says who changed the bytes: "client", "caveman" or
-	// "raw_retry". Diagnostic only — it never blocks or modifies traffic and
-	// never affects any savings figure.
+	// CacheBustCause says who changed the bytes: "client", "caveman",
+	// "raw_retry", "stream_switch" or "lever_freeze". Diagnostic only — it never
+	// blocks or modifies traffic and never affects any savings figure.
 	CacheBust      bool
 	CacheBustCause string
 	// CompressionEligible marks that this request reached the compression path as a

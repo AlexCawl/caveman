@@ -19,8 +19,10 @@ import (
 //
 //   - client: the client's own bytes changed (an edit, a rewind, a compaction).
 //     Flagged on the row and logged at DEBUG; nearly every old warning was one.
-//   - caveman: the client's bytes are unchanged and the forwarded bytes are not.
-//     That is a caveman bug: logged at ERROR, counted by stats and status.
+//   - caveman: the client's bytes are unchanged and the forwarded bytes are not,
+//     or the forwarded request caches less than the client asked for (a
+//     dropped breakpoint). That is a caveman bug: logged at ERROR, counted by
+//     stats and status.
 //   - stream_switch: a PAYG request without MCP recovery streamed after its
 //     conversation was compressed. The server-side retrieve tool cannot ride a
 //     stream, so it goes out raw and the conversation stays raw from there
@@ -29,7 +31,7 @@ import (
 //     the request after it goes out with the original catalog: a deliberate,
 //     one-time rollover (see stripToolSchema), logged at WARN.
 //   - raw_retry: the provider rejected the transformed request and accepted the
-//     original bytes, the invariant's one exception. Requests extending it are
+//     original bytes, the invariant's first exception. Requests extending it are
 //     held to the raw request: the raw pin that records it (raw_pin.go) exempts
 //     the anchors it covers, whether or not the retry was observed here. A
 //     request that follows a longer replaced prefix than the pin covers is held
