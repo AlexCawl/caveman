@@ -355,7 +355,8 @@ How caveman reaches each agent type:
 | Windsurf | `npx skills add ... -a windsurf` (default via `--only windsurf`); per-repo `.windsurf/rules/caveman.md` via `--with-init` | Yes — always-on rule |
 | Cline | `npx skills add ... -a cline` (default via `--only cline`); per-repo `.clinerules/caveman.md` via `--with-init` | Yes — Cline auto-discovers `.clinerules/` |
 | Copilot | `npx skills add ... -a github-copilot` (detected via the `copilot` CLI or the VS Code/Cursor extension); per-repo `.github/copilot-instructions.md` + `AGENTS.md` via `--with-init` | Yes — repo-wide instructions |
-| Continue, AiderDesk, Antigravity IDE/2.0, Grok Build | Owned physical copies into each vendor's supported directory, honoring configured homes (`GROK_HOME`, default `~/.grok`, for Grok Build); separate explicit targets for the two Antigravity products | Host skill invocation; feature settings may be required |
+| Grok Build | Owned skill copies into `$GROK_HOME/skills` (default `~/.grok`) plus a marker-fenced ruleset block in `$GROK_HOME/AGENTS.md`, appended/stripped through `bin/lib/openclaw.js`'s marker helpers | Yes — Grok loads `~/.grok/AGENTS.md` as global rules (docs-backed; no live binary run) |
+| Continue, AiderDesk, Antigravity IDE/2.0 | Owned physical copies into each vendor's supported directory, honoring configured homes; separate explicit targets for the two Antigravity products | Host skill invocation; feature settings may be required |
 | Others (Junie, Trae, Warp, Tabnine, Mistral, Qwen, Devin, Droid, ForgeCode, Bob, Crush, iFlow, OpenHands, Qoder, Rovo Dev, Replit, …) | Delegated `npx skills` personal installs; Replit uses project scope. Configured iFlow/Crush roots use owned copies | Host skill invocation; `/caveman` where supported |
 
 opencode reaches Tier 1 minus the statusline (opencode's TUI has no plugin-writable badge). Mode flag lives at `~/.config/opencode/.caveman-active` for any external tooling that wants to surface it.

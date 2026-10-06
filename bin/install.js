@@ -707,6 +707,7 @@ function installViaSkills(ctx, prov) {
       });
       if (!opts.dryRun) note(`  copied ${installed.count} skills into ${installed.root}`);
       if (prov.id === 'aider-desk') note('  Enable Skills Tools for the AiderDesk agent profile to use these skills.');
+      if (prov.id === 'grok') installGrokAgentsBlock(ctx);
       results.installed.push(prov.id);
     } catch (error) {
       ctx.warn(`  ${prov.label} skill installation failed: ${error.message}`);
@@ -735,6 +736,31 @@ function installViaSkills(ctx, prov) {
   if (spawnOk(r)) results.installed.push(prov.id);
   else results.failed.push([prov.id, `npx skills add (${prov.profile}) failed`]);
   process.stdout.write('\n');
+}
+
+// ── Grok Build always-on (#754) ────────────────────────────────────────────
+// Grok Build loads global rules from $GROK_HOME/AGENTS.md (default ~/.grok).
+// A marker-fenced ruleset block there makes caveman always-on. The append/strip
+// helpers are OpenClaw's SOUL.md ones: generic marker fence, atomic,
+// symlink-refusing, tolerant of damaged markers.
+function grokAgentsMdPath() {
+  return path.join(path.dirname(PROVIDER_SKILLS.skillsRoot('grok')), 'AGENTS.md');
+}
+
+function installGrokAgentsBlock(ctx) {
+  const { note, opts, repoRoot } = ctx;
+  const target = grokAgentsMdPath();
+  if (!repoRoot) {
+    note(`  skipped always-on block in ${target}: needs the full caveman package (npx -y github:${REPO} -- --only grok)`);
+    return;
+  }
+  if (opts.dryRun) {
+    note(`  would add the caveman ruleset block to ${target}`);
+    return;
+  }
+  const rule = fs.readFileSync(path.join(repoRoot, 'src', 'rules', 'caveman-activate.md'), 'utf8').trimEnd();
+  const r = OPENCLAW.appendBootstrapToSoul(target, `${OPENCLAW.MARK_BEGIN}\n${rule}\n${OPENCLAW.MARK_END}\n`);
+  note(r.changed ? `  ${r.refreshed ? 'refreshed' : 'wrote'} caveman ruleset block in ${target}` : `  ${target} already has the current caveman ruleset`);
 }
 
 // ── hermes native install ──────────────────────────────────────────────────
@@ -1857,6 +1883,22 @@ function uninstall(ctx) {
     } catch (error) {
       cleanupFailed = true;
       warn(`  ${prov.label} ownership cleanup failed; left integration untouched: ${error.message}`);
+    }
+  }
+
+  // Grok Build always-on block. The marker fence is the ownership signal;
+  // user text around it stays.
+  const grokAgentsMd = grokAgentsMdPath();
+  if (fs.existsSync(grokAgentsMd)) {
+    try {
+      if (opts.dryRun) note(`  would strip caveman block from ${grokAgentsMd}`);
+      else {
+        const r = OPENCLAW.stripBootstrapFromSoul(grokAgentsMd);
+        if (r.changed) note(r.removed ? `  removed ${grokAgentsMd}` : `  stripped caveman block from ${grokAgentsMd}`);
+      }
+    } catch (error) {
+      cleanupFailed = true;
+      warn(`  could not strip caveman block from ${grokAgentsMd}: ${error.message}`);
     }
   }
 

@@ -68,7 +68,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Droid (Factory)** | `npx skills add JuliusBrussee/caveman -a droid -g` | No |
 | **ForgeCode** | `npx skills add JuliusBrussee/caveman -a forgecode -g` | No |
 | **Block Goose** | `npx skills add JuliusBrussee/caveman -a goose -g` | No |
-| **Grok Build** | `npx -y github:JuliusBrussee/caveman -- --only grok` | No |
+| **Grok Build** | `npx -y github:JuliusBrussee/caveman -- --only grok` | Yes (`~/.grok/AGENTS.md` block) |
 | **iFlow CLI** | `npx -y github:JuliusBrussee/caveman -- --only iflow` | No |
 | **Kiro CLI** | `npx skills add JuliusBrussee/caveman -a kiro-cli -g` | No |
 | **Mistral Vibe** | `npx skills add JuliusBrussee/caveman -a mistral-vibe -g` | No |
@@ -88,7 +88,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 
 For "auto-activates? No" agents, invoke the Caveman skill using the host's skill menu, `/caveman` where supported, or a prompt naming the skill. Enable skills first if your host requires it: Augment has a Skills beta setting; AiderDesk requires Skills Tools in the active agent profile; custom Kiro agents need skill resources.
 
-Continue needs physical skill directories because its current loader skips per-skill symlinks. The unified installer copies into `CONTINUE_GLOBAL_DIR/skills` (default `~/.continue/skills`) and follows AiderDesk's `AIDER_DESK_HOME_DIR` / `AIDER_DESK_DIR` overrides. It also honors `IFLOW_HOME`, Crush's exact `CRUSH_SKILLS_DIR`, and `GROK_HOME` (Grok Build reads `GROK_HOME/skills`, default `~/.grok/skills`). Use the same environment when uninstalling — for a relative override, that means the same working directory too, since the path resolves against `cwd`. Existing unowned skill directories or symlinks produce a conflict rather than being silently replaced. See the [vendor discovery matrix](docs/technical/installer-provider-discovery.md) for sources and product limits.
+Continue needs physical skill directories because its current loader skips per-skill symlinks. The unified installer copies into `CONTINUE_GLOBAL_DIR/skills` (default `~/.continue/skills`) and follows AiderDesk's `AIDER_DESK_HOME_DIR` / `AIDER_DESK_DIR` overrides. It also honors `IFLOW_HOME`, Crush's exact `CRUSH_SKILLS_DIR`, and `GROK_HOME` (Grok Build reads `GROK_HOME/skills`, default `~/.grok/skills`). For Grok Build it also adds a marker-fenced caveman ruleset block to `GROK_HOME/AGENTS.md`, the global rules file Grok loads every session; your own text in that file stays. Use the same environment when uninstalling — for a relative override, that means the same working directory too, since the path resolves against `cwd`. Existing unowned skill directories or symlinks produce a conflict rather than being silently replaced. See the [vendor discovery matrix](docs/technical/installer-provider-discovery.md) for sources and product limits.
 
 Antigravity IDE reads `~/.gemini/antigravity/skills`; Antigravity 2.0 reads `~/.gemini/config/skills`. Select the matching product. Each command copies only into that product's directory.
 
@@ -274,6 +274,7 @@ What it removes:
 - The opencode native plugin (`~/.config/opencode/plugins/caveman/`, the `plugin` and `mcp.caveman-shrink` entries from `opencode.json`, our skill/agent/command files, the caveman block from `AGENTS.md`, and the opencode flag file).
 - The Oh My Pi plugin (`omp plugin uninstall caveman`) and Caveman's managed OMP plugin package at `~/.omp/caveman-plugin/`.
 - The OpenClaw workspace skill folder and the marker-fenced block from `~/.openclaw/workspace/SOUL.md` (when present).
+- Owned native skill copies (Continue, AiderDesk, Antigravity, Grok Build, and iFlow/Crush with a custom home) and the marker-fenced block from `$GROK_HOME/AGENTS.md` (default `~/.grok/AGENTS.md`). Your own text in that file stays.
 - All mode state in `$CLAUDE_CONFIG_DIR`: the `.caveman-sessions/` directory (one file per window), `.caveman-active`, `.caveman-active.prev`, `.caveman-mode-log.jsonl`, `.caveman-statusline-suffix`, `.caveman-nudge-shown`, and `.caveman-statusline-stale`.
 
 What it does **not** remove:
