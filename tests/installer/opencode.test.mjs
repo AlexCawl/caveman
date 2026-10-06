@@ -16,9 +16,9 @@ import { createRequire } from 'node:module';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..');
-const INSTALLER = path.join(REPO_ROOT, 'bin', 'install.js');
+const INSTALLER = path.join(REPO_ROOT, 'installer', 'install.js');
 const requireCjs = createRequire(import.meta.url);
-const SETTINGS = requireCjs(path.join(REPO_ROOT, 'bin', 'lib', 'settings.js'));
+const SETTINGS = requireCjs(path.join(REPO_ROOT, 'installer', 'lib', 'settings.js'));
 const MODE_LOG_BASENAME = '.caveman-mode-log.jsonl';
 
 const IS_WIN = process.platform === 'win32';

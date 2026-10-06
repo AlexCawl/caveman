@@ -1,4 +1,4 @@
-// Unit tests for bin/lib/settings.js — the JSONC-tolerant settings helper.
+// Unit tests for installer/lib/settings.js — the JSONC-tolerant settings helper.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const SETTINGS = require('../../bin/lib/settings.js');
+const SETTINGS = require('../../installer/lib/settings.js');
 
 function tmpFile(name, contents) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-settings-'));

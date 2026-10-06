@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { nodeStub, stubEnv } from '../../packages/cli/tests/harness/stub-bin.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const INSTALLER = path.join(ROOT, 'bin/install.js');
+const INSTALLER = path.join(ROOT, 'installer/install.js');
 const profiles = [...fs.readFileSync(INSTALLER, 'utf8').matchAll(/id: '([^']+)'[^\n]+profile: '([^']+)'/g)]
   .map(([, id, profile]) => ({ id, profile }))
   .filter(({ id }) => !['continue', 'aider-desk', 'antigravity'].includes(id)); // Native copies: provider-skills-integration.test.mjs.

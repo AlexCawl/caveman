@@ -3,7 +3,7 @@
 // first sentence of its body.
 //
 // compile.mjs writes the result to src/rules/caveman-activate.md (IDE rules via
-// caveman-init.js, opencode AGENTS.md via bin/install.js) and into the
+// caveman-init.js, opencode AGENTS.md via installer/install.js) and into the
 // RULE_BODY fallback of src/tools/caveman-init.js. Edit the skill or the tail
 // below, never the copies; tests/installer/rule-copies.test.mjs fails on drift.
 

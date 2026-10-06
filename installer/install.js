@@ -7,7 +7,7 @@
 // that previously broke the JSON merge step (issue #249).
 //
 // Distribution:
-//   Local clone: node bin/install.js [flags]
+//   Local clone: node installer/install.js [flags]
 //   curl|bash:   delegated from install.sh shim → npx -y github:JuliusBrussee/caveman -- [flags]
 //   Windows:     pwsh install.ps1 [flags] → same npx delegation
 //
@@ -410,7 +410,7 @@ function safeStat(p, method) {
 
 // ── Repo root resolution ───────────────────────────────────────────────────
 function detectRepoRoot() {
-  // bin/install.js sits at <repo>/bin/install.js. Walk up one.
+  // installer/install.js sits at <repo>/installer/install.js. Walk up one.
   const here = path.dirname(__filename);
   const root = path.resolve(here, '..');
   if (fs.existsSync(path.join(root, 'src', 'hooks')) &&
@@ -900,7 +900,7 @@ function installGrokAgentsBlock(ctx) {
 
 
 // Cursor extras beyond the upstream skill profile: cavecrew subagents and a
-// user sessionStart hook (bin/lib/cursor-native.js). `--no-hooks` keeps the
+// user sessionStart hook (installer/lib/cursor-native.js). `--no-hooks` keeps the
 // agents only.
 function installCursorNative(ctx) {
   const { note, warn, opts, results, repoRoot } = ctx;
@@ -997,7 +997,7 @@ function installHermes(ctx) {
 
   if (!repoRoot) {
     warn('  Hermes native install requires a local clone of the caveman repo.');
-    note('  Re-run from a clone: git clone https://github.com/' + REPO + ' && cd caveman && node bin/install.js --only hermes');
+    note('  Re-run from a clone: git clone https://github.com/' + REPO + ' && cd caveman && node installer/install.js --only hermes');
     results.failed.push(['hermes', 'native install requires local repo clone']);
     process.stdout.write('\n');
     return;
@@ -1108,7 +1108,7 @@ const OPENCODE_COMMAND_FILES = ['caveman.md', 'ultracave.md', 'megacave.md', 'ca
 const OPENCODE_PLUGIN_REL = './plugins/caveman/plugin.js';
 const OPENCODE_AGENTS_MD_SENTINEL = 'Respond terse like smart caveman';
 // Marker fence for the opencode AGENTS.md ruleset block. Same convention as
-// bin/lib/openclaw.js for SOUL.md — lets us strip our block cleanly even when
+// installer/lib/openclaw.js for SOUL.md — lets us strip our block cleanly even when
 // the user has authored content above AND below it.
 const OPENCODE_AGENTS_MD_BEGIN = '<!-- caveman-begin -->';
 const OPENCODE_AGENTS_MD_END = '<!-- caveman-end -->';
@@ -1287,7 +1287,7 @@ function installOmp(ctx) {
 
   if (!repoRoot) {
     warn('  OMP native install requires a local clone of the caveman repo.');
-    note('  Re-run from a clone: git clone https://github.com/' + REPO + ' && cd caveman && node bin/install.js --only omp');
+    note('  Re-run from a clone: git clone https://github.com/' + REPO + ' && cd caveman && node installer/install.js --only omp');
     results.failed.push(['omp', 'native install requires local repo clone']);
     process.stdout.write('\n');
     return;
@@ -1350,7 +1350,7 @@ function installOpencode(ctx) {
 
   if (!repoRoot) {
     warn('  opencode native install requires a local clone of the caveman repo.');
-    note('  Re-run from a clone: git clone https://github.com/' + REPO + ' && cd caveman && node bin/install.js --only opencode');
+    note('  Re-run from a clone: git clone https://github.com/' + REPO + ' && cd caveman && node installer/install.js --only opencode');
     results.failed.push(['opencode', 'native install requires local repo clone']);
     process.stdout.write('\n');
     return;
@@ -1576,7 +1576,7 @@ function installOpencode(ctx) {
 // Drops skills/caveman/ into the OpenClaw workspace and appends a small
 // auto-injected bootstrap block to the workspace SOUL.md. Always-on behavior
 // comes from SOUL.md (auto-injected each turn); the skill folder makes
-// caveman discoverable via `openclaw skills list`. See bin/lib/openclaw.js
+// caveman discoverable via `openclaw skills list`. See installer/lib/openclaw.js
 // for the actual file writes.
 function installOpenclaw(ctx) {
   const { say, note, warn, opts, repoRoot, results } = ctx;
@@ -1645,7 +1645,7 @@ async function installHooks(ctx) {
       const checksums = await loadRemoteHookChecksums();
       if (!checksums) {
         return `no hook integrity manifest at ${PINNED_REF} (${HOOKS_REMOTE}/checksums.sha256) — ` +
-               'refusing to install unverified hooks; nothing changed. Retry, or install from a clone: node bin/install.js';
+               'refusing to install unverified hooks; nothing changed. Retry, or install from a clone: node installer/install.js';
       }
       for (const item of remote) {
         item.src = path.join(scratch, item.f);
@@ -1827,13 +1827,13 @@ async function runInit(ctx) {
     const r = runSpawn(process.execPath, [local, ...args], null, opts.dryRun);
     return spawnOk(r);
   }
-  // No remote fallback (#627). A lone bin/install.js used to download
+  // No remote fallback (#627). A lone installer/install.js used to download
   // caveman-init.js and EXECUTE it with no integrity check. Every supported
   // install (a clone, or npx github:...) ships src/tools/caveman-init.js, and
   // pinning it in the hooks manifest would go stale on every SKILL.md change
   // (skills/compile.mjs rewrites its RULE_BODY).
   warn('  per-repo init needs the full caveman package — run: npx -y github:' + REPO + ' -- --with-init');
-  warn('  (or node bin/install.js --with-init from a clone)');
+  warn('  (or node installer/install.js --with-init from a clone)');
   return false;
 }
 
@@ -2364,7 +2364,7 @@ function printHelp() {
 
 USAGE
   npx -y github:JuliusBrussee/caveman -- [flags]
-  node bin/install.js [flags]
+  node installer/install.js [flags]
   bash install.sh [flags]              # shim → npx
   pwsh install.ps1 [flags]             # shim → npx
 

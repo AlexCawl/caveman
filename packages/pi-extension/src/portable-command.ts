@@ -11,7 +11,7 @@
 // directly — no shell, so no quoting surface for user-controlled paths (#834).
 //
 // This is a deliberate third copy of the helper that already lives in
-// bin/lib/portable-process.js and packages/cli/src/portable-command.ts. This
+// installer/lib/portable-process.js and packages/cli/src/portable-command.ts. This
 // package publishes with zero runtime dependencies and is esbuild-bundled, so
 // importing across packages would mean taking on a dependency purely for ~50
 // lines. Keep the three in sync.

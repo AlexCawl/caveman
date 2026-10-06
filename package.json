@@ -13,7 +13,7 @@
     "url": "https://github.com/JuliusBrussee/caveman/issues"
   },
   "bin": {
-    "caveman-install": "./bin/install.js"
+    "caveman-install": "./installer/install.js"
   },
   "engines": {
     "node": ">=18"
@@ -24,7 +24,7 @@
   },
   "files": [
     ".cursor-plugin/",
-    "bin/",
+    "installer/",
     ".codex/codex-sessionstart.js",
     "hooks/",
     "src/",

@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const portable = require(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "lib", "portable-process.js"));
+const portable = require(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "installer", "lib", "portable-process.js"));
 
 test("absolute Windows commands use PATHEXT and skip Unix shims and directories", (t) => {
   const root = mkdtempSync(join(tmpdir(), "caveman explicit win "));

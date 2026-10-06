@@ -82,7 +82,7 @@ directory below is source or documentation evidence; it is not a full host run.
 Claude uses its plugin manager, Gemini its extension manager, opencode owned
 plugin/rules files, OpenClaw workspace skills plus a marker-fenced SOUL.md block,
 and Hermes its native skill directory. Their implementations remain in
-`bin/install.js` and the corresponding `bin/lib` helpers; temporary-home install,
+`installer/install.js` and the corresponding `installer/lib` helpers; temporary-home install,
 ownership, restart and hook tests cover these paths. See [INSTALL.md](../../INSTALL.md)
 for activation and override instructions. These skill installation paths do not
 establish proxy compression compatibility; [provider audit](provider-compatibility-audit.md)

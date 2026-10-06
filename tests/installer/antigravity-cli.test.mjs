@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { nodeStub, stubEnv } from '../../packages/cli/tests/harness/stub-bin.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const INSTALLER = path.join(ROOT, 'bin/install.js');
+const INSTALLER = path.join(ROOT, 'installer/install.js');
 const SKILLS = ['caveman', 'ultracave', 'megacave', 'caveman-commit', 'caveman-review', 'caveman-help', 'caveman-stats', 'caveman-compress', 'cavecrew'];
 
 function fixture(t) {

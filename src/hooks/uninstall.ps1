@@ -11,7 +11,7 @@ $HooksDir = Join-Path $ClaudeDir "hooks"
 $Settings = Join-Path $ClaudeDir "settings.json"
 $SettingsHelper = ""
 if ($PSScriptRoot) {
-    $candidate = Join-Path $PSScriptRoot "../../bin/lib/settings.js"
+    $candidate = Join-Path $PSScriptRoot "../../installer/lib/settings.js"
     if (Test-Path -LiteralPath $candidate) { $SettingsHelper = $candidate }
 }
 $env:CAVEMAN_SETTINGS_HELPER = $SettingsHelper
@@ -73,7 +73,7 @@ const path = require('path');
 const settingsPath = process.env.CAVEMAN_SETTINGS;
 // A settings.json with // comments is valid for Claude Code but not for
 // JSON.parse. Bail out before touching anything rather than half-uninstalling:
-// bin/install.js --uninstall handles JSONC properly.
+// installer/install.js --uninstall handles JSONC properly.
 let settings;
 const shared = process.env.CAVEMAN_SETTINGS_HELPER ? require(process.env.CAVEMAN_SETTINGS_HELPER) : null;
 try {
@@ -89,7 +89,7 @@ try {
 // Own ONLY handlers whose command targets one of our exact script basenames.
 // A bare 'caveman' substring also matches user-authored hooks that merely
 // mention the word in a path (#593). Mirrors referencesManagedScript() in
-// bin/lib/settings.js — keep the two in sync.
+// installer/lib/settings.js — keep the two in sync.
 const MANAGED = new Set([
   'caveman-activate.js', 'caveman-mode-tracker.js', 'caveman-stats.js',
   'caveman-statusline.sh', 'caveman-statusline.ps1',
@@ -221,7 +221,7 @@ if ($RemovedFiles -eq 0) {
 #
 # .caveman-history.jsonl is deliberately NOT removed: it is the user's
 # accumulated lifetime savings record, not caveman plumbing. Keep this list in
-# sync with the uninstall block in bin/install.js.
+# sync with the uninstall block in installer/install.js.
 foreach ($state in @(".caveman-active", ".caveman-active.prev", ".caveman-mode-log.jsonl", ".caveman-statusline-suffix", ".caveman-nudge-shown", ".caveman-statusline-stale")) {
     $StatePath = Join-Path $ClaudeDir $state
     if (Test-Path $StatePath) {

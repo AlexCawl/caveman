@@ -33,7 +33,7 @@ $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { $null }
 # refuse unreadable settings before copying hooks or replacing existing files.
 $SettingsHelper = ""
 if ($ScriptDir) {
-    $candidate = Join-Path $ScriptDir "../../bin/lib/settings.js"
+    $candidate = Join-Path $ScriptDir "../../installer/lib/settings.js"
     if (Test-Path -LiteralPath $candidate) { $SettingsHelper = $candidate }
 }
 $env:CAVEMAN_SETTINGS = $Settings
@@ -57,7 +57,7 @@ try {
   }
 } catch (error) {
   console.error('Cannot install standalone hooks: ' + error.message);
-  console.error('Nothing was changed. For JSONC settings, use bin/install.js from a clone.');
+  console.error('Nothing was changed. For JSONC settings, use installer/install.js from a clone.');
   process.exit(1);
 }
 '@ | node --input-type=commonjs
@@ -156,7 +156,7 @@ if (-not (Test-Path $Settings)) {
 # Back up existing settings.json before touching it. Back up ONCE: without the
 # Test-Path guard a -Force reinstall overwrites the only pre-caveman copy with
 # the already-merged file, destroying the user's recovery path. Same guard as
-# bin/install.js.
+# installer/install.js.
 if (-not (Test-Path "$Settings.bak")) {
     Copy-Item $Settings "$Settings.bak"
 }
