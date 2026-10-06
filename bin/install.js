@@ -254,7 +254,9 @@ const PROVIDERS = [
   // profile's ~/.copilot/skills) or the VS Code / Cursor extension dirs (no
   // `gh` CLI needed). The extension probes came first because Copilot used to
   // ship only as an editor extension (#336); the CLI probe is back for #1189.
-  { id: 'copilot',    label: 'GitHub Copilot',      mech: 'npx skills add (github-copilot)', detect: 'command:copilot||vscode-ext:github.copilot||vscode-ext:github.copilot-chat||cursor-ext:github.copilot', profile: 'github-copilot' },
+  // AWS Copilot CLI also installs `copilot`, so the binary needs GitHub's
+  // ~/.copilot config dir beside it (made on first launch; before that, --only).
+  { id: 'copilot',    label: 'GitHub Copilot',      mech: 'npx skills add (github-copilot)', detect: 'command:copilot&&dir:$HOME/.copilot||vscode-ext:github.copilot||vscode-ext:github.copilot-chat||cursor-ext:github.copilot', profile: 'github-copilot' },
 
   // CLI agents — require the binary. The `||dir:~/.foo` fallbacks were the
   // main source of false positives (warp, kiro, junie etc. leave config dirs
@@ -371,26 +373,28 @@ function macAppPresent(name) {
   return candidates.some(p => fs.existsSync(p));
 }
 
+// `||` separates alternatives; `&&` joins terms that must all hold.
 function detectMatch(spec) {
   if (!spec) return false;
-  for (const clause of spec.split('||')) {
-    const c = clause.trim();
-    if (!c) continue;
-    const colon = c.indexOf(':');
-    const kind = colon === -1 ? c : c.slice(0, colon);
-    const val  = colon === -1 ? '' : expandHome(c.slice(colon + 1));
-    let ok = false;
-    switch (kind) {
-      case 'command':           ok = hasCmd(val); break;
-      case 'dir':               ok = safeStat(val, 'isDirectory'); break;
-      case 'file':              ok = safeStat(val, 'isFile'); break;
-      case 'macapp':            ok = macAppPresent(val); break;
-      case 'vscode-ext':        ok = vscodeExtPresent(val); break;
-      case 'cursor-ext':        ok = cursorExtPresent(val); break;
-      case 'jetbrains-config':  ok = jetbrainsPresent(); break;
-      case 'jetbrains-plugin':  ok = jetbrainsPluginPresent(val); break;
-    }
-    if (ok) return true;
+  return spec.split('||').some((clause) => {
+    const terms = clause.split('&&').map((t) => t.trim()).filter(Boolean);
+    return terms.length > 0 && terms.every(detectTerm);
+  });
+}
+
+function detectTerm(c) {
+  const colon = c.indexOf(':');
+  const kind = colon === -1 ? c : c.slice(0, colon);
+  const val  = colon === -1 ? '' : expandHome(c.slice(colon + 1));
+  switch (kind) {
+    case 'command':           return hasCmd(val);
+    case 'dir':               return safeStat(val, 'isDirectory');
+    case 'file':              return safeStat(val, 'isFile');
+    case 'macapp':            return macAppPresent(val);
+    case 'vscode-ext':        return vscodeExtPresent(val);
+    case 'cursor-ext':        return cursorExtPresent(val);
+    case 'jetbrains-config':  return jetbrainsPresent();
+    case 'jetbrains-plugin':  return jetbrainsPluginPresent(val);
   }
   return false;
 }

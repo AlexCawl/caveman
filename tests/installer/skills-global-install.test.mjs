@@ -92,6 +92,8 @@ test('current Kiro and Mistral executables trigger their own install profiles', 
 
 // #1189: the standalone GitHub Copilot CLI ships a `copilot` binary and reads
 // the github-copilot profile's global skills. Extension-only probes missed it.
+// AWS Copilot CLI ships a `copilot` binary too, so the binary counts only
+// beside GitHub Copilot CLI's ~/.copilot config dir.
 test('standalone Copilot CLI executable triggers the github-copilot profile', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'caveman copilot cli '));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -101,9 +103,14 @@ test('standalone Copilot CLI executable triggers the github-copilot profile', (t
   fs.writeFileSync(preload, `const fs = require('fs'); const exists = fs.existsSync; fs.existsSync = p => String(p).startsWith('/Applications/') ? false : exists(p);`);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
   Object.assign(env, { PATH: process.platform === 'win32' ? bin : `${bin}:/usr/bin:/bin`, HOME: dir, USERPROFILE: dir, APPDATA: dir, LOCALAPPDATA: dir, XDG_CONFIG_HOME: dir });
-  const result = spawnSync(process.execPath, ['--require', preload, INSTALLER, '--minimal', '--dry-run', '--non-interactive'], {
+  const run = () => spawnSync(process.execPath, ['--require', preload, INSTALLER, '--minimal', '--dry-run', '--non-interactive'], {
     encoding: 'utf8', cwd: dir, env,
   });
+  const awsOnly = run();
+  assert.equal(awsOnly.status, 0, awsOnly.stdout + awsOnly.stderr);
+  assert.doesNotMatch(awsOnly.stdout, /GitHub Copilot detected/);
+  fs.mkdirSync(path.join(dir, '.copilot'));
+  const result = run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /GitHub Copilot detected/);
   assert.match(result.stdout, /-a github-copilot --yes -g/);

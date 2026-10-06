@@ -354,7 +354,7 @@ How caveman reaches each agent type:
 | Cursor | `npx skills add ... -a cursor` (default via `--only cursor`) writes the upstream skill profile; per-repo `.cursor/rules/caveman.mdc` via `--with-init` (calls `src/tools/caveman-init.js`) | Yes — always-on rule |
 | Windsurf | `npx skills add ... -a windsurf` (default via `--only windsurf`); per-repo `.windsurf/rules/caveman.md` via `--with-init` | Yes — always-on rule |
 | Cline | `npx skills add ... -a cline` (default via `--only cline`); per-repo `.clinerules/caveman.md` via `--with-init` | Yes — Cline auto-discovers `.clinerules/` |
-| Copilot | `npx skills add ... -a github-copilot` (detected via the `copilot` CLI or the VS Code/Cursor extension); per-repo `.github/copilot-instructions.md` + `AGENTS.md` via `--with-init` | Yes — repo-wide instructions |
+| Copilot | `npx skills add ... -a github-copilot` (detected via the `copilot` CLI plus its `~/.copilot` dir, since AWS Copilot CLI ships a `copilot` binary too, or the VS Code/Cursor extension); per-repo `.github/copilot-instructions.md` + `AGENTS.md` via `--with-init` | Yes — repo-wide instructions |
 | Grok Build | Owned skill copies into `$GROK_HOME/skills` (default `~/.grok`) plus a marker-fenced ruleset block in `$GROK_HOME/AGENTS.md`, appended/stripped through `bin/lib/openclaw.js`'s marker helpers | Yes — Grok loads `~/.grok/AGENTS.md` as global rules (docs-backed; no live binary run) |
 | Continue, AiderDesk, Antigravity IDE/2.0 | Owned physical copies into each vendor's supported directory, honoring configured homes; separate explicit targets for the two Antigravity products | Host skill invocation; feature settings may be required |
 | Others (Junie, Trae, Warp, Tabnine, Mistral, Qwen, Devin, Droid, ForgeCode, Bob, Crush, iFlow, OpenHands, Qoder, Rovo Dev, Replit, …) | Delegated `npx skills` personal installs; Replit uses project scope. Configured iFlow/Crush roots use owned copies | Host skill invocation; `/caveman` where supported |
@@ -363,7 +363,7 @@ opencode reaches Tier 1 minus the statusline (opencode's TUI has no plugin-writa
 
 For agents without hook systems, the always-on snippet lives in `INSTALL.md`'s "Want it always on?" section — keep current with `src/rules/caveman-activate.md`.
 
-**Adding a new agent.** Edit the `PROVIDERS` array in `bin/install.js` — single source of truth, no more bash/PS1 dual-source drift. Each entry has `id`, `label`, `mech`, `detect` (clause spec like `command:foo||dir:$HOME/x`), optional `profile` (vercel-labs/skills slug), optional `soft: true` (config-dir-only detection).
+**Adding a new agent.** Edit the `PROVIDERS` array in `bin/install.js` — single source of truth, no more bash/PS1 dual-source drift. Each entry has `id`, `label`, `mech`, `detect` (clause spec like `command:foo||dir:$HOME/x`; `&&` joins terms that must all hold), optional `profile` (vercel-labs/skills slug), optional `soft: true` (config-dir-only detection).
 
 1. The profile slug must exist in upstream [vercel-labs/skills](https://github.com/vercel-labs/skills). Verify against the README before merging — wrong slugs cause `npx skills add` to fail at runtime, not at install-script load.
 2. Run `node bin/install.js --list` to confirm the new row renders correctly.
