@@ -542,6 +542,25 @@ func TestCachePrefixInvariant(t *testing.T) {
 			h.cache.mu.Unlock()
 			h.send(main.user(filler("l4")), sendOpts{})
 		}},
+		{"another conversation's double fault leaves a stored row alone", func(t *testing.T, h *invariantHarness) {
+			shared := filler("a file both conversations read")
+			a := newCCConversation("You are Claude Code.", "sess-a")
+			h.send(a.toolResult(shared), sendOpts{}) // compressed and stored
+			h.send(a.user(filler("a two")), sendOpts{})
+			// C first sees the file below its cache floor while the store can
+			// neither read nor write: C sends it raw and cannot record that.
+			c := newCCConversation("You are another conversation.", "sess-c")
+			c.toolResult(shared)
+			c.user(filler("c two"))
+			h.cache.mu.Lock()
+			h.cache.failLookups, h.cache.failWrites = true, true
+			h.cache.mu.Unlock()
+			h.send(c, sendOpts{})
+			h.cache.mu.Lock()
+			h.cache.failLookups, h.cache.failWrites = false, false
+			h.cache.mu.Unlock()
+			h.send(a.user(filler("a three")), sendOpts{}) // A never saw the outage
+		}},
 		{"recovery store failure on one turn", func(t *testing.T, h *invariantHarness) {
 			main := newCCConversation("You are Claude Code.", session)
 			h.send(main.user(filler("s1")), sendOpts{})

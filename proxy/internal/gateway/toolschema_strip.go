@@ -101,26 +101,29 @@ func (s *Server) stripToolSchema(body []byte, meta providers.RequestMetadata, re
 		return nil, "", false
 	}
 	scope := "toolschema" + s.toolSchemaCacheScope()
-	if s.unpersistedRaw.has(scope, raw) {
-		return nil, "", false
-	}
 	stripped, handle, hit := s.prefixCache.LookupReplacement(scope, raw)
 	if hit && handle == RawDecisionHandle {
 		return nil, "", false
 	}
 	if !hit {
-		var ok bool
-		if stripped, ok = stripper.StripToolSchema(raw); !ok || len(stripped) >= len(raw) {
-			return nil, "", false // removes nothing, on every turn
-		}
-		var err error
-		handle, err = s.compressor.StoreOriginal(raw)
-		if err != nil || handle == "" {
-			if s.logger != nil {
-				s.logger.Warn("tool-schema recovery store failed; keeping the original catalog",
-					"error", redact.Error(err), "request_id", requestID)
-			}
+		if s.unpersistedRaw.has(scope, raw) {
+			// Sent original while the store could not record it; a stored row
+			// outranks that, so record it now and follow what comes back.
 			stripped, handle = nil, RawDecisionHandle
+		} else {
+			var ok bool
+			if stripped, ok = stripper.StripToolSchema(raw); !ok || len(stripped) >= len(raw) {
+				return nil, "", false // removes nothing, on every turn
+			}
+			var err error
+			handle, err = s.compressor.StoreOriginal(raw)
+			if err != nil || handle == "" {
+				if s.logger != nil {
+					s.logger.Warn("tool-schema recovery store failed; keeping the original catalog",
+						"error", redact.Error(err), "request_id", requestID)
+				}
+				stripped, handle = nil, RawDecisionHandle
+			}
 		}
 		stored, err := s.prefixCache.RememberReplacement(scope, raw, stripped, handle)
 		if err != nil {

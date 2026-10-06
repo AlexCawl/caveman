@@ -133,9 +133,6 @@ func (d pixelDecider) add(reps *[]pixelReplacement, body []byte, text, replace g
 	// model switch starts a new provider cache anyway.
 	scope := family.scope + d.opts.Model
 	original := body[text.start:text.end]
-	if d.s.unpersistedRaw.has(scope, original) {
-		return
-	}
 	if stored, handle, hit := cache.LookupReplacement(scope, original); hit {
 		if handle != RawDecisionHandle {
 			*reps = append(*reps, pixelReplacement{span: replace, raw: wrap(stored)})
@@ -143,7 +140,9 @@ func (d pixelDecider) add(reps *[]pixelReplacement, body []byte, text, replace g
 		return
 	}
 	rep, ok := pixelReplacement{}, false
-	if live {
+	// Text while the store could not record it; a stored row outranks that
+	// (see rewriteRequest), so it is recorded below like any text decision.
+	if live && !d.s.unpersistedRaw.has(scope, original) {
 		rep, ok = render()
 	}
 	parts, handle := rep.raw, pixelHandle

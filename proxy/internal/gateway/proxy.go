@@ -1151,9 +1151,6 @@ func (s *Server) rewriteRequest(
 			route := lockedRoutes[routeByBlock[i]]
 			cacheScope = "locked:" + route.SegmentKind + ":" + route.SegmentID + ":" + route.TransformID + s.toolSchemaCacheScope()
 		}
-		if s.unpersistedRaw.has(cacheScope, block.content) {
-			continue // went out raw while the store could not record it
-		}
 		if s.prefixCache != nil {
 			if stored, handle, hit := s.prefixCache.LookupReplacement(cacheScope, block.content); hit {
 				// The first decision wins: replaced bytes are re-sent exactly, and a
@@ -1163,6 +1160,13 @@ func (s *Server) rewriteRequest(
 				}
 				continue
 			}
+		}
+		// Raw while the store could not record it. A stored row outranks this:
+		// the raw send may have been this process's own fault (a failed lookup)
+		// on bytes other conversations hold replaced. Record it now if we can.
+		if s.unpersistedRaw.has(cacheScope, block.content) {
+			keepRaw(i, cacheScope)
+			continue
 		}
 		// Undecided. A frozen block nobody sent replaced (a --resume history built
 		// without the proxy, an evicted entry) and a live block this request may not
@@ -1324,8 +1328,9 @@ func joinRecoveryHandles(handles []string) string {
 
 // rawMemory holds raw decisions the PrefixCache failed to write, so this
 // process keeps sending those blocks raw even if they come back live (a client
-// re-sending an accepted turn) after the store recovers.
-// ponytail: in-process only; a restart while the store is failing forgets them.
+// re-sending an accepted turn) after the store recovers. It is consulted only
+// on a store miss, and the decision is written through once the store takes it.
+// ponytail: in-process only; a restart before that write forgets them.
 type rawMemory struct {
 	mu    sync.Mutex
 	keys  map[[32]byte]struct{}
