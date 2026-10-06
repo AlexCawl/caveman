@@ -28,6 +28,9 @@ Run: uv run python evals/llm_run.py
 
 Environment:
   CAVEMAN_EVAL_MODEL   optional --model flag value passed through to claude
+  CAVEMAN_EVAL_LANG    prompt language: picks prompts/<lang>.txt and the
+                       terse prefix for that language (default: en). Any
+                       language other than en writes snapshots/results.<lang>.json
   CAVEMAN_EVAL_SKILLS  optional comma-separated skill ids (e.g.
                        caveman,ultracave,megacave) restricting the skill arms;
                        default runs every skills/*/SKILL.md. Unknown ids abort.
@@ -57,10 +60,20 @@ for _stream in (sys.stdout, sys.stderr):
 
 EVALS = Path(__file__).parent
 SKILLS = EVALS.parent / "skills"
-PROMPTS = EVALS / "prompts" / "en.txt"
-SNAPSHOT = EVALS / "snapshots" / "results.json"
 
-TERSE_PREFIX = "Answer concisely."
+# One terse control per language. The control must be in the prompt's
+# language: an English "Answer concisely." on a Portuguese question also
+# nudges the model toward English, which is a second variable.
+TERSE_PREFIXES = {
+    "en": "Answer concisely.",
+    "pt": "Responda de forma concisa.",
+}
+
+LANG = os.environ.get("CAVEMAN_EVAL_LANG", "en")
+PROMPTS = EVALS / "prompts" / f"{LANG}.txt"
+SNAPSHOT = EVALS / "snapshots" / (
+    "results.json" if LANG == "en" else f"results.{LANG}.json"
+)
 
 
 def claude_bin() -> str:
@@ -70,11 +83,17 @@ def claude_bin() -> str:
     return shutil.which("claude") or "claude"
 
 
-def run_claude(prompt: str, cwd: str, system: str | None = None) -> str:
+def run_claude(prompt: str, cwd: str, system_file: Path | None = None) -> str:
     cmd = [claude_bin(), "-p", "--setting-sources", "project",
-           "--strict-mcp-config", "--disable-slash-commands"]
-    if system:
-        cmd += ["--system-prompt", system]
+           "--strict-mcp-config", "--disable-slash-commands",
+           "--no-session-persistence"]
+    # The skill arm's system prompt is a multi-line SKILL.md with quotes,
+    # backticks and `&`. On Windows the CLI is claude.CMD, which cmd.exe
+    # re-parses, and that mangles such an argument into an empty prompt
+    # ("Input must be provided either through stdin or as a prompt
+    # argument"). A file sidesteps every shell.
+    if system_file is not None:
+        cmd += ["--system-prompt-file", str(system_file)]
     if model := os.environ.get("CAVEMAN_EVAL_MODEL"):
         cmd += ["--model", model]
     cmd.append(prompt)
@@ -97,6 +116,14 @@ def claude_version() -> str:
 
 
 def main() -> None:
+    # Checked here, not at import, so tests can import the module.
+    if LANG not in TERSE_PREFIXES:
+        raise SystemExit(
+            f"CAVEMAN_EVAL_LANG={LANG}: no terse control in TERSE_PREFIXES; "
+            f"add one next to prompts/{LANG}.txt"
+        )
+    terse_prefix = TERSE_PREFIXES[LANG]
+
     prompts = [p.strip() for p in PROMPTS.read_text(encoding="utf-8").splitlines() if p.strip()]
     skills = sorted(p.name for p in SKILLS.iterdir() if (p / "SKILL.md").exists())
     if only := os.environ.get("CAVEMAN_EVAL_SKILLS"):
@@ -116,27 +143,33 @@ def main() -> None:
             "claude_cli_version": claude_version(),
             "model": os.environ.get("CAVEMAN_EVAL_MODEL", "default"),
             "n_prompts": len(prompts),
-            "terse_prefix": TERSE_PREFIX,
+            "lang": LANG,
+            "terse_prefix": terse_prefix,
         },
         "prompts": prompts,
         "arms": {},
     }
 
-    with tempfile.TemporaryDirectory(prefix="caveman-eval-") as cwd:
+    # System prompts get their own temp dir so the cwd stays empty.
+    with tempfile.TemporaryDirectory(prefix="caveman-eval-") as cwd, \
+            tempfile.TemporaryDirectory(prefix="caveman-eval-sys-") as sysdir:
         print("baseline (no system prompt)", flush=True)
         snapshot["arms"]["__baseline__"] = [run_claude(p, cwd) for p in prompts]
 
         print("terse (control: terse instruction only, no skill)", flush=True)
+        terse_file = Path(sysdir) / "terse.md"
+        terse_file.write_text(terse_prefix, encoding="utf-8")
         snapshot["arms"]["__terse__"] = [
-            run_claude(p, cwd, system=TERSE_PREFIX) for p in prompts
+            run_claude(p, cwd, terse_file) for p in prompts
         ]
 
         for skill in skills:
             skill_md = (SKILLS / skill / "SKILL.md").read_text(encoding="utf-8")
-            system = f"{TERSE_PREFIX}\n\n{skill_md}"
+            skill_file = Path(sysdir) / f"{skill}.md"
+            skill_file.write_text(f"{terse_prefix}\n\n{skill_md}", encoding="utf-8")
             print(f"  {skill}", flush=True)
             snapshot["arms"][skill] = [
-                run_claude(p, cwd, system=system) for p in prompts
+                run_claude(p, cwd, skill_file) for p in prompts
             ]
 
     SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
