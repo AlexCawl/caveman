@@ -27,6 +27,8 @@ const OPENCLAW = require('./lib/openclaw');
 const OWNED = require('./lib/owned-install');
 const PROVIDER_SKILLS = require('./lib/provider-skills');
 const { transformOpencodeAgentFrontmatter } = require('./lib/opencode-agent');
+const CURSOR_NATIVE = require('./lib/cursor-native');
+const HOST_HOOKS = require('./lib/host-hooks');
 const PORTABLE = require('./lib/portable-process');
 const PLATFORM_PATHS = require('./lib/platform-paths');
 const { parseCommandArgs } = require('./lib/command-args');
@@ -255,14 +257,16 @@ const PROVIDERS = [
   // `gh` CLI needed). The extension probes came first because Copilot used to
   // ship only as an editor extension (#336); the CLI probe is back for #1189.
   // AWS Copilot CLI also installs `copilot`, so the binary needs GitHub's
-  // ~/.copilot config dir beside it (made on first launch; before that, --only).
-  { id: 'copilot',    label: 'GitHub Copilot',      mech: 'npx skills add (github-copilot)', detect: 'command:copilot&&dir:$HOME/.copilot||vscode-ext:github.copilot||vscode-ext:github.copilot-chat||cursor-ext:github.copilot', profile: 'github-copilot' },
+  // ~/.copilot config dir (made on first launch) or COPILOT_HOME beside it;
+  // before either exists, use --only.
+  { id: 'copilot',    label: 'GitHub Copilot',      mech: 'npx skills add (github-copilot)', detect: 'command:copilot&&dir:$HOME/.copilot||command:copilot&&env:COPILOT_HOME||vscode-ext:github.copilot||vscode-ext:github.copilot-chat||cursor-ext:github.copilot', profile: 'github-copilot' },
 
   // CLI agents — require the binary. The `||dir:~/.foo` fallbacks were the
   // main source of false positives (warp, kiro, junie etc. leave config dirs
   // behind on uninstall).
   { id: 'hermes',     label: 'Hermes Agent',        mech: 'native hermes skills copy',     detect: 'command:hermes' },
   { id: 'aider-desk', label: 'Aider Desk',          mech: 'native skills copy',   detect: 'command:aider-desk||macapp:aider-desk', profile: 'aider-desk' },
+  { id: 'antigravity-cli', label: 'Antigravity CLI', mech: 'agy plugin install',           detect: 'command:agy' },
   { id: 'amp',        label: 'Sourcegraph Amp',     mech: 'npx skills add (amp)',          detect: 'command:amp',             profile: 'amp' },
   { id: 'bob',        label: 'IBM Bob',             mech: 'npx skills add (bob)',          detect: 'command:bob', profile: 'bob' },
   { id: 'codebuddy',  label: 'CodeBuddy Code',      mech: 'npx skills add (codebuddy)',    detect: 'command:codebuddy', profile: 'codebuddy' },
@@ -389,6 +393,7 @@ function detectTerm(c) {
   switch (kind) {
     case 'command':           return hasCmd(val);
     case 'dir':               return safeStat(val, 'isDirectory');
+    case 'env':               return !!process.env[val];
     case 'file':              return safeStat(val, 'isFile');
     case 'macapp':            return macAppPresent(val);
     case 'vscode-ext':        return vscodeExtPresent(val);
@@ -440,7 +445,9 @@ function spawnXplat(cmd, args, opts) {
 function runSpawn(cmd, args, opts, dry) {
   if (dry) { process.stdout.write(`  would run: ${cmd} ${args.join(' ')}\n`); return { status: 0 }; }
   process.stdout.write(`  $ ${cmd} ${args.join(' ')}\n`);
-  return spawnXplat(cmd, args, Object.assign({ stdio: 'inherit' }, opts || {}));
+  const result = spawnXplat(cmd, args, Object.assign({ stdio: 'inherit' }, opts || {}));
+  if (result && result.error) process.stderr.write(`  ${result.error.message}\n`);
+  return result;
 }
 
 // Create env with TMPDIR pointing to a temp dir inside configDir.
@@ -741,6 +748,8 @@ function installViaSkills(ctx, prov) {
   if (spawnOk(r)) {
     results.installed.push(prov.id);
     if (prov.id === 'codex' && opts.withHooks !== false) installCodexHook(ctx);
+    if (prov.id === 'cursor') installCursorNative(ctx);
+    if (prov.id === 'copilot') installCopilotCliHook(ctx);
   } else results.failed.push([prov.id, `npx skills add (${prov.profile}) failed`]);
   process.stdout.write('\n');
 }
@@ -889,6 +898,82 @@ function installGrokAgentsBlock(ctx) {
   }
 }
 
+
+// Cursor extras beyond the upstream skill profile: cavecrew subagents and a
+// user sessionStart hook (bin/lib/cursor-native.js). `--no-hooks` keeps the
+// agents only.
+function installCursorNative(ctx) {
+  const { note, warn, opts, results, repoRoot } = ctx;
+  if (!repoRoot) {
+    note('  Cursor agents and hook need the caveman package files; skipped.');
+    return;
+  }
+  try {
+    CURSOR_NATIVE.installCursorNative({
+      repoRoot,
+      node: absoluteNodePath(),
+      withHooks: opts.withHooks !== false,
+      force: opts.force,
+      dryRun: opts.dryRun,
+      note,
+    });
+  } catch (error) {
+    warn(`  Cursor agents/hook were not installed: ${error.message}`);
+    results.failed.push(['cursor (agents + hook)', error.message]);
+  }
+}
+
+// GitHub Copilot CLI always-on. User hooks load from $COPILOT_HOME/hooks/*.json
+// (default ~/.copilot/hooks/) and sessionStart consumes a top-level
+// additionalContext. Both files are owned whole, so nothing is merged.
+// https://docs.github.com/en/copilot/reference/hooks-configuration
+const COPILOT_HOOK_FILE = 'hooks/caveman.json';
+
+function copilotHome() {
+  return process.env.COPILOT_HOME || path.join(os.homedir(), '.copilot');
+}
+
+function installCopilotCliHook(ctx) {
+  const { note, warn, opts, results, repoRoot } = ctx;
+  const root = copilotHome();
+  // No bare ~/.copilot probe: `npx skills add -a github-copilot -g` has just
+  // created ~/.copilot/skills, and VS Code uses that folder too.
+  if (opts.withHooks === false || !(hasCmd('copilot') || process.env.COPILOT_HOME)) return;
+  if (!repoRoot) {
+    note('  Copilot CLI hook needs the caveman package files; skipped.');
+    return;
+  }
+  const node = absoluteNodePath();
+  const hook = {
+    version: 1,
+    hooks: {
+      sessionStart: [{
+        type: 'command',
+        bash: HOST_HOOKS.hookCommand(root, 'copilot', node, 'posix'),
+        powershell: HOST_HOOKS.hookCommand(root, 'copilot', node, 'win32'),
+        timeoutSec: 10,
+      }],
+    },
+  };
+  if (opts.dryRun) {
+    note(`  would install the Copilot CLI sessionStart hook at ${path.join(root, COPILOT_HOOK_FILE)}`);
+    return;
+  }
+  try {
+    OWNED.installOwned({
+      root, integration: 'copilot-cli', force: opts.force, note,
+      operations: [
+        HOST_HOOKS.payloadOperation(repoRoot),
+        { relativePath: COPILOT_HOOK_FILE, write: (stage) => fs.writeFileSync(stage, JSON.stringify(hook, null, 2) + '\n') },
+      ],
+    });
+    note('  Copilot CLI: new sessions start in caveman mode');
+  } catch (error) {
+    warn(`  Copilot CLI hook was not installed: ${error.message}`);
+    results.failed.push(['copilot (CLI hook)', error.message]);
+  }
+}
+
 // ── hermes native install ──────────────────────────────────────────────────
 // Drops the caveman skills into ~/.hermes/skills/productivity/ (or HERMES_HOME if set).
 const HERMES_SKILL_DIRS = ['caveman', 'ultracave', 'megacave', 'caveman-commit', 'caveman-review', 'caveman-help', 'caveman-stats', 'caveman-compress', 'cavecrew'];
@@ -954,6 +1039,60 @@ function installHermes(ctx) {
     results.failed.push(['hermes', 'copy failed: ' + err.message]);
   }
 
+  process.stdout.write('\n');
+}
+
+// ── Antigravity CLI (agy) plugin ───────────────────────────────────────────
+// `agy plugin install <dir>` copies a plugin into agy's own plugin root, so the
+// staging copy is temporary and agy owns the lifecycle. Always-on comes from
+// the plugin's rules/AGENTS.md, which agy merges into the active rule set while
+// the plugin is enabled; agy has no session-start hook (PreInvocation runs
+// before every model call). Checked live with agy 1.2.17: caveman voice with
+// the rule, normal prose without it or with the plugin disabled.
+const AGY_PLUGIN_NAME = 'caveman';
+const AGY_SKILL_DIRS = HERMES_SKILL_DIRS;
+
+function installAntigravityCli(ctx) {
+  const { say, note, warn, opts, repoRoot, results } = ctx;
+  results.detected++;
+  say('→ Antigravity CLI detected');
+  if (!repoRoot) {
+    warn('  Antigravity CLI install needs the caveman package files.');
+    results.failed.push(['antigravity-cli', 'native install requires local repo clone']);
+    process.stdout.write('\n');
+    return;
+  }
+  if (opts.dryRun) {
+    note(`  would stage a ${AGY_PLUGIN_NAME} plugin (${AGY_SKILL_DIRS.length} skills + rules/AGENTS.md)`);
+    runSpawn('agy', ['plugin', 'install', `<staging>/${AGY_PLUGIN_NAME}`], null, true);
+    results.installed.push('antigravity-cli');
+    process.stdout.write('\n');
+    return;
+  }
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'caveman-agy-'));
+  try {
+    const pluginDir = path.join(staging, AGY_PLUGIN_NAME);
+    fs.mkdirSync(path.join(pluginDir, 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'plugin.json'), JSON.stringify({
+      name: AGY_PLUGIN_NAME,
+      description: 'Caveman: terse replies, every technical fact kept',
+    }, null, 2) + '\n');
+    fs.copyFileSync(path.join(repoRoot, 'src', 'rules', 'caveman-activate.md'), path.join(pluginDir, 'rules', 'AGENTS.md'));
+    for (const name of AGY_SKILL_DIRS) {
+      fs.cpSync(path.join(repoRoot, 'skills', name), path.join(pluginDir, 'skills', name), { recursive: true });
+    }
+    if (spawnOk(runSpawn('agy', ['plugin', 'install', pluginDir], null, false))) {
+      results.installed.push('antigravity-cli');
+      note('  new agy sessions start in caveman mode; `agy plugin disable caveman` turns it off');
+    } else {
+      results.failed.push(['antigravity-cli', 'agy plugin install failed']);
+    }
+  } catch (error) {
+    warn(`  Antigravity CLI install failed: ${error.message}`);
+    results.failed.push(['antigravity-cli', error.message]);
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
   process.stdout.write('\n');
 }
 
@@ -1895,6 +2034,38 @@ function uninstall(ctx) {
     }
   }
 
+  // Cursor agents + sessionStart hook. The ownership journal is the only
+  // authority for which files this installer may delete; the hooks.json entry
+  // goes with the hook script it names.
+  try {
+    const removed = CURSOR_NATIVE.uninstallCursorNative({ dryRun: opts.dryRun, note, warn });
+    if (removed.hadJournal && removed.changed.length === 0) ok('  pruned owned caveman agents and hook from Cursor');
+    if (removed.changed.length) cleanupFailed = true;
+  } catch (error) {
+    cleanupFailed = true;
+    warn(`  Cursor cleanup incomplete; left integration untouched: ${error.message}`);
+  }
+
+  // Antigravity CLI plugin. agy owns its copy; same idempotency probe as gemini.
+  if (hasCmd('agy')) {
+    const probe = captureSpawn('agy', ['plugin', 'list']);
+    if (spawnOk(probe) && /"name":\s*"caveman"/.test(probe.stdout || '')) {
+      const r = runSpawn('agy', ['plugin', 'uninstall', AGY_PLUGIN_NAME], null, opts.dryRun);
+      if (spawnOk(r)) ok('  removed the Antigravity CLI plugin');
+      else cleanupFailed = true;
+    }
+  }
+
+  // Copilot CLI sessionStart hook — same journal/digest contract.
+  try {
+    const removed = OWNED.uninstallOwned({ root: copilotHome(), integration: 'copilot-cli', dryRun: opts.dryRun, note, warn });
+    if (removed.hadJournal && removed.changed.length === 0) ok('  removed the caveman Copilot CLI hook');
+    if (removed.changed.length) cleanupFailed = true;
+  } catch (error) {
+    cleanupFailed = true;
+    warn(`  Copilot CLI cleanup incomplete; left integration untouched: ${error.message}`);
+  }
+
   // opencode native install — ownership journal is authority. Never infer
   // ownership from a matching path name; pre-existing user files may use it.
   const ocDir = opencodeConfigDir();
@@ -2173,11 +2344,11 @@ async function promptForOnly(detected) {
 function printList(noColor) {
   const c = makeChalk(noColor);
   process.stdout.write(c.orange('🪨 caveman provider matrix') + '\n\n');
-  process.stdout.write(`  ${pad('ID', 13)} ${pad('AGENT', 22)} INSTALL MECHANISM\n`);
-  process.stdout.write(`  ${pad('--', 13)} ${pad('-----', 22)} -----------------\n`);
+  process.stdout.write(`  ${pad('ID', 15)} ${pad('AGENT', 22)} INSTALL MECHANISM\n`);
+  process.stdout.write(`  ${pad('--', 15)} ${pad('-----', 22)} -----------------\n`);
   for (const p of PROVIDERS) {
     const tag = p.soft ? ' (soft)' : '';
-    process.stdout.write(`  ${pad(p.id, 13)} ${pad(p.label, 22)} ${p.mech}${tag}\n`);
+    process.stdout.write(`  ${pad(p.id, 15)} ${pad(p.label, 22)} ${p.mech}${tag}\n`);
   }
   process.stdout.write('\n');
   process.stdout.write(c.dim('  Defaults: --with-hooks ON, --with-init OFF, --with-mcp-shrink OFF.\n'));
@@ -2301,6 +2472,7 @@ async function main() {
     if (prov.id === 'omp')      { installOmp(ctx); continue; }
     if (prov.id === 'openclaw') { installOpenclaw(ctx); continue; }
     if (prov.id === 'hermes')   { installHermes(ctx); continue; }
+    if (prov.id === 'antigravity-cli') { installAntigravityCli(ctx); continue; }
     if (prov.profile || PROVIDER_SKILLS.usesNativeSkills(prov.id)) { installViaSkills(ctx, prov); continue; }
   }
 

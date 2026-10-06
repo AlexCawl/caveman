@@ -295,12 +295,22 @@ def verify_manifests_and_syntax() -> None:
     manifest_paths = [
         claude_manifest_path,
         ROOT / ".claude-plugin/marketplace.json",
+        ROOT / ".cursor-plugin/plugin.json",
+        ROOT / "hooks/hooks-cursor.json",
         ROOT / ".codex/hooks.json",
         ROOT / "gemini-extension.json",
         ROOT / "plugins/caveman/.codex-plugin/plugin.json",
     ]
     for path in manifest_paths:
         read_json(path)
+
+    # The repo root is also the Claude Code plugin and Gemini extension root;
+    # both auto-load hooks/hooks.json, so one there would double-wire hooks.
+    ensure(
+        not (ROOT / "hooks/hooks.json").exists(),
+        "hooks/hooks.json is auto-loaded by Claude Code and Gemini; "
+        "Cursor's hook lives in hooks/hooks-cursor.json",
+    )
 
     claude_manifest = read_json(claude_manifest_path)
     ensure(isinstance(claude_manifest, dict), "Claude plugin manifest must be an object")
@@ -360,6 +370,7 @@ def verify_manifests_and_syntax() -> None:
         "caveman-statusline.sh",
         "caveman-statusline.ps1",
         "cavecrew-model-overrides.js",
+        "caveman-host-session-start.js",
     }
     manifest: dict[str, str] = {}
     for line in (hook_dir / "checksums.sha256").read_text(encoding="utf-8").splitlines():
@@ -375,6 +386,7 @@ def verify_manifests_and_syntax() -> None:
     run(["node", "--check", "src/hooks/caveman-activate.js"])
     run(["node", "--check", "src/hooks/caveman-mode-tracker.js"])
     run(["node", "--check", "src/hooks/cavecrew-model-overrides.js"])
+    run(["node", "--check", "src/hooks/caveman-host-session-start.js"])
     run(["node", "--check", "bin/install.js"])
     run(["node", "--check", "bin/lib/settings.js"])
     bash = shutil.which("bash")
@@ -683,6 +695,12 @@ def verify_hook_install_flow() -> None:
     section("Claude Hook Flow")
 
     ensure(shutil.which("node") is not None, "node is required for hook verification")
+    # Windows installs go through install.ps1. shutil.which("bash") here is often
+    # WSL's System32\bash.exe, which does not share the Windows temp home this
+    # check reads, so install.sh can exit 0 and leave SessionStart absent.
+    if os.name == "nt":
+        print("SKIP: POSIX hook install flow; Windows uses install.ps1")
+        return
     bash = shutil.which("bash")
     if bash is None:
         print("SKIP: Bash hook install flow requires Bash; native PowerShell path covered statically")

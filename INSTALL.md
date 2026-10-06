@@ -50,11 +50,12 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Oh My Pi (OMP)** | `npx -y github:JuliusBrussee/caveman -- --only omp` *(or `node bin/install.js --only omp` from a clone)* | Yes (native OMP plugin) |
 | **OpenClaw** | `npx -y github:JuliusBrussee/caveman -- --only openclaw` | Yes (workspace skill + SOUL.md) |
 | **Hermes Agent** | `npx -y github:JuliusBrussee/caveman -- --only hermes` *(or `node bin/install.js --only hermes` from a clone)* | Yes (native skills, enabled on load) |
+| **Antigravity CLI** (`agy`) | `npx -y github:JuliusBrussee/caveman -- --only antigravity-cli` | Yes ([agy plugin](#antigravity-cli)) |
 | **Codex CLI** | `npx -y github:JuliusBrussee/caveman -- --only codex` *(skills only, no hook: `npx skills add JuliusBrussee/caveman -a codex -g`)* | Yes (SessionStart hook — trust it once with `/hooks`); skills-only: `$caveman` |
-| **Cursor** | `npx skills add JuliusBrussee/caveman -a cursor -g` | Per-session by default; `--with-init` for an always-on rule file |
+| **Cursor** | `npx -y github:JuliusBrussee/caveman -- --only cursor` *(or the [Cursor plugin](#cursor))* | Yes (session hook) |
 | **Windsurf** | `npx skills add JuliusBrussee/caveman -a windsurf -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Cline** | `npx skills add JuliusBrussee/caveman -a cline -g` | Per-session by default; `--with-init` for an always-on rule file |
-| **GitHub Copilot** | `npx -y github:JuliusBrussee/caveman -- --only copilot --with-init` | Repo-wide instructions via `--with-init` |
+| **GitHub Copilot** | `npx -y github:JuliusBrussee/caveman -- --only copilot --with-init` | Copilot CLI: Yes (session hook). VS Code: repo-wide instructions via `--with-init` |
 | **Continue** | `npx -y github:JuliusBrussee/caveman -- --only continue` | No — invoke the Caveman skill |
 | **Kilo Code** | `npx skills add JuliusBrussee/caveman -a kilo -g` | No |
 | **Roo Code** | `npx skills add JuliusBrussee/caveman -a roo -g` | No |
@@ -151,6 +152,63 @@ on uninstall. Failed registration retains the owned package, journal, and backup
 so OMP cannot be left pointing at deleted files. Fix the reported host error and
 rerun the install, or uninstall. Failed deregistration retains those files too.
 
+### Cursor
+
+Two ways in. Pick one: with both, every chat gets the rules twice.
+
+- **Installer.** `npx -y github:JuliusBrussee/caveman -- --only cursor` adds
+  the skills, the Cavecrew agents (`~/.cursor/agents/`) and a session hook
+  (`~/.cursor/hooks.json` plus `~/.cursor/caveman/`). The Cursor editor, the
+  Agents Window and `cursor-agent` all read these. `--no-hooks` installs the
+  agents without the hook; it does not remove a hook an earlier install
+  added (`--uninstall` does). `--uninstall` removes only caveman's entry from
+  `hooks.json`; your other hooks stay.
+- **Plugin.** This repo is a Cursor plugin (`.cursor-plugin/plugin.json`: the
+  skills, the same session hook, and the Cavecrew agents as-is from `agents/`).
+  Cursor skips their Claude-only model pin and runs them on your chat model;
+  the installer's copies also mark two of them read-only. Clone it into
+  `~/.cursor/plugins/local/caveman`, then run **Developer: Reload Window**. For
+  the CLI: `cursor-agent --plugin-dir ~/.cursor/plugins/local/caveman`.
+
+Either way, each new chat starts in your configured default mode
+(`CAVEMAN_DEFAULT_MODE`, a repo `.caveman.json`, or your user config);
+`"defaultMode": "off"` keeps chats normal. Checked with `cursor-agent`
+2026.09.18. Cursor does not read rule files from `~/.cursor/rules/` (user rules
+live in Settings), so the per-repo `.cursor/rules/caveman.mdc` from
+`--with-init` stays the rule-file option. Not checked: the Cursor editor's
+import of Claude Code hooks. If you also have caveman's Claude Code hooks and
+see the rules twice, turn one of them off.
+
+### GitHub Copilot CLI
+
+`--only copilot` installs the skills for every Copilot surface. If the Copilot
+CLI is on your machine (`copilot` on PATH, or `COPILOT_HOME` set), it also adds
+a session hook so every new `copilot` session starts in caveman mode — no
+`/caveman` needed. It follows your configured default (`CAVEMAN_DEFAULT_MODE`,
+a repo `.caveman.json`, or your user config), so `"defaultMode": "off"` keeps
+sessions normal. Checked with Copilot CLI 1.0.92.
+
+Files, all owned by the installer and removed by `--uninstall`:
+`$COPILOT_HOME/hooks/caveman.json` (default `~/.copilot/hooks/`) and
+`$COPILOT_HOME/caveman/`. Other files in `hooks/` are never touched. Skip the
+hook with `--no-hooks` (it skips adding one; `--uninstall` removes one already
+there). VS Code reads the same `hooks/` folder, but its
+documented session output is shaped differently and this path is untested
+there: for VS Code Copilot Chat, use `--with-init` for always-on.
+
+### Antigravity CLI
+
+With `agy` on your PATH, `--only antigravity-cli` builds a small `caveman`
+plugin (the skills plus one always-on rule) and installs it with
+`agy plugin install`. Every new `agy` session then talks caveman. Checked with
+agy 1.2.17.
+
+The rule is fixed text, so `defaultMode` settings do not reach it. To go back
+to normal prose, say `stop caveman` in a session, or switch the plugin off for
+good with `agy plugin disable caveman` (`enable` turns it back on).
+`--uninstall` runs `agy plugin uninstall caveman`. This is separate from the
+**Antigravity IDE** and **Antigravity 2.0** rows, which copy skills only.
+
 ## Manual install (no `curl | bash`)
 
 If you'd rather see exactly what runs:
@@ -200,7 +258,7 @@ The installer preserves each quoted path as one argument. For arguments containi
 
 ## Always-on rules
 
-For agents without a hook system (Cursor, Windsurf, Cline, Copilot, and friends), the always-on path is a static rule file. Two ways:
+For agents without a hook system (Windsurf, Cline, Copilot in VS Code, and friends), the always-on path is a static rule file. Two ways:
 
 ```bash
 # Drop rule files into the current repo
@@ -300,6 +358,9 @@ What it removes:
 - The opencode native plugin (`~/.config/opencode/plugins/caveman/`, the `plugin` and `mcp.caveman-shrink` entries from `opencode.json`, our skill/agent/command files, the caveman block from `AGENTS.md`, and the opencode flag file).
 - The Codex SessionStart entry from `$CODEX_HOME/hooks.json` (default `~/.codex/`; other hooks, including the caveman CLI's own, stay) and the hook files under `$CODEX_HOME/caveman/`. The file goes away only if caveman's entry was all it held.
 - The Oh My Pi plugin (`omp plugin uninstall caveman`) and Caveman's managed OMP plugin package at `~/.omp/caveman-plugin/`.
+- The Antigravity CLI plugin (`agy plugin uninstall caveman`).
+- Cursor: the Cavecrew agents in `~/.cursor/agents/`, `~/.cursor/caveman/`, and caveman's entry in `~/.cursor/hooks.json`.
+- The Copilot CLI session hook: `$COPILOT_HOME/hooks/caveman.json` and `$COPILOT_HOME/caveman/` (default `~/.copilot/`).
 - The OpenClaw workspace skill folder and the marker-fenced block from `~/.openclaw/workspace/SOUL.md` (when present).
 - Owned native skill copies (Continue, AiderDesk, Antigravity, Grok Build, and iFlow/Crush with a custom home) and the marker-fenced block from `$GROK_HOME/AGENTS.md` (default `~/.grok/AGENTS.md`). Your own text in that file stays.
 - All mode state in `$CLAUDE_CONFIG_DIR`: the `.caveman-sessions/` directory (one file per window), `.caveman-active`, `.caveman-active.prev`, `.caveman-mode-log.jsonl`, `.caveman-statusline-suffix`, `.caveman-nudge-shown`, and `.caveman-statusline-stale`.

@@ -23,8 +23,10 @@
     "test:windows": "node scripts/test-windows-compat.mjs"
   },
   "files": [
+    ".cursor-plugin/",
     "bin/",
     ".codex/codex-sessionstart.js",
+    "hooks/",
     "src/",
     "agents/",
     "skills/",
