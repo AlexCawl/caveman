@@ -20,18 +20,14 @@ const pixelOptimizerID = "pixel-render"
 // pixelRequest applies S4 text-to-PNG compression to provider wire formats. It
 // gates by measured model allowlist, stores the original before publishing lossy
 // bytes, and reports inferred estimates only.
-func (s *Server) pixelRequest(adapter providers.Adapter, body []byte, meta providers.RequestMetadata, transform *providers.TransformResult, requestID string) *compressionOutcome {
+func (s *Server) pixelRequest(body []byte, meta providers.RequestMetadata, transform *providers.TransformResult, requestID string) *compressionOutcome {
 	if s.compressor == nil || !pixel.Allowed(meta.Model) {
 		return nil
 	}
 
 	opts := pixel.DefaultTransformOptions(meta.Model)
-	out, info, err := transformPixelLiveZone(adapter, meta, body, opts)
-	if err != nil || info.ImageCount == 0 || len(out) == 0 {
-		return nil
-	}
-	before := info.TextTokensEstimate
-	if before <= 0 {
+	out, info, err := transformPixelLiveZone(meta, body, pixelDecider{s: s, opts: opts})
+	if err != nil || len(out) == 0 {
 		return nil
 	}
 
@@ -45,11 +41,17 @@ func (s *Server) pixelRequest(adapter providers.Adapter, body []byte, meta provi
 
 	transform.Body = out
 	transform.OptimizerIDs = append(transform.OptimizerIDs, pixelOptimizerID)
+	// A turn that only re-sends earlier renderings earned nothing new: like a
+	// substitution-only compress turn, it books an honest zero.
+	ratio := 0.0
+	if before := info.TextTokensEstimate; before > 0 {
+		ratio = float64(before-info.ImageTokensEstimate) / float64(before)
+	}
 	return &compressionOutcome{
 		handle:      handle,
-		before:      before,
+		before:      info.TextTokensEstimate,
 		after:       info.ImageTokensEstimate,
-		ratio:       float64(before-info.ImageTokensEstimate) / float64(before),
+		ratio:       ratio,
 		bookSavings: false,
 	}
 }
@@ -63,26 +65,121 @@ type pixelReplacement struct {
 	imageBytes int
 }
 
-func transformPixelLiveZone(adapter providers.Adapter, meta providers.RequestMetadata, body []byte, opts pixel.TransformOptions) ([]byte, pixel.TransformInfo, error) {
-	provider := meta.Provider
-	if adapter != nil {
-		// Pass the full metadata through: adapters gate on Endpoint too (e.g.
-		// Anthropic count_tokens opts out of any content transform).
-		if segments, _, ok := adapter.ExtractCompressible(body, meta); !ok || len(segments) == 0 {
-			return nil, pixel.TransformInfo{Reason: "no_live_zone"}, nil
+// pixelHandle marks a PrefixCache row holding rendered image parts.
+const pixelHandle = "pixel"
+
+// pixelFamily is one provider's image wire shape: render turns text into the
+// comma-joined image parts that provider reads.
+type pixelFamily struct {
+	scope  string
+	render func(text string, opts pixel.TransformOptions) (parts []byte, before, after, imageBytes, imageCount int, ok bool)
+}
+
+var (
+	anthropicPixel = pixelFamily{scope: "pixel:anthropic:", render: func(text string, opts pixel.TransformOptions) ([]byte, int, int, int, int, bool) {
+		blocks, before, after, imageBytes, ok := anthropicImageBlocks(text, opts)
+		return blocks, before, after, imageBytes, bytes.Count(blocks, []byte(`"type":"image"`)), ok
+	}}
+	openAIChatPixel = pixelFamily{scope: "pixel:openai-chat:", render: func(text string, opts pixel.TransformOptions) ([]byte, int, int, int, int, bool) {
+		parts, before, after, imageBytes, ok := openAIImageParts(text, opts)
+		return parts, before, after, imageBytes, bytes.Count(parts, []byte(`"type":"image_url"`)), ok
+	}}
+	openAIResponsesPixel = pixelFamily{scope: "pixel:openai-responses:", render: openAIResponsesImageParts}
+)
+
+func bracketed(parts []byte) []byte { return append(append([]byte("["), parts...), ']') }
+
+func asIs(parts []byte) []byte { return parts }
+
+// pixelDecider makes pixel rendering first-decision-wins across turns, the way
+// compressRequest does for text. Pixel used to render only the live message
+// and forget it, so the next turn re-sent that message as text and busted the
+// prefix the provider had just cached with the images in it. Now a text the
+// live turn rendered is re-sent as the same image bytes on every later turn,
+// and one that went out as text stays text. Without a PrefixCache (embedders)
+// it renders the live message only, as before.
+type pixelDecider struct {
+	s    *Server
+	opts pixel.TransformOptions
+}
+
+// add decides the JSON string at text. replace is the span its rendering
+// replaces and wrap shapes the image parts for that span; only a live text may
+// be rendered for the first time.
+func (d pixelDecider) add(reps *[]pixelReplacement, body []byte, text, replace gatewayJSONSpan, family pixelFamily, live bool, minChars int, wrap func([]byte) []byte) {
+	render := func() (pixelReplacement, bool) {
+		value, ok := gatewayDecodeJSONString(body[text.start:text.end])
+		if !ok || len(value) < minChars {
+			return pixelReplacement{}, false
 		}
+		parts, before, after, imageBytes, imageCount, ok := family.render(value, d.opts)
+		if !ok {
+			return pixelReplacement{}, false
+		}
+		return pixelReplacement{span: replace, raw: parts, before: before, after: after, imageCount: imageCount, imageBytes: imageBytes}, true
 	}
-	switch provider {
+	cache := d.s.prefixCache
+	if cache == nil {
+		if !live {
+			return
+		}
+		if rep, ok := render(); ok {
+			rep.raw = wrap(rep.raw)
+			*reps = append(*reps, rep)
+		}
+		return
+	}
+	// The model is in the scope: geometry is resolved per reader model, and a
+	// model switch starts a new provider cache anyway.
+	scope := family.scope + d.opts.Model
+	original := body[text.start:text.end]
+	if d.s.unpersistedRaw.has(scope, original) {
+		return
+	}
+	if stored, handle, hit := cache.LookupReplacement(scope, original); hit {
+		if handle != RawDecisionHandle {
+			*reps = append(*reps, pixelReplacement{span: replace, raw: wrap(stored)})
+		}
+		return
+	}
+	rep, ok := pixelReplacement{}, false
+	if live {
+		rep, ok = render()
+	}
+	parts, handle := rep.raw, pixelHandle
+	if !ok {
+		parts, handle = nil, RawDecisionHandle // going out as text: that is its decision
+	}
+	stored, err := cache.RememberReplacement(scope, original, parts, handle)
+	switch {
+	case err != nil:
+		d.s.unpersistedRaw.add(scope, original)
+	case len(stored) == 0:
+	case ok && bytes.Equal(stored, parts):
+		rep.raw = wrap(stored) // rendered here: books its saving
+		*reps = append(*reps, rep)
+	default:
+		*reps = append(*reps, pixelReplacement{span: replace, raw: wrap(stored)})
+	}
+}
+
+func transformPixelLiveZone(meta providers.RequestMetadata, body []byte, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
+	// A token count must measure the caller's exact prompt: neither a new
+	// rendering nor an earlier one may alter it.
+	if strings.Contains(meta.Endpoint, "count_tokens") || strings.HasSuffix(meta.Endpoint, "/input_tokens") {
+		return nil, pixel.TransformInfo{Reason: "count_endpoint"}, nil
+	}
+	switch meta.Provider {
 	case "anthropic":
-		return transformAnthropicPixelLiveZone(body, opts)
+		return transformAnthropicPixelLiveZone(body, d)
 	case "openai", "azure_openai", "openai_compatible":
-		return transformOpenAIPixelLiveZone(body, opts)
+		return transformOpenAIPixelLiveZone(body, d)
 	default:
 		return nil, pixel.TransformInfo{Reason: "unsupported_live_zone_pixel"}, nil
 	}
 }
 
-func transformAnthropicPixelLiveZone(body []byte, opts pixel.TransformOptions) ([]byte, pixel.TransformInfo, error) {
+func transformAnthropicPixelLiveZone(body []byte, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
 	root, ok := gatewayRootObjectSpan(body)
 	if !ok {
 		return nil, pixel.TransformInfo{Reason: "parse_error"}, nil
@@ -107,30 +204,29 @@ func transformAnthropicPixelLiveZone(body []byte, opts pixel.TransformOptions) (
 			break
 		}
 	}
-	if target < 0 {
-		return nil, pixel.TransformInfo{Reason: "no_live_user"}, nil
-	}
 	var reps []pixelReplacement
-	collectAnthropicPixelCandidates(body, messageSpans[target], opts, &reps)
+	for i, msg := range messageSpans {
+		if gatewayObjectStringField(body, msg, "role") == "user" {
+			collectAnthropicPixelCandidates(body, msg, d, i == target, &reps)
+		}
+	}
 	return applyPixelReplacements(body, reps)
 }
 
-func collectAnthropicPixelCandidates(body []byte, msg gatewayJSONSpan, opts pixel.TransformOptions, reps *[]pixelReplacement) {
+func collectAnthropicPixelCandidates(body []byte, msg gatewayJSONSpan, d pixelDecider, live bool, reps *[]pixelReplacement) {
 	content, ok := gatewayFindObjectField(body, msg, "content")
 	if !ok {
 		return
 	}
 	switch {
 	case gatewayIsJSONString(body, content):
-		if rep, ok := renderAnthropicPixelValue(body, content, opts, opts.MinCompressChars); ok {
-			*reps = append(*reps, rep)
-		}
+		d.add(reps, body, content, content, anthropicPixel, live, d.opts.MinCompressChars, bracketed)
 	case content.start < content.end && body[content.start] == '[':
-		collectAnthropicPixelBlocks(body, content, opts, reps)
+		collectAnthropicPixelBlocks(body, content, d, live, reps)
 	}
 }
 
-func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, opts pixel.TransformOptions, reps *[]pixelReplacement) {
+func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, d pixelDecider, live bool, reps *[]pixelReplacement) {
 	blocks, ok := gatewayArrayElements(body, blocksSpan)
 	if !ok {
 		return
@@ -145,9 +241,7 @@ func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, opts p
 			if !ok || !gatewayIsJSONString(body, textSpan) {
 				continue
 			}
-			if rep, ok := renderAnthropicPixelBlock(body, block, textSpan, opts, opts.MinCompressChars); ok {
-				*reps = append(*reps, rep)
-			}
+			d.add(reps, body, textSpan, block, anthropicPixel, live, d.opts.MinCompressChars, asIs)
 		case "tool_result":
 			content, ok := gatewayFindObjectField(body, block, "content")
 			if !ok {
@@ -155,33 +249,31 @@ func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, opts p
 			}
 			switch {
 			case gatewayIsJSONString(body, content):
-				if rep, ok := renderAnthropicPixelValue(body, content, opts, opts.MinToolResultChars); ok {
-					*reps = append(*reps, rep)
-				}
+				d.add(reps, body, content, content, anthropicPixel, live, d.opts.MinToolResultChars, bracketed)
 			case content.start < content.end && body[content.start] == '[':
-				collectAnthropicPixelBlocks(body, content, opts, reps)
+				collectAnthropicPixelBlocks(body, content, d, live, reps)
 			}
 		}
 	}
 }
 
-func transformOpenAIPixelLiveZone(body []byte, opts pixel.TransformOptions) ([]byte, pixel.TransformInfo, error) {
+func transformOpenAIPixelLiveZone(body []byte, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
 	root, ok := gatewayRootObjectSpan(body)
 	if !ok {
 		return nil, pixel.TransformInfo{Reason: "parse_error"}, nil
 	}
 	messagesSpan, ok := gatewayFindObjectField(body, root, "messages")
 	if ok {
-		return transformOpenAIChatPixelLiveZone(body, messagesSpan, opts)
+		return transformOpenAIChatPixelLiveZone(body, messagesSpan, d)
 	}
 	inputSpan, ok := gatewayFindObjectField(body, root, "input")
 	if ok {
-		return transformOpenAIResponsesPixelLiveZone(body, inputSpan, opts)
+		return transformOpenAIResponsesPixelLiveZone(body, inputSpan, d)
 	}
 	return nil, pixel.TransformInfo{Reason: "no_messages_or_input"}, nil
 }
 
-func transformOpenAIChatPixelLiveZone(body []byte, messagesSpan gatewayJSONSpan, opts pixel.TransformOptions) ([]byte, pixel.TransformInfo, error) {
+func transformOpenAIChatPixelLiveZone(body []byte, messagesSpan gatewayJSONSpan, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
 	if messagesSpan.start >= len(body) || body[messagesSpan.start] != '[' {
 		return nil, pixel.TransformInfo{Reason: "messages_not_array"}, nil
 	}
@@ -200,54 +292,50 @@ func transformOpenAIChatPixelLiveZone(body []byte, messagesSpan gatewayJSONSpan,
 		return nil, pixel.TransformInfo{Reason: "no_live_user"}, nil
 	}
 	var reps []pixelReplacement
-	content, ok := gatewayFindObjectField(body, messageSpans[target], "content")
-	if !ok {
-		return nil, pixel.TransformInfo{Reason: "no_content"}, nil
-	}
-	switch {
-	case gatewayIsJSONString(body, content):
-		if rep, ok := renderOpenAIPixelValue(body, content, opts); ok {
-			reps = append(reps, rep)
+	for i, msg := range messageSpans {
+		if gatewayObjectStringField(body, msg, "role") != "user" {
+			continue
 		}
-	case content.start < content.end && body[content.start] == '[':
-		parts, ok := gatewayArrayElements(body, content)
+		content, ok := gatewayFindObjectField(body, msg, "content")
 		if !ok {
-			return nil, pixel.TransformInfo{Reason: "parse_error"}, nil
+			continue
 		}
-		for _, part := range parts {
-			if part.start >= part.end || body[part.start] != '{' {
+		live := i == target
+		switch {
+		case gatewayIsJSONString(body, content):
+			d.add(&reps, body, content, content, openAIChatPixel, live, d.opts.MinCompressChars, bracketed)
+		case content.start < content.end && body[content.start] == '[':
+			parts, ok := gatewayArrayElements(body, content)
+			if !ok {
 				continue
 			}
-			if typ := gatewayObjectStringField(body, part, "type"); typ != "text" && typ != "input_text" {
-				continue
-			}
-			textSpan, ok := gatewayFindObjectField(body, part, "text")
-			if !ok || !gatewayIsJSONString(body, textSpan) {
-				continue
-			}
-			if rep, ok := renderOpenAIPixelPart(body, part, textSpan, opts); ok {
-				reps = append(reps, rep)
+			for _, part := range parts {
+				if part.start >= part.end || body[part.start] != '{' {
+					continue
+				}
+				if typ := gatewayObjectStringField(body, part, "type"); typ != "text" && typ != "input_text" {
+					continue
+				}
+				textSpan, ok := gatewayFindObjectField(body, part, "text")
+				if !ok || !gatewayIsJSONString(body, textSpan) {
+					continue
+				}
+				d.add(&reps, body, textSpan, part, openAIChatPixel, live, d.opts.MinCompressChars, asIs)
 			}
 		}
 	}
 	return applyPixelReplacements(body, reps)
 }
 
-func transformOpenAIResponsesPixelLiveZone(body []byte, inputSpan gatewayJSONSpan, opts pixel.TransformOptions) ([]byte, pixel.TransformInfo, error) {
+func transformOpenAIResponsesPixelLiveZone(body []byte, inputSpan gatewayJSONSpan, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
 	if gatewayIsJSONString(body, inputSpan) {
-		text, ok := gatewayDecodeJSONString(body[inputSpan.start:inputSpan.end])
-		if !ok || len(text) < opts.MinCompressChars {
-			return nil, pixel.TransformInfo{Reason: "below_min_chars"}, nil
-		}
-		parts, before, after, imageBytes, imageCount, ok := openAIResponsesImageParts(text, opts)
-		if !ok {
-			return nil, pixel.TransformInfo{Reason: "not_profitable"}, nil
-		}
-		raw := make([]byte, 0, len(parts)+64)
-		raw = append(raw, `[{"type":"message","role":"user","content":[`...)
-		raw = append(raw, parts...)
-		raw = append(raw, `]}]`...)
-		return applyPixelReplacements(body, []pixelReplacement{{span: inputSpan, raw: raw, before: before, after: after, imageCount: imageCount, imageBytes: imageBytes}})
+		// A bare string input is one user turn; the next turn sends it back as a
+		// message's content string, which shares this decision.
+		var reps []pixelReplacement
+		d.add(&reps, body, inputSpan, inputSpan, openAIResponsesPixel, true, d.opts.MinCompressChars, func(parts []byte) []byte {
+			return append(append([]byte(`[{"type":"message","role":"user","content":[`), parts...), `]}]`...)
+		})
+		return applyPixelReplacements(body, reps)
 	}
 	if inputSpan.start >= inputSpan.end || body[inputSpan.start] != '[' {
 		return nil, pixel.TransformInfo{Reason: "input_not_string_or_array"}, nil
@@ -277,31 +365,33 @@ func transformOpenAIResponsesPixelLiveZone(body []byte, inputSpan gatewayJSONSpa
 		}
 	}
 	var reps []pixelReplacement
-	if latestUser >= 0 {
-		collectOpenAIResponsesUserPixelCandidates(body, items[latestUser], opts, &reps)
-	}
-	if latestTool >= 0 {
-		item := items[latestTool]
-		if callID := gatewayObjectStringField(body, item, "call_id"); !recoveredCalls[callID] {
-			if output, found := gatewayFindObjectField(body, item, "output"); found && gatewayIsJSONString(body, output) {
-				if rep, ok := renderOpenAIResponsesPixelValue(body, output, opts, opts.MinToolResultChars); ok {
-					reps = append(reps, rep)
-				}
+	for i, item := range items {
+		if item.start >= item.end || body[item.start] != '{' {
+			continue
+		}
+		if gatewayObjectStringField(body, item, "type") == "function_call_output" {
+			if recoveredCalls[gatewayObjectStringField(body, item, "call_id")] {
+				continue
 			}
+			if output, found := gatewayFindObjectField(body, item, "output"); found && gatewayIsJSONString(body, output) {
+				d.add(&reps, body, output, output, openAIResponsesPixel, i == latestTool, d.opts.MinToolResultChars, bracketed)
+			}
+			continue
+		}
+		if gatewayObjectStringField(body, item, "role") == "user" {
+			collectOpenAIResponsesUserPixelCandidates(body, item, d, i == latestUser, &reps)
 		}
 	}
 	return applyPixelReplacements(body, reps)
 }
 
-func collectOpenAIResponsesUserPixelCandidates(body []byte, item gatewayJSONSpan, opts pixel.TransformOptions, reps *[]pixelReplacement) {
+func collectOpenAIResponsesUserPixelCandidates(body []byte, item gatewayJSONSpan, d pixelDecider, live bool, reps *[]pixelReplacement) {
 	content, ok := gatewayFindObjectField(body, item, "content")
 	if !ok {
 		return
 	}
 	if gatewayIsJSONString(body, content) {
-		if rep, ok := renderOpenAIResponsesPixelValue(body, content, opts, opts.MinCompressChars); ok {
-			*reps = append(*reps, rep)
-		}
+		d.add(reps, body, content, content, openAIResponsesPixel, live, d.opts.MinCompressChars, bracketed)
 		return
 	}
 	if content.start >= content.end || body[content.start] != '[' {
@@ -320,82 +410,8 @@ func collectOpenAIResponsesUserPixelCandidates(body []byte, item gatewayJSONSpan
 		if !found || !gatewayIsJSONString(body, textSpan) {
 			continue
 		}
-		if rep, ok := renderOpenAIResponsesPixelPart(body, part, textSpan, opts); ok {
-			*reps = append(*reps, rep)
-		}
+		d.add(reps, body, textSpan, part, openAIResponsesPixel, live, d.opts.MinCompressChars, asIs)
 	}
-}
-
-func renderOpenAIResponsesPixelValue(body []byte, valueSpan gatewayJSONSpan, opts pixel.TransformOptions, minChars int) (pixelReplacement, bool) {
-	text, ok := gatewayDecodeJSONString(body[valueSpan.start:valueSpan.end])
-	if !ok || len(text) < minChars {
-		return pixelReplacement{}, false
-	}
-	parts, before, after, imageBytes, imageCount, ok := openAIResponsesImageParts(text, opts)
-	if !ok {
-		return pixelReplacement{}, false
-	}
-	return pixelReplacement{span: valueSpan, raw: append(append([]byte("["), parts...), ']'), before: before, after: after, imageCount: imageCount, imageBytes: imageBytes}, true
-}
-
-func renderOpenAIResponsesPixelPart(body []byte, partSpan, textSpan gatewayJSONSpan, opts pixel.TransformOptions) (pixelReplacement, bool) {
-	text, ok := gatewayDecodeJSONString(body[textSpan.start:textSpan.end])
-	if !ok || len(text) < opts.MinCompressChars {
-		return pixelReplacement{}, false
-	}
-	parts, before, after, imageBytes, imageCount, ok := openAIResponsesImageParts(text, opts)
-	if !ok {
-		return pixelReplacement{}, false
-	}
-	return pixelReplacement{span: partSpan, raw: parts, before: before, after: after, imageCount: imageCount, imageBytes: imageBytes}, true
-}
-
-func renderAnthropicPixelValue(body []byte, valueSpan gatewayJSONSpan, opts pixel.TransformOptions, minChars int) (pixelReplacement, bool) {
-	text, ok := gatewayDecodeJSONString(body[valueSpan.start:valueSpan.end])
-	if !ok || len(text) < minChars {
-		return pixelReplacement{}, false
-	}
-	blocks, before, after, imageBytes, ok := anthropicImageBlocks(text, opts)
-	if !ok {
-		return pixelReplacement{}, false
-	}
-	return pixelReplacement{span: valueSpan, raw: append(append([]byte("["), blocks...), ']'), before: before, after: after, imageCount: bytes.Count(blocks, []byte(`"type":"image"`)), imageBytes: imageBytes}, true
-}
-
-func renderAnthropicPixelBlock(body []byte, blockSpan, textSpan gatewayJSONSpan, opts pixel.TransformOptions, minChars int) (pixelReplacement, bool) {
-	text, ok := gatewayDecodeJSONString(body[textSpan.start:textSpan.end])
-	if !ok || len(text) < minChars {
-		return pixelReplacement{}, false
-	}
-	blocks, before, after, imageBytes, ok := anthropicImageBlocks(text, opts)
-	if !ok {
-		return pixelReplacement{}, false
-	}
-	return pixelReplacement{span: blockSpan, raw: blocks, before: before, after: after, imageCount: bytes.Count(blocks, []byte(`"type":"image"`)), imageBytes: imageBytes}, true
-}
-
-func renderOpenAIPixelValue(body []byte, valueSpan gatewayJSONSpan, opts pixel.TransformOptions) (pixelReplacement, bool) {
-	text, ok := gatewayDecodeJSONString(body[valueSpan.start:valueSpan.end])
-	if !ok || len(text) < opts.MinCompressChars {
-		return pixelReplacement{}, false
-	}
-	parts, before, after, imageBytes, ok := openAIImageParts(text, opts)
-	if !ok {
-		return pixelReplacement{}, false
-	}
-	return pixelReplacement{span: valueSpan, raw: append(append([]byte("["), parts...), ']'), before: before, after: after, imageCount: bytes.Count(parts, []byte(`"type":"image_url"`)), imageBytes: imageBytes}, true
-}
-
-func renderOpenAIPixelPart(body []byte, partSpan, textSpan gatewayJSONSpan, opts pixel.TransformOptions) (pixelReplacement, bool) {
-	text, ok := gatewayDecodeJSONString(body[textSpan.start:textSpan.end])
-	if !ok || len(text) < opts.MinCompressChars {
-		return pixelReplacement{}, false
-	}
-	parts, before, after, imageBytes, ok := openAIImageParts(text, opts)
-	if !ok {
-		return pixelReplacement{}, false
-	}
-	return pixelReplacement{span: partSpan, raw: parts, before: before, after: after, imageCount: bytes.Count(parts, []byte(`"type":"image_url"`)), imageBytes: imageBytes}, true
 }
 
 func anthropicImageBlocks(text string, opts pixel.TransformOptions) ([]byte, int, int, int, bool) {

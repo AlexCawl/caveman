@@ -322,7 +322,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		if authMode == AuthModeSubscription {
 			break
 		}
-		comp = s.pixelRequest(adapter, body, meta, &transform, requestID)
+		comp = s.pixelRequest(body, meta, &transform, requestID)
 	default:
 		if authMode != AuthModeSubscription {
 			t, terr := adapter.ApplyProviderNativeTransforms(r.Context(), bytes.NewReader(body), meta, providers.TransformPolicy{
