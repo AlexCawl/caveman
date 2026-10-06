@@ -31,6 +31,9 @@ type testPrefixCache struct {
 	mu         sync.Mutex
 	entries    map[string]testReplacement
 	failWrites bool
+	// failLookups stands in for a store read that errors: the interface reports
+	// it as a plain miss, exactly like the SQLite store does.
+	failLookups bool
 }
 
 type testReplacement struct {
@@ -45,6 +48,9 @@ func newTestPrefixCache() *testPrefixCache {
 func (c *testPrefixCache) LookupReplacement(scope string, original []byte) ([]byte, string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.failLookups {
+		return nil, "", false
+	}
 	entry, ok := c.entries[scope+":"+contentHandle(original)]
 	if !ok {
 		return nil, "", false
