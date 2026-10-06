@@ -20,6 +20,13 @@ func observeSame(m *prefixMonitor, session, components string) (bool, int) {
 	return cause != "", index
 }
 
+func rebaseIf(rawRetry bool) string {
+	if rawRetry {
+		return bustCauseRawRetry
+	}
+	return ""
+}
+
 func splitComponents(components string) [][]byte {
 	var out [][]byte
 	for _, part := range strings.Split(components, ",") {
@@ -135,7 +142,7 @@ func TestPrefixMonitorClassifiesWhoChangedTheBytes(t *testing.T) {
 	m := newPrefixMonitor()
 	observe := func(client, forwarded string, rawRetry bool) (string, int) {
 		c := splitComponents(client)
-		return m.observe("s", observation{client: c, forwarded: splitComponents(forwarded), cached: len(c), rawRetry: rawRetry})
+		return m.observe("s", observation{client: c, forwarded: splitComponents(forwarded), cached: len(c), rebase: rebaseIf(rawRetry)})
 	}
 	if cause, _ := observe("sys,tools,m1", "sys,tools,M1", false); cause != "" {
 		t.Fatalf("first observation flagged %q", cause)
@@ -161,7 +168,7 @@ func TestPrefixMonitorHoldsRequestsToTheRawRetry(t *testing.T) {
 	m := newPrefixMonitor()
 	observe := func(client, forwarded string, rawRetry bool, pinned int) (string, int) {
 		c := splitComponents(client)
-		return m.observe("s", observation{client: c, forwarded: splitComponents(forwarded), cached: len(c), rawRetry: rawRetry, pinned: pinned})
+		return m.observe("s", observation{client: c, forwarded: splitComponents(forwarded), cached: len(c), rebase: rebaseIf(rawRetry), pinned: pinned})
 	}
 	observe("sys,tools,m1", "sys,tools,M1", false, 0)
 	if cause, idx := observe("sys,tools,m1,m2", "sys,tools,m1,m2", true, 4); cause != bustCauseRawRetry || idx != 2 {

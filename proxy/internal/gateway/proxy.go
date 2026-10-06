@@ -202,6 +202,8 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	// says the session's harm tripwire froze a strip that would have run.
 	toolSchemaHandle := ""
 	stripFrozen := false
+	// streamRaw: a PAYG stream that the server-side retrieve path forwarded raw.
+	streamRaw := false
 	// breakpointPlanned records that the cache-breakpoint planner placed provider
 	// cache metadata on this request. The session ledger needs it to know which
 	// levers were active when it later evaluates the harm tripwire.
@@ -263,12 +265,19 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		if subscriptionPassthrough {
 			break
 		}
-		serverRetrieveAllowed := authMode == AuthModePAYG && !s.recoveryViaMCP && !meta.Stream && !hasRetrieveTool(body) && serverRetrieveSupported(meta.Provider, meta.Endpoint)
-		if serverRetrieveAllowed {
+		serverRetrieve := authMode == AuthModePAYG && !s.recoveryViaMCP && !hasRetrieveTool(body) && serverRetrieveSupported(meta.Provider, meta.Endpoint)
+		if serverRetrieve {
 			if _, canRetrieve := s.compressor.(Retriever); !canRetrieve {
-				serverRetrieveAllowed = false
+				serverRetrieve = false
 			}
 		}
+		// The server-side retrieve tool rides only a non-streaming request, and the
+		// tools component heads the cached prefix. A stream on this path goes out
+		// raw, and a conversation is held to the form its longest lineage was
+		// cached in (raw_pin.go): once a turn of it streamed, it stays raw. A
+		// stream after compressed turns is the one bust this path cannot avoid.
+		streamRaw = serverRetrieve && meta.Stream && s.prefixCache != nil
+		serverRetrieveAllowed := serverRetrieve && !meta.Stream && !s.heldRawByStream(adapter, meta, body)
 		// Marker-only compression needs a recovery path the caller can actually reach.
 		// PAYG keeps its pre-existing MCP-recovery rule; subscription and OAuth go
 		// exclusively through the live-zone predicate above (which itself requires MCP
@@ -502,7 +511,8 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		go func(meta providers.RequestMetadata, accepted []byte, rawRetried bool, sessionID string) {
 			defer estimateWG.Done()
 			cacheBustCause = s.observeCachedPrefix(adapter, meta, body, accepted, acceptance{
-				rawRetry: rawRetried, stripFrozen: stripFrozen, sent: sentSeq, session: sessionID, requestID: requestID,
+				rawRetry: rawRetried, streamRaw: streamRaw && !rawRetried, stripFrozen: stripFrozen,
+				sent: sentSeq, session: sessionID, requestID: requestID,
 			})
 		}(meta, transform.Body, rawRetried, evidence.SessionID)
 	}

@@ -46,6 +46,11 @@ type exchange struct {
 	forwarded []byte
 	// rawRetry: the transformed attempt was rejected and the raw retry accepted.
 	rawRetry bool
+	// streamRaw: a PAYG request without MCP recovery that streamed. The
+	// server-side retrieve tool cannot ride a stream, so it goes out raw, and a
+	// conversation compressed on earlier turns re-caches raw from it: the
+	// invariant's second exception, held to like a raw retry.
+	streamRaw bool
 	// group > 0 marks requests that were in flight together. The provider may
 	// have processed either one first, so the rule is checked both ways.
 	group int
@@ -89,8 +94,8 @@ func assertCachedPrefixPreserved(t testing.TB, xs []exchange) {
 		views[i] = cachedPrefixView(t, x)
 	}
 	for j := range xs {
-		if xs[j].rawRetry {
-			continue // the exception itself: a raw retry may differ from what it extends
+		if rawForm(xs[j]) {
+			continue // the exception itself: it may differ from what it extends
 		}
 		followsRaw := followsRawLineage(xs, views, j)
 		for i := range xs {
@@ -128,10 +133,14 @@ func replacedForm(p prefixView) bool {
 	return !extendsRange(p.forwarded, p.client, p.cached)
 }
 
-// rawAnchor reports whether k is a raw retry that cached the conversation's
+// rawForm reports whether x is one of the invariant's exceptions: a raw
+// retry, or a PAYG stream that had to go out raw.
+func rawForm(x exchange) bool { return x.rawRetry || x.streamRaw }
+
+// rawAnchor reports whether k is an exception that cached the conversation's
 // own bytes, the only kind that re-bases what extends it.
 func rawAnchor(xs []exchange, views []prefixView, k int) bool {
-	return xs[k].rawRetry && views[k].cached >= conversationComponents
+	return rawForm(xs[k]) && views[k].cached >= conversationComponents
 }
 
 // followsRawLineage reports whether R (j) is held to the raw form: the longest
@@ -148,9 +157,9 @@ func followsRawLineage(xs []exchange, views []prefixView, j int) bool {
 		}
 		followed := extendsRange(views[j].forwarded, views[k].forwarded, views[k].cached)
 		switch {
-		case xs[k].rawRetry && (!concurrent || followed):
+		case rawForm(xs[k]) && (!concurrent || followed):
 			rawLen = max(rawLen, views[k].cached)
-		case !xs[k].rawRetry && replacedForm(views[k]) && (!concurrent || followed):
+		case !rawForm(xs[k]) && replacedForm(views[k]) && (!concurrent || followed):
 			repLen = max(repLen, views[k].cached)
 		}
 	}
@@ -161,7 +170,7 @@ func followsRawLineage(xs []exchange, views []prefixView, j int) bool {
 // retry split: it is a raw retry, or it went out raw extending a raw anchor
 // (one in flight with it only if it followed it, as in followsRawLineage).
 func inRawLineage(xs []exchange, views []prefixView, i int) bool {
-	if xs[i].rawRetry {
+	if rawForm(xs[i]) {
 		return true
 	}
 	if replacedForm(views[i]) {
@@ -224,6 +233,8 @@ type ccConversation struct {
 	messages   []ccMessage
 	tools      int
 	systemOnly bool
+	// stream asks for a streamed response.
+	stream bool
 }
 
 func newCCConversation(system, session string) *ccConversation {
@@ -265,7 +276,11 @@ func (c *ccConversation) body() []byte {
 	for i, m := range c.messages {
 		parts[i] = m.json(i == len(c.messages)-1 && !c.systemOnly)
 	}
-	return []byte(`{"model":"` + c.model + `","max_tokens":1024,` +
+	stream := ""
+	if c.stream {
+		stream = `"stream":true,`
+	}
+	return []byte(`{"model":"` + c.model + `","max_tokens":1024,` + stream +
 		`"system":[{"type":"text","text":` + jsonText(c.system) + `,"cache_control":{"type":"ephemeral"}}],` +
 		`"tools":[{"name":"Read","description":"Read a file","input_schema":{"type":"object","title":"Read args"}}],` +
 		`"messages":[` + strings.Join(parts, ",") + `]}`)
@@ -310,6 +325,12 @@ func (c *invariantCompressor) StoreOriginal(body []byte) (string, error) {
 
 func (c *invariantCompressor) StripToolSchema(tools []byte) ([]byte, bool) {
 	return compressors.StripToolSchemaAnnotations(tools)
+}
+
+// RetrieveOriginal serves the server-side retrieve loop of the PAYG path; the
+// harness never makes the model call it.
+func (c *invariantCompressor) RetrieveOriginal(handle, query string) ([]byte, error) {
+	return nil, errTestPrefixCacheDown
 }
 
 type invariantTagKey struct{}
@@ -378,6 +399,9 @@ type invariantHarness struct {
 	sink  *captureSink
 	// strip turns on the tool-schema annotation strip.
 	strip bool
+	// payg sends API-key requests to a proxy without MCP recovery: compress
+	// mode then injects its server-side retrieve tool, on non-streaming turns.
+	payg bool
 
 	mu   sync.Mutex
 	tag  int
@@ -415,7 +439,7 @@ func (h *invariantHarness) restart(nonce string) {
 		Compressor:      h.comp,
 		PrefixCache:     h.cache,
 		HTTPClient:      &http.Client{Transport: h.rt},
-		RecoveryViaMCP:  true,
+		RecoveryViaMCP:  !h.payg,
 		ToolSchemaStrip: strip,
 	})
 }
@@ -447,7 +471,11 @@ func (h *invariantHarness) sendBody(body []byte, session string, o sendOpts) (in
 	h.rt.mu.Unlock()
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	req = req.WithContext(context.WithValue(req.Context(), invariantTagKey{}, tag))
-	for k, v := range subscriptionAgentHeaders {
+	headers := subscriptionAgentHeaders
+	if h.payg {
+		headers = map[string]string{"x-api-key": "sk-ant-api03-invariant", "anthropic-version": "2023-06-01"}
+	}
+	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	if session != "" {
@@ -466,6 +494,7 @@ func (h *invariantHarness) sendBody(body []byte, session string, o sendOpts) (in
 			client:    body,
 			forwarded: attempts[len(attempts)-1].body,
 			rawRetry:  len(attempts) > 1,
+			streamRaw: h.payg && bytes.Contains(body, []byte(`"stream":true`)),
 			group:     o.group,
 		})
 	}
@@ -803,6 +832,44 @@ func TestCachePrefixInvariant(t *testing.T) {
 			if !bytes.Contains(fresh[0].body, []byte("<<ccr:")) {
 				t.Errorf("a new conversation of the same agent stopped compressing after a side request's raw retry:\n%.300s", fresh[0].body)
 			}
+		}},
+		{"PAYG without MCP: a compressed conversation starts streaming", func(t *testing.T, h *invariantHarness) {
+			h.payg = true
+			h.restart("")
+			main := newCCConversation("You are an SDK agent.", session)
+			h.send(main.user(filler("p1")), sendOpts{})
+			h.send(main.toolResult(filler("p2")), sendOpts{})
+			main.stream = true // the server-side retrieve tool cannot ride a stream
+			h.send(main.user(filler("p3")), sendOpts{})
+			if cause := h.sink.last(t).CacheBustCause; cause != bustCauseStreamSwitch {
+				t.Errorf("the stream after compressed turns must be recorded as %q, got %q", bustCauseStreamSwitch, cause)
+			}
+			main.stream = false
+			_, next := h.send(main.toolResult(filler("p4")), sendOpts{})
+			if bytes.Contains(next[0].body, []byte("<<ccr:")) || bytes.Contains(next[0].body, []byte(retrieveToolName)) {
+				t.Errorf("the turn after the stream flipped back to the compressed prefix:\n%.300s", next[0].body)
+			}
+			main.stream = true
+			h.send(main.user(filler("p5")), sendOpts{})
+			main.stream = false
+			h.send(main.user(filler("p6")), sendOpts{})
+		}},
+		{"PAYG without MCP: a conversation first seen streaming", func(t *testing.T, h *invariantHarness) {
+			h.payg = true
+			h.restart("")
+			streamed := newCCConversation("You are an SDK agent.", session)
+			streamed.stream = true
+			h.send(streamed.user(filler("s1")), sendOpts{})
+			streamed.stream = false
+			_, next := h.send(streamed.toolResult(filler("s2")), sendOpts{})
+			if !bytes.Equal(next[0].body, streamed.body()) {
+				t.Errorf("a conversation cached raw by its streamed turn started compressing:\n%.300s", next[0].body)
+			}
+			h.restart("")
+			h.send(streamed.user(filler("s3")), sendOpts{})
+			other := newCCConversation("You are another SDK agent.", session)
+			h.send(other.user(filler("o1")), sendOpts{}) // non-streaming: compresses
+			h.send(other.user(filler("o2")), sendOpts{})
 		}},
 		{"two sessions sharing file contents", func(t *testing.T, h *invariantHarness) {
 			file := filler("package main shared file contents")

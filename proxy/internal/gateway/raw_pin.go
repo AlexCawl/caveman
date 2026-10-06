@@ -42,8 +42,11 @@ const (
 
 	lineageScope  = "lineage"
 	lineageHandle = "lineage"
-	// lineageReplaced marks a lineage whose cached prefix went out replaced.
-	lineageReplaced = 'r'
+	// lineageReplaced marks a lineage whose cached prefix went out replaced, and
+	// lineageStreamRaw one a PAYG stream sent raw on the server-side retrieve
+	// path (see proxy.go): the conversations it opens stay raw.
+	lineageReplaced  = 'r'
+	lineageStreamRaw = 's'
 	// lineageMemory bounds the in-memory lineage set; the store keeps the rest.
 	lineageMemory = 65536
 )
@@ -181,7 +184,26 @@ func (s *Server) rawPinned(adapter providers.Adapter, meta providers.RequestMeta
 	}
 	prefix := newPrefixDigests(components)
 	pinned := s.rawPinCoverage(adapter, prefix)
-	return pinned > 0 && s.longestReplacedLineage(prefix, pinned) == 0
+	if pinned == 0 {
+		return false
+	}
+	n, form := s.longestLineage(prefix, pinned)
+	return n == 0 || form != lineageReplaced
+}
+
+// heldRawByStream reports whether the longest lineage body extends was cached
+// raw by a PAYG stream, so the server-side retrieve path must not start
+// compressing it.
+func (s *Server) heldRawByStream(adapter providers.Adapter, meta providers.RequestMetadata, body []byte) bool {
+	if s.prefixCache == nil {
+		return false
+	}
+	components, _, ok := cachedPrefix(adapter, meta, body)
+	if !ok {
+		return false
+	}
+	_, form := s.longestLineage(newPrefixDigests(components), sharedComponents(adapter))
+	return form == lineageStreamRaw
 }
 
 // rawPinCoverage returns how many leading components the longest raw pin a
@@ -257,10 +279,10 @@ func (s *Server) recordLineage(adapter providers.Adapter, client [][]byte, cache
 	}
 }
 
-// longestReplacedLineage returns the length of the longest prefix of the
-// request, longer than above, that an accepted request cached in replaced
-// form; 0 when there is none.
-func (s *Server) longestReplacedLineage(prefix *prefixDigests, above int) int {
+// longestLineage returns the length and form of the longest prefix of the
+// request, longer than above, that an accepted request recorded as a lineage;
+// 0 when there is none.
+func (s *Server) longestLineage(prefix *prefixDigests, above int) (int, byte) {
 	for n := len(prefix.components); n > above; n-- {
 		digest := prefix.at(n)
 		form, ok := s.lineages.form(digest)
@@ -271,11 +293,11 @@ func (s *Server) longestReplacedLineage(prefix *prefixDigests, above int) int {
 			}
 			s.lineages.put(digest, form)
 		}
-		if form == lineageReplaced {
-			return n
+		if form != lineageAbsent {
+			return n, form
 		}
 	}
-	return 0
+	return 0, lineageAbsent
 }
 
 // sharedComponents is how many leading cached-prefix components every

@@ -21,6 +21,10 @@ import (
 //     Flagged on the row and logged at DEBUG; nearly every old warning was one.
 //   - caveman: the client's bytes are unchanged and the forwarded bytes are not.
 //     That is a caveman bug: logged at ERROR, counted by stats and status.
+//   - stream_switch: a PAYG request without MCP recovery streamed after its
+//     conversation was compressed. The server-side retrieve tool cannot ride a
+//     stream, so it goes out raw and the conversation stays raw from there
+//     (raw_pin.go): the invariant's second exception, logged at WARN.
 //   - lever_freeze: the session's harm tripwire froze the tool-schema strip, and
 //     the request after it goes out with the original catalog: a deliberate,
 //     one-time rollover (see stripToolSchema), logged at WARN.
@@ -56,10 +60,11 @@ type prefixAnchor struct {
 }
 
 const (
-	bustCauseClient      = "client"
-	bustCauseCaveman     = "caveman"
-	bustCauseRawRetry    = "raw_retry"
-	bustCauseLeverFreeze = "lever_freeze"
+	bustCauseClient       = "client"
+	bustCauseCaveman      = "caveman"
+	bustCauseRawRetry     = "raw_retry"
+	bustCauseLeverFreeze  = "lever_freeze"
+	bustCauseStreamSwitch = "stream_switch"
 )
 
 // defaultPrefixMonitorCap bounds retained sessions. An evicted session's next
@@ -93,8 +98,10 @@ type observation struct {
 	// them it caches.
 	client, forwarded [][]byte
 	cached            int
-	// rawRetry: the provider accepted it only as the client's original bytes.
-	rawRetry bool
+	// rebase names the exception it is, if any: bustCauseRawRetry (the provider
+	// accepted only the client's original bytes) or bustCauseStreamSwitch. Such
+	// a request may differ from what it extends, and later ones follow it.
+	rebase string
 	// pinned is how many leading components a raw pin it extends covers, when
 	// it went out raw. followed is the longest prefix of it that went out
 	// replaced past its longest raw anchor: such a request follows that lineage,
@@ -123,11 +130,11 @@ type observation struct {
 // cached, or there was nothing to compare: no session, or no comparable
 // components.
 func (m *prefixMonitor) observe(session string, o observation) (cause string, index int) {
-	client, forwarded, cached, rawRetry, pinned := o.client, o.forwarded, o.cached, o.rawRetry, o.pinned
+	client, forwarded, cached, rebase, pinned := o.client, o.forwarded, o.cached, o.rebase != "", o.pinned
 	if m == nil || session == "" || len(client) == 0 || len(forwarded) != len(client) || cached < 0 || cached > len(client) {
 		return "", -1
 	}
-	cur := prefixAnchor{client: digestEach(client), forwarded: digestEach(forwarded), raw: rawRetry || pinned > 0, seq: o.accepted}
+	cur := prefixAnchor{client: digestEach(client), forwarded: digestEach(forwarded), raw: rebase || pinned > 0, seq: o.accepted}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	anchors := m.last[session]
@@ -149,20 +156,20 @@ func (m *prefixMonitor) observe(session string, o observation) (cause string, in
 			continue
 		}
 		preserved := commonPrefixLen(a.forwarded, cur.forwarded)
-		diverged := preserved < len(a.forwarded) && (rawRetry || pinned < len(a.forwarded)) && !(a.raw && o.followed > len(a.client))
+		diverged := preserved < len(a.forwarded) && (rebase || pinned < len(a.forwarded)) && !(a.raw && o.followed > len(a.client))
 		if diverged && (index < 0 || preserved < index) {
 			cause, index = bustCauseCaveman, preserved
 			switch {
-			case rawRetry:
-				cause = bustCauseRawRetry
+			case rebase:
+				cause = o.rebase
 			case preserved < o.rollover:
 				cause = bustCauseLeverFreeze
 			}
 		}
 		// The request takes over an anchor it repeats when it caches at least as
 		// much — it is the provider's latest entry for those bytes — and always
-		// when it is a raw retry, whose raw bytes the provider now holds there.
-		if rawRetry || cached >= len(a.client) {
+		// when it is an exception, whose raw bytes the provider now holds there.
+		if rebase || cached >= len(a.client) {
 			continue
 		}
 		kept = append(kept, a)
@@ -209,7 +216,8 @@ func (m *prefixMonitor) longestRawAnchor(session string, client [][]byte) int {
 // the tripwire needs.
 type acceptance struct {
 	// rawRetry: the provider accepted only the client's original bytes.
-	rawRetry bool
+	// streamRaw: a PAYG stream the server-side retrieve path sent raw.
+	rawRetry, streamRaw bool
 	// stripFrozen: the harm tripwire froze a tool-schema strip that would
 	// otherwise have run on this request.
 	stripFrozen bool
@@ -225,9 +233,9 @@ type acceptance struct {
 // what it found and returns the cause. A provider caches per model, so the
 // model is part of the tripwire's key.
 func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.RequestMetadata, body, accepted []byte, a acceptance) string {
-	rawRetry, sessionID, requestID := a.rawRetry, a.session, a.requestID
+	sessionID, requestID := a.session, a.requestID
 	sent := bytes.Equal(accepted, body)
-	if sent && sessionID == "" {
+	if sent && sessionID == "" && !a.streamRaw {
 		return "" // raw bytes record no lineage, and the tripwire needs a session
 	}
 	client, cached, ok := cachedPrefix(adapter, meta, body)
@@ -235,7 +243,14 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 		return ""
 	}
 	key := sessionID + "\x00" + meta.Model
-	o := observation{client: client, forwarded: client, cached: cached, rawRetry: rawRetry, sent: a.sent, accepted: s.prefixSeq.Add(1)}
+	o := observation{client: client, forwarded: client, cached: cached, sent: a.sent, accepted: s.prefixSeq.Add(1)}
+	switch {
+	case a.rawRetry:
+		o.rebase = bustCauseRawRetry
+	case a.streamRaw:
+		o.rebase = bustCauseStreamSwitch
+		s.recordLineage(adapter, client, cached, lineageStreamRaw)
+	}
 	if a.stripFrozen {
 		o.rollover = sharedComponents(adapter)
 	}
@@ -248,15 +263,17 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 		// Did it follow a replaced lineage past a raw anchor it repeats? Asked
 		// before this request records its own lineage.
 		if raw := s.prefixMonitor.longestRawAnchor(key, client); raw > 0 && s.prefixCache != nil {
-			o.followed = s.longestReplacedLineage(newPrefixDigests(client), raw)
+			if n, form := s.longestLineage(newPrefixDigests(client), raw); form == lineageReplaced {
+				o.followed = n
+			}
 		}
 		s.recordLineage(adapter, client, cached, lineageReplaced)
 	}
 	if sessionID == "" {
 		return ""
 	}
-	if rawRetry && cached <= sharedComponents(adapter) {
-		// A raw retry that cached only what every conversation of the agent
+	if o.rebase != "" && cached <= sharedComponents(adapter) {
+		// An exception that cached only what every conversation of the agent
 		// shares re-bases nothing (raw_pin.go), so it leaves no anchor to hold
 		// later requests to.
 		o.cached = 0
@@ -271,6 +288,8 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 			s.logger.Warn("provider accepted only the original bytes; its cached prefix restarts here", attrs...)
 		case bustCauseLeverFreeze:
 			s.logger.Warn("the harm tripwire froze the tool-schema strip; the cached prefix restarts here", attrs...)
+		case bustCauseStreamSwitch:
+			s.logger.Warn("a compressed PAYG conversation streamed; the server-side retrieve tool cannot ride a stream, so its cached prefix restarts raw here", attrs...)
 		case bustCauseClient:
 			s.logger.Debug("client changed bytes the provider already cached", attrs...)
 		}
