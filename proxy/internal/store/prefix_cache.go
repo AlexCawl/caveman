@@ -20,20 +20,31 @@ import (
 // ~/.caveman/caveman.db at worst.
 const prefixCacheMaxEntries = 100000
 
+// prefixCacheTouchInterval is how stale a row's last_used_at may get before a
+// lookup hit refreshes it: eviction needs recency to the interval, not to the
+// request.
+const prefixCacheTouchInterval = 10 * time.Minute
+
 // LookupReplacement returns the replacement bytes this proxy previously emitted
 // for these exact original bytes, plus the CCR handle they disclose. It implements
 // the read half of gateway.PrefixCache and fails open: any miss or SQL error is
 // reported as ok=false so the caller forwards the client's original bytes.
 func (s *Store) LookupReplacement(scope string, original []byte) ([]byte, string, bool) {
 	key := prefixCacheKey(scope, original)
-	replacement, handle, ok := s.readReplacement(key)
+	replacement, handle, lastUsed, ok := s.readReplacement(key)
 	if !ok {
 		return nil, "", false
 	}
-	// Touch for LRU eviction only. A failed touch changes nothing the caller can
-	// observe this turn, so it is logged and swallowed rather than turned into a miss.
-	if _, err := s.db.Exec(`UPDATE prefix_replacements SET last_used_at = ? WHERE original_sha256 = ?`, prefixCacheNow(), key); err != nil && s.logger != nil {
-		s.logger.Warn("prefix replacement touch failed", "error", err)
+	// Touch for LRU eviction only, and only a row older than the touch interval:
+	// every block of every turn has a row, and a write per hit put one fsynced
+	// commit per block on the request path. A failed touch changes nothing the
+	// caller can observe this turn, so it is logged and swallowed rather than
+	// turned into a miss.
+	now := time.Now().UTC()
+	if lastUsed < now.Add(-prefixCacheTouchInterval).Format(storeTSLayout) {
+		if _, err := s.db.Exec(`UPDATE prefix_replacements SET last_used_at = ? WHERE original_sha256 = ?`, now.Format(storeTSLayout), key); err != nil && s.logger != nil {
+			s.logger.Warn("prefix replacement touch failed", "error", err)
+		}
 	}
 	return replacement, handle, true
 }
@@ -63,7 +74,7 @@ func (s *Store) RememberReplacement(scope string, original, replacement []byte, 
 	); err != nil {
 		return nil, fmt.Errorf("prefix replacement put: %w", err)
 	}
-	stored, _, ok := s.readReplacement(key)
+	stored, _, _, ok := s.readReplacement(key)
 	if !ok {
 		return nil, errors.New("prefix replacement: entry unreadable after write")
 	}
@@ -71,13 +82,11 @@ func (s *Store) RememberReplacement(scope string, original, replacement []byte, 
 	return stored, nil
 }
 
-func (s *Store) readReplacement(key string) ([]byte, string, bool) {
-	var handle string
-	var replacement []byte
-	row := s.db.QueryRow(`SELECT handle, replacement FROM prefix_replacements WHERE original_sha256 = ?`, key)
-	switch err := row.Scan(&handle, &replacement); {
+func (s *Store) readReplacement(key string) (replacement []byte, handle, lastUsed string, ok bool) {
+	row := s.db.QueryRow(`SELECT handle, replacement, last_used_at FROM prefix_replacements WHERE original_sha256 = ?`, key)
+	switch err := row.Scan(&handle, &replacement, &lastUsed); {
 	case errors.Is(err, sql.ErrNoRows):
-		return nil, "", false
+		return nil, "", "", false
 	case err != nil:
 		// NOT a miss: the entry may well exist. The caller still has to fail safe and
 		// forward the original bytes (there is nothing else it can send), so the real
@@ -86,18 +95,18 @@ func (s *Store) readReplacement(key string) ([]byte, string, bool) {
 		if s.logger != nil {
 			s.logger.Warn("prefix replacement lookup errored (treated as a miss; upstream prefix may flip)", "error", err)
 		}
-		return nil, "", false
+		return nil, "", "", false
 	}
 	if handle == gateway.RawDecisionHandle && len(replacement) == 0 {
-		return nil, handle, true
+		return nil, handle, lastUsed, true
 	}
 	if handle == "" || len(replacement) == 0 {
 		if s.logger != nil {
 			s.logger.Warn("prefix replacement entry incomplete (treated as a miss)")
 		}
-		return nil, "", false
+		return nil, "", "", false
 	}
-	return replacement, handle, true
+	return replacement, handle, lastUsed, true
 }
 
 // prefixCacheEvictEvery spaces eviction out: it runs on the first write and

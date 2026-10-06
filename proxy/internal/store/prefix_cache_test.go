@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/JuliusBrussee/caveman/proxy/internal/gateway"
 )
@@ -288,5 +289,55 @@ func TestPrefixReplacementRawDecision(t *testing.T) {
 	defer s.Close()
 	if replacement, handle, ok := s.LookupReplacement("unlocked", raw); !ok || replacement != nil || handle != gateway.RawDecisionHandle {
 		t.Fatalf("raw decision after restart: %q %q %v", replacement, handle, ok)
+	}
+}
+
+// TestPrefixReplacementLookupTouchesOnlyStaleRows: every block of every turn
+// has a row (raw decisions included), so an unconditional last_used_at write
+// on each hit put one fsynced commit per block on the request path. The LRU
+// only needs coarse recency: a hit touches a row once it is older than
+// prefixCacheTouchInterval, and reads it without writing otherwise.
+func TestPrefixReplacementLookupTouchesOnlyStaleRows(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "caveman.db"), nil)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+	original := []byte("a block re-sent on every turn")
+	if _, err := s.RememberReplacement("unlocked", original, nil, gateway.RawDecisionHandle); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	key := prefixCacheKey("unlocked", original)
+	setLastUsed := func(ts string) {
+		t.Helper()
+		if _, err := s.db.Exec(`UPDATE prefix_replacements SET last_used_at = ? WHERE original_sha256 = ?`, ts, key); err != nil {
+			t.Fatalf("set last_used_at: %v", err)
+		}
+	}
+	lastUsed := func() string {
+		t.Helper()
+		var ts string
+		if err := s.db.QueryRow(`SELECT last_used_at FROM prefix_replacements WHERE original_sha256 = ?`, key).Scan(&ts); err != nil {
+			t.Fatalf("read last_used_at: %v", err)
+		}
+		return ts
+	}
+
+	fresh := time.Now().UTC().Add(-prefixCacheTouchInterval / 2).Format(storeTSLayout)
+	setLastUsed(fresh)
+	if _, _, ok := s.LookupReplacement("unlocked", original); !ok {
+		t.Fatal("lookup missed a stored row")
+	}
+	if got := lastUsed(); got != fresh {
+		t.Fatalf("a hit on a fresh row wrote last_used_at (%s -> %s)", fresh, got)
+	}
+
+	stale := time.Now().UTC().Add(-2 * prefixCacheTouchInterval).Format(storeTSLayout)
+	setLastUsed(stale)
+	if _, _, ok := s.LookupReplacement("unlocked", original); !ok {
+		t.Fatal("lookup missed a stored row")
+	}
+	if got := lastUsed(); got <= stale {
+		t.Fatalf("a hit on a stale row did not refresh it for the LRU (%s -> %s)", stale, got)
 	}
 }
