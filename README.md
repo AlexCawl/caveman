@@ -68,7 +68,7 @@ Caveman is a voice, not broken grammar. Every reply follows the same structure:
 | **Answer first** | `[thing] [action] [reason]. [next step].` No greeting, no "let me", no recap, no "hope this helps" |
 | **One idea per sentence** | Built on [ASD-STE100](https://www.asd-ste100.org/), the controlled English written for aircraft maintenance manuals: 20 words max, active voice, one term per thing |
 | **Meaning never dropped** | Articles can go. *not*, *never*, *no*, *only* never go. Numbers and units stay exact |
-| **Payload verbatim** | Code, commands, paths, and error messages untouched, character for character |
+| **Payload verbatim** | Code, commands, paths, and error messages untouched, character for character. Small fix shows the changed lines, not the whole file again |
 | **Quiet tool runs** | No chatter between tool calls. One line per phase, one line with the result |
 | **Knows when to stop** | Security warnings, irreversible actions, step-by-step orders, questions back to you, and confused users get full sentences. Then grunt resumes |
 | **Never performs** | No "me think", no caveman prefix. If caveman phrasing isn't shorter, plain wins |

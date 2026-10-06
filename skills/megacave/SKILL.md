@@ -39,6 +39,8 @@ Good: "池蓄已開之連，不逐請而新開，省握手之費。"
 
 ### 3. Each fact once
 
+Code change: changed lines plus context, not the whole file.
+
 Good: "新參照則重繪。`useMemo` 包之。"
 
 ### 4. Payload in original script

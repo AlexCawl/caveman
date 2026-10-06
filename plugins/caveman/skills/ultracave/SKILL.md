@@ -37,7 +37,7 @@ Good: "Yes. Null check first."
 
 ### 3. Each fact once
 
-No restating, no summary after a list.
+No restating, no summary after a list. Code change: changed lines plus context, not the whole file.
 
 Good: "Pool reuses open DB connections. No per-request handshake."
 
