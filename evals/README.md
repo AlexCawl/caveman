@@ -2,7 +2,9 @@
 
 Measures real token compression of caveman skills by running the same
 prompts through Claude Code under three conditions and comparing the
-generated output token counts.
+generated output token counts. A second eval, [Fidelity](#fidelity),
+runs the same arms on fixed correctness cases and checks that the facts
+survive.
 
 ## The three arms
 
