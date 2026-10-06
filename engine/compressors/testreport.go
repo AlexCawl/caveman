@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -23,6 +24,22 @@ func (c *testReportCompressor) ContentType() string       { return "test-report"
 func (c *testReportCompressor) SafetyClass() safety.Class { return safety.S4 }
 
 func (c *testReportCompressor) Compress(input []byte) ([]byte, bool) {
+	report, ok := parseTestReport(input)
+	if !ok {
+		return nil, false
+	}
+	return renderTestReport(report), true
+}
+
+// LooksTestReport reports whether input parses as a JUnit, pytest or Jest
+// report with at least one test: exactly the payloads Compress accepts. Detect
+// gates on it so a report the compressor would decline keeps its old routing.
+func LooksTestReport(input []byte) bool {
+	_, ok := parseTestReport(input)
+	return ok
+}
+
+func parseTestReport(input []byte) (*testReport, bool) {
 	if !utf8.Valid(input) {
 		return nil, false // binary content → pass-through
 	}
@@ -52,13 +69,14 @@ func (c *testReportCompressor) Compress(input []byte) ([]byte, bool) {
 	}
 
 	// If 0 tests total, pass through (nothing to compress)
-	if report.Passed+report.Failed+report.Skipped+report.Errors == 0 {
+	total := report.Passed + report.Failed + report.Skipped + report.Errors
+	for _, n := range report.Other {
+		total += n
+	}
+	if total == 0 {
 		return nil, false
 	}
-
-	// Render normalized output
-	out := renderTestReport(report)
-	return out, true
+	return report, true
 }
 
 // testReport is the normalized internal representation of test results.
@@ -69,6 +87,9 @@ type testReport struct {
 	Errors   int
 	Duration float64 // seconds
 	Failures []testFailure
+	// Other counts any further outcome by name (pytest's xfailed, xpassed,
+	// rerun) so the summary never drops a test.
+	Other map[string]int
 }
 
 // testFailure describes one failing test.
@@ -97,6 +118,14 @@ func renderTestReport(r *testReport) []byte {
 	}
 	if r.Skipped > 0 {
 		parts = append(parts, fmt.Sprintf("%d skipped", r.Skipped))
+	}
+	others := make([]string, 0, len(r.Other))
+	for name := range r.Other {
+		others = append(others, name)
+	}
+	sort.Strings(others)
+	for _, name := range others {
+		parts = append(parts, fmt.Sprintf("%d %s", r.Other[name], name))
 	}
 	b.WriteString(strings.Join(parts, ", "))
 	if r.Duration > 0 {
@@ -158,6 +187,8 @@ func parseJUnitXML(input []byte) (*testReport, error) {
 		Skipped  int        `xml:"skipped,attr"`
 		Time     string     `xml:"time,attr"`
 		TestCase []testCase `xml:"testcase"`
+		// PHPUnit nests a suite per class inside a suite per directory.
+		Suites []testSuite `xml:"testsuite"`
 	}
 
 	type testSuites struct {
@@ -169,6 +200,10 @@ func parseJUnitXML(input []byte) (*testReport, error) {
 		XMLName xml.Name `xml:"testsuite"`
 		testSuite
 	}
+
+	// Test runners color failure text for terminals; a raw ESC is illegal XML
+	// and would make the whole report unparseable.
+	input = ansiRe.ReplaceAll(input, nil)
 
 	// Try multi-suite format first
 	var suites testSuites
@@ -183,6 +218,17 @@ func parseJUnitXML(input []byte) (*testReport, error) {
 		suites.Suite = []testSuite{single.testSuite}
 	}
 
+	// Cases of a suite and every suite nested in it. Duration stays the sum of
+	// the top-level suites: a parent suite's time already includes its children.
+	var casesOf func(testSuite) []testCase
+	casesOf = func(s testSuite) []testCase {
+		cases := s.TestCase
+		for _, child := range s.Suites {
+			cases = append(cases, casesOf(child)...)
+		}
+		return cases
+	}
+
 	report := &testReport{}
 	for _, suite := range suites.Suite {
 		// Parse duration
@@ -192,7 +238,7 @@ func parseJUnitXML(input []byte) (*testReport, error) {
 			report.Duration += dur
 		}
 
-		for _, tc := range suite.TestCase {
+		for _, tc := range casesOf(suite) {
 			switch {
 			case tc.Failure != nil:
 				report.Failed++
@@ -247,9 +293,11 @@ func parsePytestJSON(input []byte) (*testReport, error) {
 		Tests    []struct {
 			NodeID  string `json:"nodeid"`
 			Outcome string `json:"outcome"`
-			Call    struct {
-				Longrepr string `json:"longrepr"`
-			} `json:"call"`
+			// Each stage carries its own longrepr: a failure lives under
+			// call, a fixture error under setup or teardown.
+			Setup    pytestStage `json:"setup"`
+			Call     pytestStage `json:"call"`
+			Teardown pytestStage `json:"teardown"`
 		} `json:"tests"`
 	}
 
@@ -265,12 +313,19 @@ func parsePytestJSON(input []byte) (*testReport, error) {
 	report := &testReport{Duration: doc.Duration}
 
 	for _, test := range doc.Tests {
+		longrepr := test.Call.Longrepr
+		if longrepr == "" {
+			longrepr = test.Setup.Longrepr
+		}
+		if longrepr == "" {
+			longrepr = test.Teardown.Longrepr
+		}
 		switch test.Outcome {
 		case "passed":
 			report.Passed++
 		case "failed":
 			report.Failed++
-			lines := strings.Split(test.Call.Longrepr, "\n")
+			lines := strings.Split(longrepr, "\n")
 			msg := ""
 			stack := []string{}
 			// pytest longrepr has message + traceback mixed; extract both
@@ -299,7 +354,7 @@ func parsePytestJSON(input []byte) (*testReport, error) {
 			report.Skipped++
 		case "error":
 			report.Errors++
-			lines := strings.Split(test.Call.Longrepr, "\n")
+			lines := strings.Split(longrepr, "\n")
 			msg := ""
 			stack := []string{}
 			for _, line := range lines {
@@ -320,10 +375,20 @@ func parsePytestJSON(input []byte) (*testReport, error) {
 				Type:    "error",
 				Stack:   stack,
 			})
+		case "":
+		default:
+			if report.Other == nil {
+				report.Other = map[string]int{}
+			}
+			report.Other[test.Outcome]++
 		}
 	}
 
 	return report, nil
+}
+
+type pytestStage struct {
+	Longrepr string `json:"longrepr"`
 }
 
 // parseJestJSON parses Jest JSON output format.

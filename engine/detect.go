@@ -51,14 +51,16 @@ func (e *Engine) Detect(input []byte) string {
 		return TypeText
 	}
 	if (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid(trimmed) {
-		if trimmed[0] == '{' && looksLikeTestReportJSON(trimmed) {
+		if trimmed[0] == '{' && looksLikeTestReportJSON(trimmed) && compressors.LooksTestReport(trimmed) {
 			return TypeTestReport
 		}
 		return TypeJSON
 	}
 	// JUnit runs before terminal so a report whose failure messages carry ANSI
-	// colors still routes to the test-report compressor.
-	if looksLikeJUnitXML(trimmed) {
+	// colors still routes to the test-report compressor, which strips them.
+	// Only a report that compressor accepts counts: Compress has no fallback,
+	// and the native runtime does not mask test-report output.
+	if looksLikeJUnitXML(trimmed) && compressors.LooksTestReport(trimmed) {
 		return TypeTestReport
 	}
 	// Terminal output is detected before diff/code/log because its ANSI-escape

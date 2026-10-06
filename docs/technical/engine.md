@@ -51,7 +51,7 @@ passes input through.
 Automatic detection recognizes:
 
 - JSON;
-- test reports (a JUnit XML root element, or top-level pytest-json-report or Jest JSON keys);
+- test reports (a JUnit XML root element, or top-level pytest-json-report or Jest JSON keys, that parse with at least one test);
 - terminal output;
 - diffs;
 - HTML;

@@ -2,9 +2,12 @@ package compressors_test
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/JuliusBrussee/caveman/engine"
+	"github.com/JuliusBrussee/caveman/engine/ccr"
 	"github.com/JuliusBrussee/caveman/engine/compressors"
 )
 
@@ -304,8 +307,8 @@ func TestTestReportDetection(t *testing.T) {
 		// True positives
 		{"junit_xml", `<testsuite name="suite"><testcase name="t1"/></testsuite>`, engine.TypeTestReport, true},
 		{"junit_xml_multi", `<testsuites><testsuite><testcase/></testsuite></testsuites>`, engine.TypeTestReport, true},
-		{"pytest_json", `{"exitcode": 0, "tests": []}`, engine.TypeTestReport, true},
-		{"jest_json", `{"numFailedTests": 0, "testResults": []}`, engine.TypeTestReport, true},
+		{"pytest_json", `{"exitcode": 0, "tests": [{"nodeid": "t.py::a", "outcome": "passed"}]}`, engine.TypeTestReport, true},
+		{"jest_json", `{"numFailedTests": 0, "numPassedTests": 1, "testResults": []}`, engine.TypeTestReport, true},
 
 		// False positives (should NOT match test-report)
 		{"generic_json_with_tests_only", `{"tests": []}`, engine.TypeJSON, false},
@@ -366,6 +369,106 @@ func TestTestReportDetectionIsAnchored(t *testing.T) {
 				t.Errorf("Detect = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// junitCases renders n <testcase> rows; every tenth fails with a message
+// colored the way test runners print it to a terminal when ansi is set.
+func junitCases(n int, ansi bool) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		if i%10 != 0 {
+			fmt.Fprintf(&b, "<testcase classname=\"InventoryTest\" name=\"test_sku_%03d\" time=\"0.01\"/>\n", i)
+			continue
+		}
+		body := fmt.Sprintf("expected %d, got %d\n  at InventoryTest.java:%d", i, i+1, 40+i)
+		if ansi {
+			body = "\x1b[31m" + body + "\x1b[0m"
+		}
+		fmt.Fprintf(&b, "<testcase classname=\"InventoryTest\" name=\"test_sku_%03d\" time=\"0.01\"><failure message=\"mismatch\">%s</failure></testcase>\n", i, body)
+	}
+	return b.String()
+}
+
+// TestTestReportDetectedShapesCompress pins that a payload Detect routes to
+// test-report really compresses through the engine. Engine.Compress has no
+// fallback when the routed compressor declines, and the native runtime skips
+// masking test-report output, so a shape detected here but rejected by the
+// parser would be neither masked nor compressed.
+func TestTestReportDetectedShapesCompress(t *testing.T) {
+	store, err := ccr.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	e := engine.New(store, nil)
+	cases := []struct {
+		name, input, summary string
+	}{
+		// encoding/xml rejects a raw ESC (U+001B) as an illegal XML character.
+		{"ansi-colored junit", "<testsuite name=\"inventory\">\n" + junitCases(80, true) + "</testsuite>", "TEST SUMMARY: 72 passed, 8 failed"},
+		// PHPUnit nests a suite per class inside a suite per directory.
+		{"phpunit nested suites", "<?xml version=\"1.0\"?>\n<testsuites><testsuite name=\"all\"><testsuite name=\"Unit\">\n" + junitCases(40, false) + "</testsuite><testsuite name=\"Feature\">\n" + junitCases(40, false) + "</testsuite></testsuite></testsuites>", "TEST SUMMARY: 72 passed, 8 failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := []byte(tc.input)
+			if got := e.Detect(in); got != engine.TypeTestReport {
+				t.Fatalf("Detect = %q, want %q", got, engine.TypeTestReport)
+			}
+			res, err := e.Compress(in, engine.Options{Mode: engine.ModeCompress})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Output) >= len(in) || res.RecoveryHandle == "" {
+				t.Fatalf("not compressed: in=%d out=%d handle=%q", len(in), len(res.Output), res.RecoveryHandle)
+			}
+			if !bytes.Contains(res.Output, []byte(tc.summary)) {
+				t.Errorf("summary missing %q:\n%s", tc.summary, res.Output)
+			}
+		})
+	}
+}
+
+// TestTestReportDetectionRequiresParse pins that a test-report root the
+// compressor cannot read keeps its pre-test-report routing instead of being
+// claimed by a compressor that will decline it.
+func TestTestReportDetectionRequiresParse(t *testing.T) {
+	e := engine.New(nil, nil)
+	full := string(junitSingleSuite())
+	for name, input := range map[string]string{
+		"truncated junit":    full[:len(full)/2],
+		"zero-test junit":    `<testsuite tests="0" failures="0"/>`,
+		"zero-test pytest":   `{"exitcode": 5, "tests": []}`,
+		"pytest wrong types": `{"exitcode": "1", "tests": [{"outcome": "failed"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := e.Detect([]byte(input)); got == engine.TypeTestReport {
+				t.Errorf("Detect = %q for a report the compressor rejects", got)
+			}
+		})
+	}
+}
+
+// TestTestReportPytestKeepsEveryOutcome pins that outcomes beyond
+// passed/failed/skipped/error still reach the summary, and that a setup or
+// teardown error keeps its reason (pytest-json-report stores it under that
+// stage, not under call).
+func TestTestReportPytestKeepsEveryOutcome(t *testing.T) {
+	c := compressors.NewTestReport()
+	out, ok := c.Compress([]byte(`{"exitcode":1,"tests":[
+		{"nodeid":"t.py::a","outcome":"passed"},
+		{"nodeid":"t.py::b","outcome":"xfailed"},
+		{"nodeid":"t.py::c","outcome":"xpassed"},
+		{"nodeid":"t.py::d","outcome":"error","setup":{"longrepr":"E fixture 'db' not found"}},
+		{"nodeid":"t.py::e","outcome":"error","teardown":{"longrepr":"E RuntimeError: leaked connection"}}]}`))
+	if !ok {
+		t.Fatal("expected compression")
+	}
+	for _, want := range []string{"1 passed", "2 errors", "1 xfailed", "1 xpassed", "ERROR: t.py::d\n  E fixture 'db' not found", "ERROR: t.py::e\n  E RuntimeError: leaked connection"} {
+		if !bytes.Contains(out, []byte(want)) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
 	}
 }
 
