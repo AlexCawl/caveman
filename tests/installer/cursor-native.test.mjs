@@ -69,7 +69,7 @@ test('install lands agents, hook payload and one sessionStart entry; rerun and u
   const entries = hooksJson().hooks.sessionStart;
   assert.deepEqual(entries[0], FOREIGN);
   assert.equal(entries.length, 2);
-  assert.match(entries[1].command, /caveman-host-session-start\.js'? cursor$/);
+  assert.match(entries[1].command, /caveman-host-session-start\.js['"]? cursor$/);
 
   // The registered command runs from the owned copy, outside the repo.
   const sh = spawnSync(entries[1].command, { shell: true, cwd: dir, env, input: '{}', encoding: 'utf8' });

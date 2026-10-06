@@ -50,7 +50,9 @@ const ZIG_TARGETS = Object.freeze({
 export function releaseGoBuild(name, goos, arch, { zig = "zig", darwinStubs = "", version = "" } = {}) {
   const env = { CGO_ENABLED: "0", GOOS: goos, GOARCH: arch };
   const args = ["-trimpath"];
-  // -X main.version stamps the release tag over main.go's "dev" default.
+  // -X main.version stamps the release tag over main.go's "dev" default. Only
+  // caveman-proxy and caveman-mcp declare main.version; the linker ignores the
+  // flag for the rest.
   const stamp = version ? [`-X main.version=${version}`] : [];
   if (!CGO_RELEASE_BINARIES.includes(name)) {
     if (stamp.length) args.push("-ldflags", stamp.join(" "));
@@ -201,8 +203,8 @@ function testReleaseShape(out, [goos, arch], options) {
 
 function build({ out, targets, test }) {
   mkdirSync(out, { recursive: true });
-  // The pinned release tag, so a released binary's `version` names its
-  // release instead of the "dev" default in main.go.
+  // The pinned release tag, so caveman-proxy's and caveman-mcp's `version`
+  // names its release instead of the "dev" default in main.go.
   const version = readFileSync(join(root, "packages", "cli", "BINARY_RELEASE"), "utf8").trim();
   const zig = process.env.ZIG || "zig";
   requireZig(zig);
