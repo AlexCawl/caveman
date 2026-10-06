@@ -401,3 +401,56 @@ func TestPrefixReplacementPixelRowsHaveTheirOwnCap(t *testing.T) {
 		t.Fatal("the pixel trim must keep the most recently used row")
 	}
 }
+
+// TestPrefixReplacementEvictionKeepsRawPins: a raw pin is read from the store
+// only after a restart, so nothing refreshes its row while the process serves
+// it from memory, and the LRU reached it before the rows of the conversation
+// it protects. Evicting it re-substitutes that conversation over the raw
+// prefix the provider cached, so pin rows are kept out of the eviction.
+func TestPrefixReplacementEvictionKeepsRawPins(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "caveman.db"), nil)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+	oldest := time.Now().UTC().Add(-24 * time.Hour).Format(storeTSLayout)
+	pinKey := prefixCacheKey("rawpin", []byte("a conversation identity and slot"))
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO prefix_replacements (original_sha256, handle, replacement, created_at, last_used_at) VALUES (?,?,?,?,?)`,
+		pinKey, gateway.RawPinHandle, []byte("PIN"), oldest, oldest,
+	); err != nil {
+		t.Fatalf("seed pin: %v", err)
+	}
+	for i := 0; i < prefixCacheMaxEntries+5; i++ {
+		key := prefixCacheKey("unlocked", []byte{byte(i >> 16), byte(i >> 8), byte(i)})
+		if _, err := tx.Exec(
+			`INSERT INTO prefix_replacements (original_sha256, handle, replacement, created_at, last_used_at) VALUES (?,?,?,?,?)`,
+			key, "ccr_seed", []byte("R"), prefixCacheNow(), prefixCacheNow(),
+		); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+	if _, err := s.RememberReplacement("unlocked", []byte("newest block"), []byte("NEW"), "ccr_new"); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var pins, rows int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM prefix_replacements WHERE original_sha256 = ?`, pinKey).Scan(&pins); err != nil {
+		t.Fatalf("count pin: %v", err)
+	}
+	if pins != 1 {
+		t.Fatal("eviction removed a raw pin row")
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM prefix_replacements`).Scan(&rows); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows > prefixCacheMaxEntries+1 {
+		t.Fatalf("rows = %d, want the cap plus the pin at most", rows)
+	}
+}

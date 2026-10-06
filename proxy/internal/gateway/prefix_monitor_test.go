@@ -16,7 +16,7 @@ import (
 // components are the same comma-separated list, all of it cached.
 func observeSame(m *prefixMonitor, session, components string) (bool, int) {
 	parts := splitComponents(components)
-	cause, index := m.observe(session, parts, parts, len(parts), false, 0)
+	cause, index := m.observe(session, observation{client: parts, forwarded: parts, cached: len(parts)})
 	return cause != "", index
 }
 
@@ -135,7 +135,7 @@ func TestPrefixMonitorClassifiesWhoChangedTheBytes(t *testing.T) {
 	m := newPrefixMonitor()
 	observe := func(client, forwarded string, rawRetry bool) (string, int) {
 		c := splitComponents(client)
-		return m.observe("s", c, splitComponents(forwarded), len(c), rawRetry, 0)
+		return m.observe("s", observation{client: c, forwarded: splitComponents(forwarded), cached: len(c), rawRetry: rawRetry})
 	}
 	if cause, _ := observe("sys,tools,m1", "sys,tools,M1", false); cause != "" {
 		t.Fatalf("first observation flagged %q", cause)
@@ -161,7 +161,7 @@ func TestPrefixMonitorHoldsRequestsToTheRawRetry(t *testing.T) {
 	m := newPrefixMonitor()
 	observe := func(client, forwarded string, rawRetry bool, pinned int) (string, int) {
 		c := splitComponents(client)
-		return m.observe("s", c, splitComponents(forwarded), len(c), rawRetry, pinned)
+		return m.observe("s", observation{client: c, forwarded: splitComponents(forwarded), cached: len(c), rawRetry: rawRetry, pinned: pinned})
 	}
 	observe("sys,tools,m1", "sys,tools,M1", false, 0)
 	if cause, idx := observe("sys,tools,m1,m2", "sys,tools,m1,m2", true, 4); cause != bustCauseRawRetry || idx != 2 {

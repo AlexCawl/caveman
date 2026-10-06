@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"crypto/sha256"
+	"slices"
 	"sync"
 
 	"github.com/JuliusBrussee/caveman/proxy/providers"
@@ -23,7 +24,10 @@ import (
 //   - raw_retry: the provider rejected the transformed request and accepted the
 //     original bytes, the invariant's one exception. Requests extending it are
 //     held to the raw request: the raw pin that records it (raw_pin.go) exempts
-//     the anchors it covers, whether or not the retry was observed here.
+//     the anchors it covers, whether or not the retry was observed here. A
+//     request that follows a longer replaced prefix than the pin covers is held
+//     to that prefix instead, and not to the raw anchor (the longest lineage
+//     wins, as in raw_pin.go).
 //
 // It is OBSERVE-ONLY: it never blocks or modifies traffic. A session is not one
 // conversation — a header-less Claude Code process correlates its main thread,
@@ -40,8 +44,10 @@ type prefixMonitor struct {
 }
 
 // prefixAnchor is one accepted request's cached prefix as component digests.
+// raw marks a request that went out raw because of a raw retry or a pin.
 type prefixAnchor struct {
 	client, forwarded [][32]byte
+	raw               bool
 }
 
 const (
@@ -74,26 +80,40 @@ func newPrefixMonitor() *prefixMonitor {
 	return &prefixMonitor{last: map[string][]prefixAnchor{}, cap: defaultPrefixMonitorCap}
 }
 
+// observation is one accepted request as the tripwire sees it.
+type observation struct {
+	// client and forwarded are its cached-prefix components as the client sent
+	// them and as they went upstream (see cachedPrefix); cached is how many of
+	// them it caches.
+	client, forwarded [][]byte
+	cached            int
+	// rawRetry: the provider accepted it only as the client's original bytes.
+	rawRetry bool
+	// pinned is how many leading components a raw pin it extends covers, when
+	// it went out raw. followed is the longest prefix of it that went out
+	// replaced past its longest raw anchor: such a request follows that lineage,
+	// not the shorter raw one (raw_pin.go).
+	pinned, followed int
+}
+
 // observe checks one accepted request against the anchors of its session and
-// records it as an anchor. client and forwarded are its cached-prefix
-// components as the client sent them and as they went upstream (see
-// cachedPrefix), cached how many of them it caches, rawRetry whether the
-// provider accepted it only as the client's original bytes, and pinned how
-// many leading components a raw pin it extends covers.
+// records it as an anchor.
 //
 // Every anchor whose cached client prefix the request repeats must find its
 // forwarded prefix repeated too; the first component that is not is a caveman
-// bust (raw_retry for the retry itself), unless a raw pin covers the anchor:
-// the provider re-cached those bytes raw. Otherwise, a request whose closest
+// bust (raw_retry for the retry itself), unless a raw pin covers the anchor —
+// the provider re-cached those bytes raw — or the anchor went out raw and the
+// request follows a longer replaced lineage. Otherwise, a request whose closest
 // anchor shares the conversation identity but is not repeated is a client bust
 // at the first differing component. "" and -1 mean the request extends what was
 // cached, or there was nothing to compare: no session, or no comparable
 // components.
-func (m *prefixMonitor) observe(session string, client, forwarded [][]byte, cached int, rawRetry bool, pinned int) (cause string, index int) {
+func (m *prefixMonitor) observe(session string, o observation) (cause string, index int) {
+	client, forwarded, cached, rawRetry, pinned := o.client, o.forwarded, o.cached, o.rawRetry, o.pinned
 	if m == nil || session == "" || len(client) == 0 || len(forwarded) != len(client) || cached < 0 || cached > len(client) {
 		return "", -1
 	}
-	cur := prefixAnchor{client: digestEach(client), forwarded: digestEach(forwarded)}
+	cur := prefixAnchor{client: digestEach(client), forwarded: digestEach(forwarded), raw: rawRetry || pinned > 0}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	anchors := m.last[session]
@@ -111,7 +131,7 @@ func (m *prefixMonitor) observe(session string, client, forwarded [][]byte, cach
 			continue
 		}
 		preserved := commonPrefixLen(a.forwarded, cur.forwarded)
-		diverged := preserved < len(a.forwarded) && (rawRetry || pinned < len(a.forwarded))
+		diverged := preserved < len(a.forwarded) && (rawRetry || pinned < len(a.forwarded)) && !(a.raw && o.followed > len(a.client))
 		if diverged && (index < 0 || preserved < index) {
 			cause, index = bustCauseCaveman, preserved
 			if rawRetry {
@@ -140,25 +160,69 @@ func (m *prefixMonitor) observe(session string, client, forwarded [][]byte, cach
 	return cause, index
 }
 
-// observeCachedPrefix runs the tripwire on one accepted request — body as the
-// client sent it, accepted as it went upstream — logs what it found and returns
-// the cause. A provider caches per model, so the model is part of the key.
+// longestRawAnchor returns the length of the longest anchor of session that
+// went out raw and that client repeats; 0 when there is none.
+func (m *prefixMonitor) longestRawAnchor(session string, client [][]byte) int {
+	if m == nil || session == "" {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	var digests [][32]byte
+	for _, a := range m.last[session] {
+		if !a.raw || len(a.client) <= n || len(a.client) > len(client) {
+			continue
+		}
+		if digests == nil {
+			digests = digestEach(client)
+		}
+		if commonPrefixLen(a.client, digests) == len(a.client) {
+			n = len(a.client)
+		}
+	}
+	return n
+}
+
+// observeCachedPrefix runs once per accepted request — body as the client sent
+// it, accepted as it went upstream. It records the request's lineage when its
+// cached prefix went out replaced (raw_pin.go), then runs the tripwire, logs
+// what it found and returns the cause. A provider caches per model, so the
+// model is part of the tripwire's key.
 func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.RequestMetadata, body, accepted []byte, rawRetry bool, sessionID, requestID string) string {
-	if sessionID == "" {
-		return ""
+	sent := bytes.Equal(accepted, body)
+	if sent && sessionID == "" {
+		return "" // raw bytes record no lineage, and the tripwire needs a session
 	}
 	client, cached, ok := cachedPrefix(adapter, meta, body)
 	if !ok {
 		return ""
 	}
-	// Only a request that went out as sent can be one held to a raw pin.
-	forwarded, pinned := client, 0
-	if bytes.Equal(accepted, body) {
-		pinned = s.rawPinCoverage(client)
-	} else if forwarded, _, ok = cachedPrefix(adapter, meta, accepted); !ok {
+	key := sessionID + "\x00" + meta.Model
+	o := observation{client: client, forwarded: client, cached: cached, rawRetry: rawRetry}
+	if sent {
+		// Only a request that went out as sent can be one held to a raw pin.
+		o.pinned = s.rawPinCoverage(adapter, newPrefixDigests(client))
+	} else if o.forwarded, _, ok = cachedPrefix(adapter, meta, accepted); !ok || len(o.forwarded) != len(client) {
+		return ""
+	} else if !componentsEqual(o.forwarded[:cached], client[:cached]) {
+		// Did it follow a replaced lineage past a raw anchor it repeats? Asked
+		// before this request records its own lineage.
+		if raw := s.prefixMonitor.longestRawAnchor(key, client); raw > 0 && s.prefixCache != nil {
+			o.followed = s.longestReplacedLineage(newPrefixDigests(client), raw)
+		}
+		s.recordLineage(adapter, client, cached, lineageReplaced)
+	}
+	if sessionID == "" {
 		return ""
 	}
-	cause, index := s.prefixMonitor.observe(sessionID+"\x00"+meta.Model, client, forwarded, cached, rawRetry, pinned)
+	if rawRetry && cached <= sharedComponents(adapter) {
+		// A raw retry that cached only what every conversation of the agent
+		// shares re-bases nothing (raw_pin.go), so it leaves no anchor to hold
+		// later requests to.
+		o.cached = 0
+	}
+	cause, index := s.prefixMonitor.observe(key, o)
 	if s.logger != nil {
 		attrs := []any{"request_id", requestID, "session_id", sessionID, "index", index}
 		switch cause {
@@ -171,6 +235,10 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 		}
 	}
 	return cause
+}
+
+func componentsEqual(a, b [][]byte) bool {
+	return slices.EqualFunc(a, b, bytes.Equal)
 }
 
 func digestEach(components [][]byte) [][32]byte {

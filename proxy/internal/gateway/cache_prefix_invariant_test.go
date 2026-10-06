@@ -23,10 +23,19 @@ import (
 // For accepted requests P then R, let k be P's last cache_control-marked
 // message. If R's client bytes over system, tools and messages[0..k]
 // (cache_control stripped) equal P's, R's FORWARDED bytes over that range must
-// equal P's forwarded bytes. The one exception is a request the provider
-// rejected in transformed form and accepted through the raw retry: that request
-// may differ from P, and every later request that extends it is then held to
-// the raw request instead of to P.
+// equal P's forwarded bytes.
+//
+// The one exception is a request the provider rejected in transformed form and
+// accepted through the raw retry. That request may differ from what it
+// extends, and the provider now holds its range in two forms: raw, and the
+// replaced form earlier requests cached. A later request follows the LONGEST
+// lineage it extends. When a raw retry that cached the conversation's own bytes
+// (its first message onward) is at least as long as any replaced prefix the
+// request extends, the request is held to the raw form and to nothing
+// replaced; otherwise it is held to the replaced form and to nothing in the raw
+// lineage (the retry, and requests that went out raw extending it). A retry
+// that cached only system and tools re-bases nothing: every other conversation
+// of the agent keeps that range warm in the replaced form.
 //
 // The scenarios below drive Claude Code shaped traffic through Server.Handler
 // and check every pair of accepted requests against that rule.
@@ -80,14 +89,20 @@ func assertCachedPrefixPreserved(t testing.TB, xs []exchange) {
 		views[i] = cachedPrefixView(t, x)
 	}
 	for j := range xs {
+		if xs[j].rawRetry {
+			continue // the exception itself: a raw retry may differ from what it extends
+		}
+		followsRaw := followsRawLineage(xs, views, j)
 		for i := range xs {
-			concurrent := i != j && xs[i].group > 0 && xs[i].group == xs[j].group
-			if i >= j && !concurrent {
+			if i >= j && !sameGroup(xs, i, j) {
 				continue
 			}
 			p, r := views[i], views[j]
-			if !extendsRange(r.client, p.client, p.cached) || rebasedByRawRetry(xs, views, i, j) {
+			if !extendsRange(r.client, p.client, p.cached) {
 				continue
+			}
+			if followsRaw && replacedForm(p) || !followsRaw && inRawLineage(xs, views, i) {
+				continue // the other form of a range a raw retry split
 			}
 			for c := 0; c < p.cached; c++ {
 				if !bytes.Equal(r.forwarded[c], p.forwarded[c]) {
@@ -100,17 +115,54 @@ func assertCachedPrefixPreserved(t testing.TB, xs []exchange) {
 	}
 }
 
-// rebasedByRawRetry reports whether a raw retry took over P's (i) range for R
-// (j): the retry covers P's cached range, and R is that retry or extends the
-// retry's whole cached range. R is then held to the raw retry instead — which
-// the provider cached over at least P's range — whether P came before the
-// retry or re-cached a shorter compressed prefix after it.
-func rebasedByRawRetry(xs []exchange, views []prefixView, i, j int) bool {
-	for k := 0; k <= j; k++ {
-		if k == i || !xs[k].rawRetry || !extendsRange(views[k].client, views[i].client, views[i].cached) {
+// sameGroup reports whether two requests were in flight together. The
+// provider may have processed either first, so the rule is checked both ways
+// between them, and neither counts toward the other's lineage.
+func sameGroup(xs []exchange, a, b int) bool {
+	return a != b && xs[a].group > 0 && xs[a].group == xs[b].group
+}
+
+// replacedForm reports whether P's cached range went out other than the client
+// sent it.
+func replacedForm(p prefixView) bool {
+	return !extendsRange(p.forwarded, p.client, p.cached)
+}
+
+// rawAnchor reports whether k is a raw retry that cached the conversation's
+// own bytes, the only kind that re-bases what extends it.
+func rawAnchor(xs []exchange, views []prefixView, k int) bool {
+	return xs[k].rawRetry && views[k].cached >= conversationComponents
+}
+
+// followsRawLineage reports whether R (j) is held to the raw form: the longest
+// raw anchor it extends is at least as long as the longest prefix it extends
+// that went out replaced.
+func followsRawLineage(xs []exchange, views []prefixView, j int) bool {
+	rawLen, repLen := 0, 0
+	for k := 0; k < j; k++ {
+		if sameGroup(xs, k, j) || views[k].cached < conversationComponents || !extendsRange(views[j].client, views[k].client, views[k].cached) {
 			continue
 		}
-		if k == j || extendsRange(views[j].client, views[k].client, views[k].cached) {
+		if xs[k].rawRetry {
+			rawLen = max(rawLen, views[k].cached)
+		} else if replacedForm(views[k]) {
+			repLen = max(repLen, views[k].cached)
+		}
+	}
+	return rawLen > 0 && rawLen >= repLen
+}
+
+// inRawLineage reports whether P (i) went out in the raw form of a range a raw
+// retry split: it is a raw retry, or it went out raw extending a raw anchor.
+func inRawLineage(xs []exchange, views []prefixView, i int) bool {
+	if xs[i].rawRetry {
+		return true
+	}
+	if replacedForm(views[i]) {
+		return false
+	}
+	for k := 0; k < i; k++ {
+		if rawAnchor(xs, views, k) && !sameGroup(xs, k, i) && extendsRange(views[i].client, views[k].client, views[k].cached) {
 			return true
 		}
 	}
@@ -152,13 +204,16 @@ func (m ccMessage) json(marked bool) string {
 }
 
 // ccConversation builds Claude Code shaped requests: a marked system prompt and
-// a marker on the newest message, which moves forward every turn.
+// a marker on the newest message, which moves forward every turn. systemOnly
+// leaves the messages unmarked, so the request caches only system and tools
+// (a classifier or title side request).
 type ccConversation struct {
-	system   string
-	model    string
-	session  string
-	messages []ccMessage
-	tools    int
+	system     string
+	model      string
+	session    string
+	messages   []ccMessage
+	tools      int
+	systemOnly bool
 }
 
 func newCCConversation(system, session string) *ccConversation {
@@ -198,7 +253,7 @@ func (c *ccConversation) toolResult(content string) *ccConversation {
 func (c *ccConversation) body() []byte {
 	parts := make([]string, len(c.messages))
 	for i, m := range c.messages {
-		parts[i] = m.json(i == len(c.messages)-1)
+		parts[i] = m.json(i == len(c.messages)-1 && !c.systemOnly)
 	}
 	return []byte(`{"model":"` + c.model + `","max_tokens":1024,` +
 		`"system":[{"type":"text","text":` + jsonText(c.system) + `,"cache_control":{"type":"ephemeral"}}],` +
@@ -662,6 +717,37 @@ func TestCachePrefixInvariant(t *testing.T) {
 				t.Fatalf("test setup: the catalog was not stripped:\n%.400s", h.xs[0].forwarded)
 			}
 		}},
+		{"raw retry of a sibling's first turn", func(t *testing.T, h *invariantHarness) {
+			siblingRawRetry(t, h, session, false)
+		}},
+		{"raw retry of a sibling's first turn after a restart", func(t *testing.T, h *invariantHarness) {
+			siblingRawRetry(t, h, session, true)
+		}},
+		{"raw retry of a sibling's first turn with the tool-schema strip", func(t *testing.T, h *invariantHarness) {
+			h.strip = true
+			h.restart("")
+			siblingRawRetry(t, h, session, false)
+		}},
+		{"raw retry of a request caching only system and tools", func(t *testing.T, h *invariantHarness) {
+			h.strip = true
+			h.restart("")
+			main := newCCConversation("You are Claude Code.", session)
+			h.send(main.user(filler("main one")), sendOpts{})
+			h.send(main.user(filler("main two")), sendOpts{})
+			side := newCCConversation("You are Claude Code.", session).user(filler("side request, only the system marked"))
+			side.systemOnly = true
+			if _, attempts := h.send(side, sendOpts{respond: rejectTransformed(http.StatusBadRequest, nil)}); len(attempts) != 2 {
+				t.Fatalf("test setup: the side request should have taken the raw retry, attempts=%d", len(attempts))
+			}
+			_, next := h.send(main.user(filler("main three")), sendOpts{})
+			if !bytes.Contains(next[0].body, []byte(`"input_schema":{"type":"object"}`)) || !bytes.Contains(next[0].body, []byte("<<ccr:")) {
+				t.Errorf("the main thread lost its stripped catalog or its substitutions to a side request's raw retry:\n%.300s", next[0].body)
+			}
+			_, fresh := h.send(newCCConversation("You are Claude Code.", session).user(filler("a new conversation")), sendOpts{})
+			if !bytes.Contains(fresh[0].body, []byte("<<ccr:")) {
+				t.Errorf("a new conversation of the same agent stopped compressing after a side request's raw retry:\n%.300s", fresh[0].body)
+			}
+		}},
 		{"two sessions sharing file contents", func(t *testing.T, h *invariantHarness) {
 			file := filler("package main shared file contents")
 			one := newCCConversation("You are Claude Code in repo one.", "sess-one")
@@ -720,6 +806,29 @@ func rawRetryScenario(t *testing.T, h *invariantHarness, session string, status 
 	h.send(main.user(filler("t5")), sendOpts{})
 }
 
+// siblingRawRetry: two conversations open with the same system, tools and
+// first message (two subagents given one task, repeated claude -p runs). The
+// sibling has cached a longer compressed prefix when the other's first turn
+// takes a raw retry. The raw pin covers that first turn only; the sibling,
+// whose own cached prefix is longer, keeps it, also when the proxy restarted
+// in between.
+func siblingRawRetry(t *testing.T, h *invariantHarness, session string, restart bool) {
+	task := filler("explore the repository and report")
+	sibling := newCCConversation("You are an Explore subagent.", session).user(task)
+	first := sibling.clone()
+	h.send(sibling, sendOpts{})
+	h.send(sibling.toolResult(filler("sibling reads x")), sendOpts{})
+	if restart {
+		h.restart("")
+	}
+	if _, attempts := h.send(first, sendOpts{respond: rejectTransformed(http.StatusBadRequest, nil)}); len(attempts) != 2 {
+		t.Fatalf("test setup: the first turn should have taken the raw retry, attempts=%d", len(attempts))
+	}
+	h.send(sibling.toolResult(filler("sibling reads y")), sendOpts{})
+	h.send(first.user(filler("the retried conversation goes on")), sendOpts{})
+	h.send(sibling.user(filler("sibling wraps up")), sendOpts{})
+}
+
 // FuzzCachePrefixInvariant walks random sequences of the same operations —
 // turns, tool results, side requests, forks, rewinds, client edits, compaction,
 // model switches, restarts, provider rejections, store failures and declines —
@@ -736,7 +845,13 @@ func FuzzCachePrefixInvariant(f *testing.F) {
 		{0, 0, 0, 1, 9, 0, 1, 1, 0, 0, 0, 1, 14, 0, 0, 1},
 		{0, 0, 10, 0, 15, 0, 0, 0, 13, 0, 15, 0, 0, 0},
 		// A raw retry without a session id between two turns that carry one.
-		{46, 50, 46, 50, 57, 48, 46, 50, 46, 50},
+		{14, 50, 14, 50, 9, 48, 14, 50, 14, 50},
+		// A raw retry of a first turn while a sibling with the same opening has
+		// cached a longer compressed prefix: the pin must not capture it.
+		{15, 3, 0, 3, 9, 1, 15, 0, 0, 3},
+		{32, 3, 0, 3, 9, 1, 15, 0, 0, 3}, // 32 % 17 == 15, even: the strip stays off
+		// A raw retry of a request that marks only the system prompt.
+		{1, 0, 0, 0, 9, 1, 16, 0, 0, 0, 16, 2, 0, 0},
 	} {
 		f.Add(seed)
 	}
@@ -807,7 +922,7 @@ func (w *fuzzWorld) send(h *invariantHarness, c *ccConversation) {
 
 func (w *fuzzWorld) step(h *invariantHarness, op, arg byte) {
 	c := w.convs[int(arg)%len(w.convs)]
-	switch op % 16 {
+	switch op % 17 {
 	case 0:
 		w.send(h, c.user(w.content(arg)))
 	case 1:
@@ -897,6 +1012,10 @@ func (w *fuzzWorld) step(h *invariantHarness, op, arg byte) {
 			c.session = ""
 		}
 		w.send(h, c.user(w.content(arg)))
+	case 16: // a side request on c's system and tools that marks only the system
+		side := newCCConversation(c.system, c.session).user(w.content(arg))
+		side.systemOnly = true
+		w.send(h, side)
 	}
 }
 

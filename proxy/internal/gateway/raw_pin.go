@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"hash"
+	"slices"
 	"sync"
 
 	"github.com/JuliusBrussee/caveman/proxy/providers"
@@ -11,22 +13,45 @@ import (
 
 // A raw pin records that the provider rejected a request in transformed form
 // and accepted its original bytes. What the provider cached is then the raw
-// request, so every later request that extends it must go out raw as well —
+// request, so a later request that extends it goes out raw as well —
 // re-substituting earlier replacements would bust that entry on the next turn.
 //
-// The pin follows the conversation, not the session: it matches requests whose
-// client bytes extend the pinned request's cached prefix, so a subagent or
-// side request on the same session keeps compressing. Pins live in the
-// PrefixCache (they survive restarts) and in memory (a failing store cannot
-// unpin a conversation this process pinned).
+// The longest lineage wins. A pin covers what the retried request cached, and
+// another conversation can share that prefix: two subagents given one task,
+// repeated `claude -p` runs. A sibling that had already cached a LONGER prefix
+// in replaced form keeps following it; holding it to the pin would bust its
+// own entry for a shorter one. Every accepted request whose cached prefix went
+// out replaced is therefore recorded as a lineage, and a pin applies only when
+// no longer lineage of the request exists.
+//
+// A pin is taken only on a conversation's own bytes. A retried request that
+// cached nothing past the agent-wide components (system and tools) re-cached
+// bytes every conversation of the agent shares; pinning those would stop the
+// whole agent compressing, while their replaced form stays warm from everyone
+// else's traffic.
+//
+// Pins and lineages live in the PrefixCache (they survive restarts) and in
+// memory (a failing store cannot unpin a conversation this process pinned).
+// The store never evicts pin rows (RawPinHandle).
 const (
-	rawPinScope  = "rawpin"
-	rawPinHandle = "rawpin"
+	rawPinScope = "rawpin"
 	// rawPinSlots bounds the pins kept per conversation identity.
 	rawPinSlots = 64
 	// rawPinIdentities bounds the in-memory copy; the store keeps the rest.
 	rawPinIdentities = 4096
+
+	lineageScope  = "lineage"
+	lineageHandle = "lineage"
+	// lineageReplaced marks a lineage whose cached prefix went out replaced.
+	lineageReplaced = 'r'
+	// lineageMemory bounds the in-memory lineage set; the store keeps the rest.
+	lineageMemory = 65536
 )
+
+// RawPinHandle marks a PrefixCache row holding a raw pin. The store keeps these
+// out of its LRU eviction: losing one re-substitutes over the raw prefix the
+// provider cached.
+const RawPinHandle = "rawpin"
 
 type rawPin struct {
 	n      uint32
@@ -43,96 +68,132 @@ func decodeRawPin(b []byte) (rawPin, bool) {
 	}
 	p := rawPin{n: binary.BigEndian.Uint32(b)}
 	copy(p.digest[:], b[4:])
-	return p, true
+	return p, p.n > 0
 }
 
-func (p rawPin) matches(components [][]byte) bool {
-	return int(p.n) <= len(components) && digestComponents(components[:p.n]) == p.digest
+func (p rawPin) matches(prefix *prefixDigests) bool {
+	return int(p.n) <= len(prefix.components) && prefix.at(int(p.n)) == p.digest
 }
 
+// rawPins holds the pins of each conversation identity this process has seen.
+// An identity is loaded from the store once; pins taken here are added to it.
 type rawPins struct {
-	mu   sync.Mutex
-	pins map[[32]byte][]rawPin
+	mu  sync.Mutex
+	ids map[[32]byte]*pinSet
 }
 
-func (r *rawPins) add(identity [32]byte, p rawPin) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.pins == nil || len(r.pins) >= rawPinIdentities {
-		r.pins = map[[32]byte][]rawPin{}
-	}
-	for _, have := range r.pins[identity] {
-		if have == p {
-			return
-		}
-	}
-	r.pins[identity] = append(r.pins[identity], p)
+type pinSet struct {
+	loaded bool
+	pins   []rawPin
 }
 
-// longest returns the length of the longest pin components extend, 0 if none.
-func (r *rawPins) longest(identity [32]byte, components [][]byte) int {
+func (r *rawPins) set(identity [32]byte) *pinSet {
+	if r.ids == nil || len(r.ids) >= rawPinIdentities {
+		r.ids = map[[32]byte]*pinSet{}
+	}
+	set := r.ids[identity]
+	if set == nil {
+		set = &pinSet{}
+		r.ids[identity] = set
+	}
+	return set
+}
+
+func (r *rawPins) add(identity [32]byte, pins ...rawPin) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	n := 0
-	for _, p := range r.pins[identity] {
-		if p.matches(components) {
-			n = max(n, int(p.n))
+	set := r.set(identity)
+	for _, p := range pins {
+		if !slices.Contains(set.pins, p) {
+			set.pins = append(set.pins, p)
 		}
 	}
-	return n
+}
+
+// pinsFor returns identity's pins, reading its store slots the first time.
+func (s *Server) pinsFor(identity [32]byte) []rawPin {
+	s.rawPins.mu.Lock()
+	if set, ok := s.rawPins.ids[identity]; ok && set.loaded {
+		pins := append([]rawPin(nil), set.pins...)
+		s.rawPins.mu.Unlock()
+		return pins
+	}
+	s.rawPins.mu.Unlock()
+	var stored []rawPin
+	// Pin rows are never evicted and a slot is filled only after every slot
+	// before it, so the first empty slot ends the scan.
+	for slot := 0; slot < rawPinSlots; slot++ {
+		value, _, hit := s.prefixCache.LookupReplacement(rawPinScope, rawPinKey(identity, slot))
+		if !hit {
+			break
+		}
+		if p, ok := decodeRawPin(value); ok {
+			stored = append(stored, p)
+		}
+	}
+	s.rawPins.add(identity, stored...)
+	s.rawPins.mu.Lock()
+	defer s.rawPins.mu.Unlock()
+	set := s.rawPins.set(identity)
+	set.loaded = true
+	return append([]rawPin(nil), set.pins...)
 }
 
 // pinRaw records that the provider accepted body, the client's original bytes,
-// after rejecting transformed. It pins only when the two differ inside what
-// body caches; otherwise the next turn's substitutions already extend it.
+// after rejecting transformed. It pins only a conversation's own bytes, and
+// only when the two differ inside what body caches; otherwise the next turn's
+// substitutions already extend it.
 func (s *Server) pinRaw(adapter providers.Adapter, meta providers.RequestMetadata, body, transformed []byte) {
 	if s.prefixCache == nil {
 		return // nothing was ever substituted, so raw already extends raw
 	}
 	components, cached, ok := cachedPrefix(adapter, meta, body)
-	if !ok || cached == 0 {
+	shared := sharedComponents(adapter)
+	if !ok || cached <= shared {
 		return
 	}
 	if sent, _, ok := cachedPrefix(adapter, meta, transformed); ok && len(sent) >= cached && digestComponents(sent[:cached]) == digestComponents(components[:cached]) {
 		return
 	}
-	identity := sha256.Sum256(components[0])
-	pin := rawPin{n: uint32(cached), digest: digestComponents(components[:cached])}
+	prefix := newPrefixDigests(components)
+	identity := prefix.at(shared + 1)
+	pin := rawPin{n: uint32(cached), digest: prefix.at(cached)}
+	s.pinsFor(identity) // merge with the stored pins before adding this one
 	s.rawPins.add(identity, pin)
 	value := pin.encode()
 	for slot := 0; slot < rawPinSlots; slot++ {
-		stored, err := s.prefixCache.RememberReplacement(rawPinScope, rawPinKey(identity, slot), value, rawPinHandle)
+		stored, err := s.prefixCache.RememberReplacement(rawPinScope, rawPinKey(identity, slot), value, RawPinHandle)
 		if err != nil || bytes.Equal(stored, value) {
 			return
 		}
 	}
 }
 
-// rawPinned reports whether body extends a request pinned raw.
+// rawPinned reports whether body must go out raw: it extends a raw pin and no
+// longer prefix of it went out replaced (the longest lineage wins).
 func (s *Server) rawPinned(adapter providers.Adapter, meta providers.RequestMetadata, body []byte) bool {
+	if s.prefixCache == nil {
+		return false
+	}
 	components, _, ok := cachedPrefix(adapter, meta, body)
-	return ok && s.rawPinCoverage(components) > 0
+	if !ok {
+		return false
+	}
+	prefix := newPrefixDigests(components)
+	pinned := s.rawPinCoverage(adapter, prefix)
+	return pinned > 0 && s.longestReplacedLineage(prefix, pinned) == 0
 }
 
 // rawPinCoverage returns how many leading components the longest raw pin a
-// request extends covers, 0 when it extends none. Pins this process has not
-// seen yet (a restart) are loaded from the store on first use.
-func (s *Server) rawPinCoverage(components [][]byte) int {
-	if s.prefixCache == nil || len(components) == 0 {
+// request extends covers, 0 when it extends none.
+func (s *Server) rawPinCoverage(adapter providers.Adapter, prefix *prefixDigests) int {
+	shared := sharedComponents(adapter)
+	if s.prefixCache == nil || len(prefix.components) <= shared {
 		return 0
 	}
-	identity := sha256.Sum256(components[0])
-	if n := s.rawPins.longest(identity, components); n > 0 {
-		return n
-	}
 	n := 0
-	for slot := 0; slot < rawPinSlots; slot++ {
-		value, _, hit := s.prefixCache.LookupReplacement(rawPinScope, rawPinKey(identity, slot))
-		if !hit {
-			break
-		}
-		if p, ok := decodeRawPin(value); ok && p.matches(components) {
-			s.rawPins.add(identity, p)
+	for _, p := range s.pinsFor(prefix.at(shared + 1)) {
+		if p.matches(prefix) {
 			n = max(n, int(p.n))
 		}
 	}
@@ -141,6 +202,91 @@ func (s *Server) rawPinCoverage(components [][]byte) int {
 
 func rawPinKey(identity [32]byte, slot int) []byte {
 	return append(identity[:len(identity):len(identity)], byte(slot))
+}
+
+// lineages is the in-memory copy of the lineage rows, plus the prefixes the
+// store was asked about and did not have (lineageAbsent), so a pinned
+// conversation reads the store only for lengths it has not asked about.
+type lineages struct {
+	mu    sync.Mutex
+	forms map[[32]byte]byte
+	order [][32]byte
+}
+
+// lineageAbsent marks a prefix the store holds no lineage for.
+const lineageAbsent = 0
+
+// put records form for digest. The first real form wins; an absence is only
+// a cached miss and gives way to it.
+func (l *lineages) put(digest [32]byte, form byte) (recorded bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.forms == nil {
+		l.forms = map[[32]byte]byte{}
+	}
+	have, ok := l.forms[digest]
+	if ok && (have != lineageAbsent || form == lineageAbsent) {
+		return false
+	}
+	l.forms[digest] = form
+	if !ok {
+		if l.order = append(l.order, digest); len(l.order) > lineageMemory {
+			delete(l.forms, l.order[0])
+			l.order = l.order[1:]
+		}
+	}
+	return true
+}
+
+func (l *lineages) form(digest [32]byte) (byte, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	form, ok := l.forms[digest]
+	return form, ok
+}
+
+// recordLineage records that an accepted request cached its prefix
+// [:cached] (client components) in form. The first record of a prefix wins.
+func (s *Server) recordLineage(adapter providers.Adapter, client [][]byte, cached int, form byte) {
+	if s.prefixCache == nil || cached <= sharedComponents(adapter) {
+		return
+	}
+	digest := digestComponents(client[:cached])
+	if s.lineages.put(digest, form) {
+		_, _ = s.prefixCache.RememberReplacement(lineageScope, digest[:], []byte{form}, lineageHandle)
+	}
+}
+
+// longestReplacedLineage returns the length of the longest prefix of the
+// request, longer than above, that an accepted request cached in replaced
+// form; 0 when there is none.
+func (s *Server) longestReplacedLineage(prefix *prefixDigests, above int) int {
+	for n := len(prefix.components); n > above; n-- {
+		digest := prefix.at(n)
+		form, ok := s.lineages.form(digest)
+		if !ok {
+			form = lineageAbsent
+			if value, handle, hit := s.prefixCache.LookupReplacement(lineageScope, digest[:]); hit && handle == lineageHandle && len(value) == 1 {
+				form = value[0]
+			}
+			s.lineages.put(digest, form)
+		}
+		if form == lineageReplaced {
+			return n
+		}
+	}
+	return 0
+}
+
+// sharedComponents is how many leading cached-prefix components every
+// conversation of an agent shares: system and tools in a CachedPrefixInspector
+// split (Anthropic), everything outside the conversation array in the
+// whole-prompt split. The next component opens the conversation itself.
+func sharedComponents(adapter providers.Adapter) int {
+	if _, ok := adapter.(CachedPrefixInspector); ok {
+		return 2
+	}
+	return 1
 }
 
 // cachedPrefix splits a request into the components a provider prompt cache
@@ -194,4 +340,26 @@ func digestComponents(components [][]byte) [32]byte {
 	var out [32]byte
 	h.Sum(out[:0])
 	return out
+}
+
+// prefixDigests hashes a request's components incrementally: at(n) is
+// digestComponents(components[:n]), and each component is hashed once.
+type prefixDigests struct {
+	components [][]byte
+	h          hash.Hash
+	sums       [][32]byte
+}
+
+func newPrefixDigests(components [][]byte) *prefixDigests {
+	return &prefixDigests{components: components, h: sha256.New()}
+}
+
+func (d *prefixDigests) at(n int) [32]byte {
+	for len(d.sums) < n {
+		_, _ = d.h.Write(d.components[len(d.sums)])
+		var sum [32]byte
+		d.h.Sum(sum[:0])
+		d.sums = append(d.sums, sum)
+	}
+	return d.sums[n-1]
 }

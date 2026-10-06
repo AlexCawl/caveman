@@ -128,11 +128,16 @@ func (s *Store) evictPrefixReplacements() {
 	if (s.prefixWrites.Add(1)-1)%prefixCacheEvictEvery != 0 {
 		return
 	}
+	// Raw pins never leave: nothing refreshes a pin row while the gateway
+	// serves it from memory, and losing one re-substitutes a conversation over
+	// the raw prefix the provider cached. They are rare (one per accepted raw
+	// retry), so they do not count against the cap either.
 	if _, err := s.db.Exec(
 		`DELETE FROM prefix_replacements WHERE original_sha256 IN (
-		   SELECT original_sha256 FROM prefix_replacements ORDER BY last_used_at ASC, original_sha256 ASC
-		   LIMIT max(0, (SELECT COUNT(*) FROM prefix_replacements) - ?)
-		 )`, prefixCacheMaxEntries,
+		   SELECT original_sha256 FROM prefix_replacements WHERE handle <> ?1
+		   ORDER BY last_used_at ASC, original_sha256 ASC
+		   LIMIT max(0, (SELECT COUNT(*) FROM prefix_replacements WHERE handle <> ?1) - ?2)
+		 )`, gateway.RawPinHandle, prefixCacheMaxEntries,
 	); err != nil && s.logger != nil {
 		s.logger.Warn("prefix replacement eviction failed", "error", err)
 	}

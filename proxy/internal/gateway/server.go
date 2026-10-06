@@ -344,8 +344,10 @@ type Server struct {
 	// unpersistedRaw remembers blocks that went out raw while prefixCache could
 	// not record it (see rawMemory).
 	unpersistedRaw rawMemory
-	// rawPins are conversations the provider accepted only raw (see raw_pin.go).
+	// rawPins are conversations the provider accepted only raw, and lineages
+	// the cached prefixes that went out replaced (see raw_pin.go).
 	rawPins    rawPins
+	lineages   lineages
 	cacheGuard *cacheguard.Guard
 	// prefixMonitor is the observe-only cache tripwire (see prefix_monitor.go). It
 	// flags cache_bust when a request does not extend what its session cached,
