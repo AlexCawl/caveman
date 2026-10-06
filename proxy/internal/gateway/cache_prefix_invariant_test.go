@@ -1636,7 +1636,9 @@ func pixelRows(label string) string {
 	return strings.Repeat(label+" row with values and a few more words.\n", 420)
 }
 
-func rendered(body []byte) bool { return bytes.Contains(body, []byte(`"type":"image"`)) }
+func rendered(body []byte) bool { return imageCount(body) > 0 }
+
+func imageCount(body []byte) int { return bytes.Count(body, []byte(`"type":"image"`)) }
 
 func TestCachePrefixInvariantPixel(t *testing.T) {
 	a, b, c := pixelRows("A"), pixelRows("B"), pixelRows("C")
@@ -1680,6 +1682,28 @@ func TestCachePrefixInvariantPixel(t *testing.T) {
 				t.Fatal("test setup: turn 1 was not rendered")
 			}
 			h.send(pixelConversation(textTurn, a, b), false)
+		}},
+		{"a long conversation stays within the many-image limit", func(t *testing.T, h *pixelHarness) {
+			// Past 20 images a request may carry no image over 2000 px, and
+			// the renders are wider: the provider would reject every turn.
+			var turns []string
+			for i := 1; i <= 30; i++ {
+				turns = append(turns, pixelRows("turn "+strconv.Itoa(i)))
+				if n := imageCount(h.send(pixelConversation(toolResultTurn, turns...), false)); n > 20 {
+					t.Fatalf("turn %d carried %d images", i, n)
+				}
+			}
+			if !rendered(h.xs[len(h.xs)-1].forwarded) {
+				t.Fatal("test setup: nothing was rendered")
+			}
+		}},
+		{"client images count toward the many-image limit", func(t *testing.T, h *pixelHarness) {
+			images := strings.Repeat(`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}},`, 20)
+			withImages := func(i int, text, marker string) string { return images + toolResultTurn(i, text, marker) }
+			if n := imageCount(h.send(pixelConversation(withImages, a), false)); n != 20 {
+				t.Fatalf("the request carried %d images; the client's own 20 leave no room for a render", n)
+			}
+			h.send(pixelConversation(withImages, a, b), false)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

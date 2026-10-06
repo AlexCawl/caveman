@@ -34,6 +34,23 @@ func (s *Server) pixelRequest(body []byte, meta providers.RequestMetadata, trans
 
 	d := &pixelDecider{s: s, opts: pixel.DefaultTransformOptions(meta.Model)}
 	collectPixelLiveZone(meta, body, d)
+	if d.maxImages > 0 {
+		// The renders earlier turns were cached with always go; a new one
+		// that would pass the cap goes out as text.
+		images := d.clientImages
+		for _, rep := range d.reps {
+			if !rep.fresh {
+				images += rep.imageCount
+			}
+		}
+		d.dropFresh(func(rep pixelReplacement) bool {
+			if images+rep.imageCount > d.maxImages {
+				return true
+			}
+			images += rep.imageCount
+			return false
+		})
+	}
 	if len(d.reps) == 0 {
 		return nil
 	}
@@ -43,10 +60,10 @@ func (s *Server) pixelRequest(body []byte, meta providers.RequestMetadata, trans
 			s.logger.Warn("pixel recovery store failed; new renders go out as text", "error", redact.Error(err), "request_id", requestID)
 		}
 		handle = ""
-		d.dropFresh()
+		d.dropFresh(everyRender)
 	}
 	out, info, err := applyPixelReplacements(body, d.reps)
-	if err != nil && d.dropFresh() {
+	if err != nil && d.dropFresh(everyRender) {
 		out, info, err = applyPixelReplacements(body, d.reps)
 	}
 	if err == nil && d.remember() {
@@ -82,35 +99,37 @@ type pixelReplacement struct {
 	after      int
 	imageCount int
 	imageBytes int
-	// fresh marks a render made by this request, not yet remembered; scope,
+	// fresh marks a render made by this request, not yet remembered; family,
 	// key, parts and wrap are what remembering or dropping it needs.
-	fresh bool
-	scope string
-	key   []byte
-	parts []byte
-	wrap  func([]byte) []byte
+	fresh  bool
+	family pixelFamily
+	key    []byte
+	parts  []byte
+	wrap   func([]byte) []byte
 }
 
 // PixelHandle marks a PrefixCache row holding rendered image parts.
 const PixelHandle = "pixel"
 
+// anthropicManyImages is the most images a pixel request carries to Anthropic.
+// Past 20 images in one request the API rejects any image over 2000 px on a
+// side, and the renders are wider (claude-fable-5's are 2573 px).
+// ponytail: counts every image as oversized; render narrower past the cap if
+// long conversations need more renders.
+const anthropicManyImages = 20
+
 // pixelFamily is one provider's image wire shape: render turns text into the
-// comma-joined image parts that provider reads.
+// comma-joined image parts that provider reads, each opening with image.
 type pixelFamily struct {
 	scope  string
-	render func(text string, opts pixel.TransformOptions) (parts []byte, before, after, imageBytes, imageCount int, ok bool)
+	image  []byte
+	render func(text string, opts pixel.TransformOptions) (parts []byte, before, after, imageBytes int, ok bool)
 }
 
 var (
-	anthropicPixel = pixelFamily{scope: "pixel:anthropic:", render: func(text string, opts pixel.TransformOptions) ([]byte, int, int, int, int, bool) {
-		blocks, before, after, imageBytes, ok := anthropicImageBlocks(text, opts)
-		return blocks, before, after, imageBytes, bytes.Count(blocks, []byte(`"type":"image"`)), ok
-	}}
-	openAIChatPixel = pixelFamily{scope: "pixel:openai-chat:", render: func(text string, opts pixel.TransformOptions) ([]byte, int, int, int, int, bool) {
-		parts, before, after, imageBytes, ok := openAIImageParts(text, opts)
-		return parts, before, after, imageBytes, bytes.Count(parts, []byte(`"type":"image_url"`)), ok
-	}}
-	openAIResponsesPixel = pixelFamily{scope: "pixel:openai-responses:", render: openAIResponsesImageParts}
+	anthropicPixel       = pixelFamily{scope: "pixel:anthropic:", image: []byte(`"type":"image"`), render: anthropicImageBlocks}
+	openAIChatPixel      = pixelFamily{scope: "pixel:openai-chat:", image: []byte(`"type":"image_url"`), render: openAIImageParts}
+	openAIResponsesPixel = pixelFamily{scope: "pixel:openai-responses:", image: []byte(`"type":"input_image"`), render: openAIResponsesImageParts}
 )
 
 func bracketed(parts []byte) []byte { return append(append([]byte("["), parts...), ']') }
@@ -147,6 +166,9 @@ type pixelDecider struct {
 	s    *Server
 	opts pixel.TransformOptions
 	reps []pixelReplacement
+	// maxImages caps the images in the request, 0 for no cap, and
+	// clientImages counts the ones the client sent.
+	maxImages, clientImages int
 }
 
 // add decides the JSON string at text. replace is the span its rendering
@@ -159,12 +181,12 @@ func (d *pixelDecider) add(body []byte, text, replace gatewayJSONSpan, family pi
 		if !ok || len(value) < minChars {
 			return pixelReplacement{}, false
 		}
-		parts, before, after, imageBytes, imageCount, ok := family.render(value, d.opts)
+		parts, before, after, imageBytes, ok := family.render(value, d.opts)
 		if !ok {
 			return pixelReplacement{}, false
 		}
-		return pixelReplacement{span: replace, raw: wrap(parts), before: before, after: after, imageCount: imageCount, imageBytes: imageBytes,
-			fresh: true, parts: parts, wrap: wrap}, true
+		return pixelReplacement{span: replace, raw: wrap(parts), before: before, after: after, imageCount: bytes.Count(parts, family.image), imageBytes: imageBytes,
+			fresh: true, family: family, parts: parts, wrap: wrap}, true
 	}
 	cache := d.s.prefixCache
 	if cache == nil {
@@ -176,13 +198,11 @@ func (d *pixelDecider) add(body []byte, text, replace gatewayJSONSpan, family pi
 		}
 		return
 	}
-	// The model is in the scope: geometry is resolved per reader model, and a
-	// model switch starts a new provider cache anyway.
-	scope := family.scope + d.opts.Model
+	scope := d.scope(family)
 	key := body[text.start:text.end]
 	if stored, handle, hit := cache.LookupReplacement(scope, key); hit {
 		if handle != RawDecisionHandle {
-			d.reps = append(d.reps, pixelReplacement{span: replace, raw: wrap(stored)})
+			d.reps = append(d.reps, pixelReplacement{span: replace, raw: wrap(stored), imageCount: bytes.Count(stored, family.image)})
 		}
 		return
 	}
@@ -190,47 +210,54 @@ func (d *pixelDecider) add(body []byte, text, replace gatewayJSONSpan, family pi
 	// (see rewriteRequest), so it is recorded below like any text decision.
 	if live && !d.s.unpersistedRaw.has(scope, key) {
 		if rep, ok := render(); ok {
-			rep.scope, rep.key = scope, key
+			rep.key = key
 			d.reps = append(d.reps, rep)
 			return
 		}
 	}
-	d.keepText(scope, key, replace, wrap)
+	d.keepText(family, key, replace, wrap)
 }
+
+// scope is the PrefixCache scope of family's decisions. The model is in it:
+// geometry is resolved per reader model, and a model switch starts a new
+// provider cache anyway.
+func (d *pixelDecider) scope(family pixelFamily) string { return family.scope + d.opts.Model }
 
 // keepText records that the text at key goes out as text. If another request
 // already decided it (a concurrent fork, a lookup that failed), the store
 // answers with that decision and it is followed instead.
-func (d *pixelDecider) keepText(scope string, key []byte, replace gatewayJSONSpan, wrap func([]byte) []byte) {
+func (d *pixelDecider) keepText(family pixelFamily, key []byte, replace gatewayJSONSpan, wrap func([]byte) []byte) {
 	if d.s.prefixCache == nil {
 		return
 	}
-	stored, err := d.s.prefixCache.RememberReplacement(scope, key, nil, RawDecisionHandle)
+	stored, err := d.s.prefixCache.RememberReplacement(d.scope(family), key, nil, RawDecisionHandle)
 	if err != nil {
-		d.s.unpersistedRaw.add(scope, key)
+		d.s.unpersistedRaw.add(d.scope(family), key)
 	} else if len(stored) > 0 {
-		d.reps = append(d.reps, pixelReplacement{span: replace, raw: wrap(stored)})
+		d.reps = append(d.reps, pixelReplacement{span: replace, raw: wrap(stored), imageCount: bytes.Count(stored, family.image)})
 	}
 }
 
-// dropFresh sends this request's new renders as text, recording that, and
-// reports whether there were any.
-func (d *pixelDecider) dropFresh() bool {
-	var fresh []pixelReplacement
+// dropFresh sends the new renders drop picks (in request order) as text,
+// recording that, and reports whether it dropped any.
+func (d *pixelDecider) dropFresh(drop func(pixelReplacement) bool) bool {
+	var dropped []pixelReplacement
 	kept := make([]pixelReplacement, 0, len(d.reps))
 	for _, rep := range d.reps {
-		if rep.fresh {
-			fresh = append(fresh, rep)
+		if rep.fresh && drop(rep) {
+			dropped = append(dropped, rep)
 		} else {
 			kept = append(kept, rep)
 		}
 	}
 	d.reps = kept
-	for _, rep := range fresh {
-		d.keepText(rep.scope, rep.key, rep.span, rep.wrap)
+	for _, rep := range dropped {
+		d.keepText(rep.family, rep.key, rep.span, rep.wrap)
 	}
-	return len(fresh) > 0
+	return len(dropped) > 0
 }
+
+func everyRender(pixelReplacement) bool { return true }
 
 // remember records this request's new renders once it is known to go out. A
 // render the store cannot take does not go out at all, since the next turn
@@ -248,15 +275,15 @@ func (d *pixelDecider) remember() bool {
 			kept = append(kept, rep)
 			continue
 		}
-		stored, err := cache.RememberReplacement(rep.scope, rep.key, rep.parts, PixelHandle)
+		stored, err := cache.RememberReplacement(d.scope(rep.family), rep.key, rep.parts, PixelHandle)
 		switch {
 		case err != nil:
-			d.s.unpersistedRaw.add(rep.scope, rep.key)
+			d.s.unpersistedRaw.add(d.scope(rep.family), rep.key)
 			changed = true
 		case len(stored) == 0:
 			changed = true // text came first
 		case !bytes.Equal(stored, rep.parts):
-			kept = append(kept, pixelReplacement{span: rep.span, raw: rep.wrap(stored)})
+			kept = append(kept, pixelReplacement{span: rep.span, raw: rep.wrap(stored), imageCount: bytes.Count(stored, rep.family.image)})
 			changed = true
 		default:
 			kept = append(kept, rep) // rendered here: books its saving
@@ -294,6 +321,7 @@ func collectAnthropicPixelLiveZone(body []byte, d *pixelDecider) {
 	if !ok {
 		return
 	}
+	d.maxImages = anthropicManyImages
 	rawMessages := make([]json.RawMessage, 0, len(messageSpans))
 	for _, span := range messageSpans {
 		rawMessages = append(rawMessages, append(json.RawMessage(nil), body[span.start:span.end]...))
@@ -336,6 +364,8 @@ func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, d *pix
 			continue
 		}
 		switch gatewayObjectStringField(body, block, "type") {
+		case "image":
+			d.clientImages++
 		case "text":
 			textSpan, ok := gatewayFindObjectField(body, block, "text")
 			if !ok || !gatewayIsJSONString(body, textSpan) {
@@ -543,10 +573,10 @@ func openAIImageParts(text string, opts pixel.TransformOptions) ([]byte, int, in
 	return bytes.Join(rawMessagesToBytes(parts), []byte(",")), before, after, imageBytes, true
 }
 
-func openAIResponsesImageParts(text string, opts pixel.TransformOptions) ([]byte, int, int, int, int, bool) {
+func openAIResponsesImageParts(text string, opts pixel.TransformOptions) ([]byte, int, int, int, bool) {
 	images, before, after, imageBytes, ok := renderLiveZonePNGs(text, opts)
 	if !ok {
-		return nil, 0, 0, 0, 0, false
+		return nil, 0, 0, 0, false
 	}
 	parts := make([]json.RawMessage, 0, len(images))
 	for _, img := range images {
@@ -557,7 +587,7 @@ func openAIResponsesImageParts(text string, opts pixel.TransformOptions) ([]byte
 		})
 		parts = append(parts, b)
 	}
-	return bytes.Join(rawMessagesToBytes(parts), []byte(",")), before, after, imageBytes, len(images), true
+	return bytes.Join(rawMessagesToBytes(parts), []byte(",")), before, after, imageBytes, true
 }
 
 func renderLiveZonePNGs(text string, opts pixel.TransformOptions) ([]pixel.RenderedImage, int, int, int, bool) {
