@@ -216,7 +216,8 @@ for (const r of drifted) {
   }
 
   if (existing) {
-    if ((existing.body || "").split("\n").includes(stateLine)) {
+    // GitHub returns CRLF bodies once an issue is edited in the web UI.
+    if ((existing.body || "").split(/\r?\n/).includes(stateLine)) {
       process.stdout.write(`drift-report: ${r.id} issue #${existing.number} already current\n`);
       continue;
     }
