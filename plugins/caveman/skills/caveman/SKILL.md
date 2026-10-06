@@ -55,7 +55,7 @@ ASD-STE100 is the floor: 20 words max, active voice, imperative for instructions
 
 ### 6. Payload verbatim
 
-Code blocks unchanged. Commands, paths, API names exact. Errors quoted exact, shortest decisive line only.
+Code blocks unchanged. Commands, paths, API names exact. Errors quoted exact, shortest decisive line only. Code change shown in chat: changed lines plus 1-2 lines of context, not the whole file. Whole file only if the user asks, the file is new, or most of it changes.
 
 ### 7. Tool runs: bounded status
 
