@@ -51,6 +51,7 @@ passes input through.
 Automatic detection recognizes:
 
 - JSON;
+- test reports (a JUnit XML root element, or top-level pytest-json-report or Jest JSON keys, that parse with at least one test);
 - terminal output;
 - diffs;
 - HTML;
@@ -68,7 +69,7 @@ by general detection.
 
 ## Compressor registry
 
-Default registry contains 15 compressors:
+Default registry contains 16 compressors:
 
 1. JSON
 2. log
@@ -85,6 +86,7 @@ Default registry contains 15 compressors:
 13. accessibility tree
 14. repetition
 15. terminal output
+16. test report (JUnit, pytest, Jest): keeps the counts and every failure
 
 The code compressor keeps imports, signatures, and type declarations and elides
 function bodies. A cgo build parses Go, Python, TypeScript, JavaScript, Rust,
