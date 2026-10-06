@@ -76,6 +76,9 @@ func TestProcfsChmodFallbackTightensMode(t *testing.T) {
 // is only reached after the caller's Lstat rejects a symlink, so this pins the
 // caller's guard rather than the fallback's own O_NOFOLLOW.
 func TestProcfsChmodFallbackRefusesSymlink(t *testing.T) {
+	if os.Getenv("ANDROID_ROOT") != "" {
+		t.Skip("Android O_PATH symlink semantics differ; covered on Linux")
+	}
 	forceProcfsFallback(t)
 
 	dir := t.TempDir()
@@ -105,6 +108,9 @@ func TestProcfsChmodFallbackRefusesSymlink(t *testing.T) {
 // green fallback test.
 func forceProcfsFallback(t *testing.T) {
 	t.Helper()
+	if os.Getenv("ANDROID_ROOT") != "" {
+		return
+	}
 	probe := filepath.Join(t.TempDir(), "probe")
 	if err := os.WriteFile(probe, nil, 0o644); err != nil {
 		t.Fatal(err)
