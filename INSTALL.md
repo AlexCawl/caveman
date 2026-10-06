@@ -87,6 +87,14 @@ If you want to install for one agent (or want to know exactly what command runs 
 
 For "auto-activates? No" agents, invoke the Caveman skill using the host's skill menu, `/caveman` where supported, or a prompt naming the skill. Enable skills first if your host requires it: Augment has a Skills beta setting; AiderDesk requires Skills Tools in the active agent profile; custom Kiro agents need skill resources.
 
+**Pick the mode new sessions start in.** Put `{"defaultMode": "ultracave"}` (or `"caveman"`, `"megacave"`, `"off"`) in `~/.config/caveman/config.json`, or in a `.caveman.json` at a project root for just that project.
+
+**Subagents.** Some agents hand parts of a job to helper agents ("subagents"). Whether the helpers talk caveman depends on the host:
+
+- **Claude Code**: yes. Each subagent starts in the mode of the window that spawned it. Say "stop caveman" and new subagents start normal too. Cavecrew agents keep their own caveman voice.
+- **opencode**: subagents get the always-on caveman rules from `AGENTS.md` (checked on opencode 2.0.22). Those rules are fixed text, so "stop caveman" does not switch them off for subagents.
+- **Hermes Agent**: not verified. If a delegated task comes back wordy, ask for the caveman skill in that task.
+
 Continue needs physical skill directories because its current loader skips per-skill symlinks. The unified installer copies into `CONTINUE_GLOBAL_DIR/skills` (default `~/.continue/skills`) and follows AiderDesk's `AIDER_DESK_HOME_DIR` / `AIDER_DESK_DIR` overrides. It also honors `IFLOW_HOME`, Crush's exact `CRUSH_SKILLS_DIR`, and `GROK_HOME` (Grok Build reads `GROK_HOME/skills`, default `~/.grok/skills`). Use the same environment when uninstalling — for a relative override, that means the same working directory too, since the path resolves against `cwd`. Existing unowned skill directories or symlinks produce a conflict rather than being silently replaced. See the [vendor discovery matrix](docs/technical/installer-provider-discovery.md) for sources and product limits.
 
 Antigravity IDE reads `~/.gemini/antigravity/skills`; Antigravity 2.0 reads `~/.gemini/config/skills`. Select the matching product. Each command copies only into that product's directory.
