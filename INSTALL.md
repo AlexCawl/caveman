@@ -83,6 +83,13 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Antigravity IDE** *(soft probe)* | `npx -y github:JuliusBrussee/caveman -- --only antigravity` | No |
 | **Antigravity 2.0** *(explicit selection)* | `npx -y github:JuliusBrussee/caveman -- --only antigravity-2` | No |
 
+Already inside a Claude Code session? The same Claude Code install as slash commands:
+
+```text
+/plugin marketplace add JuliusBrussee/caveman
+/plugin install caveman@caveman
+```
+
 "Soft probe" = installer won't auto-detect these without `--only <id>` because there's no reliable always-on signal (no CLI / config-dir-only). Pass the flag when you want them.
 
 For "auto-activates? No" agents, invoke the Caveman skill using the host's skill menu, `/caveman` where supported, or a prompt naming the skill. Enable skills first if your host requires it: Augment has a Skills beta setting; AiderDesk requires Skills Tools in the active agent profile; custom Kiro agents need skill resources.

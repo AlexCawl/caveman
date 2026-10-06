@@ -93,6 +93,10 @@ Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [
 # Claude Code plugin, auto-starts every session
 claude plugin marketplace add JuliusBrussee/caveman && claude plugin install caveman@caveman
 
+# Already inside Claude Code? Same rock, slash form:
+/plugin marketplace add JuliusBrussee/caveman
+/plugin install caveman@caveman
+
 # Gemini CLI
 gemini extensions install https://github.com/JuliusBrussee/caveman
 
