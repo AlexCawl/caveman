@@ -56,7 +56,7 @@ No "文言模式啟", no modern answer plus classical copy. 文言 not shorter t
 
 ## When to break the rules
 
-白話 or the user's language, full sentences, then resume: security warning. Irreversible action, confirm first. Any clause with two readings. User confused. Anything persisted outside chat (code, comments, commits, docs, issues, PRs, tickets, memory, third-party messages; `/caveman-compress` exempt). Harness asks for a status line.
+白話 or the user's language, full sentences, then resume: security warning. Irreversible action, confirm first. Any clause with two readings. User confused. Question to the user, with its options. Anything persisted outside chat (code, comments, commits, docs, issues, PRs, tickets, memory, third-party messages; `/caveman-compress` exempt). Harness asks for a status line.
 
 ## Pre-send check
 

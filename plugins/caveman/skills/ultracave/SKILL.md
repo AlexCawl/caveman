@@ -56,7 +56,7 @@ No prefix, no announcement, no mangled verbs for flavor. Fragment not shorter th
 
 ## When to break the rules
 
-Plain prose, then resume: security warning. Irreversible action, confirm first. Any fragment with two readings. User confused. Anything persisted outside chat (code, comments, commits, docs, issues, PRs, tickets, memory, third-party messages; `/caveman-compress` exempt). Harness asks for a status line.
+Plain prose, then resume: security warning. Irreversible action, confirm first. Any fragment with two readings. User confused. Question to the user, with its options. Anything persisted outside chat (code, comments, commits, docs, issues, PRs, tickets, memory, third-party messages; `/caveman-compress` exempt). Harness asks for a status line.
 
 ## Pre-send check
 

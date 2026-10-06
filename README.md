@@ -70,7 +70,7 @@ Caveman is a voice, not broken grammar. Every reply follows the same structure:
 | **Meaning never dropped** | Articles can go. *not*, *never*, *no*, *only* never go. Numbers and units stay exact |
 | **Payload verbatim** | Code, commands, paths, and error messages untouched, character for character |
 | **Quiet tool runs** | No chatter between tool calls. One line per phase, one line with the result |
-| **Knows when to stop** | Security warnings, irreversible actions, step-by-step orders, and confused users get full sentences. Then grunt resumes |
+| **Knows when to stop** | Security warnings, irreversible actions, step-by-step orders, questions back to you, and confused users get full sentences. Then grunt resumes |
 | **Never performs** | No "me think", no caveman prefix. If caveman phrasing isn't shorter, plain wins |
 | **Your prompts stay yours** | Never rewritten. [Research say that backfire](#the-numbers) |
 
