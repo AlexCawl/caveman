@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
+  CGO_RELEASE_BINARIES,
+  RELEASE_BINARIES,
+  RELEASE_TARGETS,
+  RELEASE_ZIG_VERSION,
   releaseArtifactName,
   releaseArtifactNames,
+  releaseGoBuild,
+  writeDarwinLinkStubs,
 } from "../../scripts/build-release-binaries.mjs";
 import {
   assertManifestNamesRelease,
@@ -19,6 +28,69 @@ test("release matrix contains six binaries for six OS/architecture targets", () 
   assert.ok(names.includes("caveman-proxy_win32_amd64"));
   assert.ok(names.includes("caveman-shrink_win32_arm64"));
   assert.equal(releaseArtifactName("cavemem", "windows", "amd64"), "cavemem_win32_amd64");
+});
+
+// #1020: without cgo the code compressor parses Go only, so the proxy and the
+// engine must be cgo builds on every target; the other four stay pure Go.
+test("caveman-proxy and caveman-engine build with cgo through zig on every target", () => {
+  assert.deepEqual([...CGO_RELEASE_BINARIES].sort(), ["caveman-engine", "caveman-proxy"]);
+  for (const [goos, arch] of RELEASE_TARGETS) {
+    for (const [name] of RELEASE_BINARIES) {
+      const { env, args } = releaseGoBuild(name, goos, arch, { zig: "/z/zig", darwinStubs: "/stubs" });
+      assert.ok(args.includes("-trimpath"));
+      if (!CGO_RELEASE_BINARIES.includes(name)) {
+        assert.equal(env.CGO_ENABLED, "0", name);
+        assert.equal(env.CC, undefined, name);
+        continue;
+      }
+      assert.equal(env.CGO_ENABLED, "1", `${name} ${goos}/${arch}`);
+      assert.match(env.CC, /^\/z\/zig cc -target \S+-(macos\.12\.0|linux-musl|windows-gnu)$/);
+      assert.equal(args[args.indexOf("-tags") + 1], "netgo,osusergo");
+      const ldflags = args[args.indexOf("-ldflags") + 1];
+      assert.equal(ldflags, {
+        linux: "-buildid= -w -linkmode external -extldflags '-static -s'",
+        darwin: "-buildid= -w -extldflags '-L/stubs -F/stubs -Wl,-S'",
+        windows: "-buildid= -w -extldflags '-Wl,-Brepro -s'",
+      }[goos]);
+    }
+  }
+});
+
+test("both workflows download the zig version the build script requires", () => {
+  for (const workflow of ["release-binaries.yml", "engine-ci.yml"]) {
+    const text = readFileSync(new URL(`../../.github/workflows/${workflow}`, import.meta.url), "utf8");
+    const urls = text.match(/https:\/\/ziglang\.org\/download\/\S+/g) ?? [];
+    assert.deepEqual(urls, [`https://ziglang.org/download/${RELEASE_ZIG_VERSION}/zig-x86_64-linux-${RELEASE_ZIG_VERSION}.tar.xz`], workflow);
+  }
+});
+
+test("darwin link stubs name every non-libSystem library the Go toolchain imports", () => {
+  const goroot = mkdtempSync(join(tmpdir(), "cave-goroot-"));
+  const stubs = mkdtempSync(join(tmpdir(), "cave-stubs-"));
+  try {
+    mkdirSync(join(goroot, "src", "crypto", "macos"), { recursive: true });
+    writeFileSync(join(goroot, "src", "crypto", "macos", "security.go"), [
+      '//go:cgo_import_dynamic x509_SecTrustEvaluate SecTrustEvaluate "/System/Library/Frameworks/Security.framework/Versions/A/Security"',
+      '//go:cgo_import_dynamic x509_CFRelease CFRelease "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"',
+      '//go:cgo_import_dynamic libresolv_res_9_ninit res_9_ninit "/usr/lib/libresolv.9.dylib"',
+      '//go:cgo_import_dynamic libc_getpid getpid "/usr/lib/libSystem.B.dylib"',
+      "",
+    ].join("\n"));
+    writeFileSync(join(goroot, "src", "crypto", "macos", "x_test.go"),
+      '//go:cgo_import_dynamic t_X X "/usr/lib/libtestonly.dylib"\n');
+    assert.deepEqual(writeDarwinLinkStubs(goroot, stubs), [
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+      "/usr/lib/libresolv.9.dylib",
+    ]);
+    const security = readFileSync(join(stubs, "Security.framework", "Security.tbd"), "utf8");
+    assert.match(security, /install-name: '\/System\/Library\/Frameworks\/Security\.framework\/Versions\/A\/Security'/);
+    assert.match(security, /symbols: \[ _SecTrustEvaluate \]/);
+    assert.match(readFileSync(join(stubs, "libresolv.tbd"), "utf8"), /symbols: \[ _res_9_ninit \]/);
+  } finally {
+    rmSync(goroot, { recursive: true, force: true });
+    rmSync(stubs, { recursive: true, force: true });
+  }
 });
 
 test("checksum signer emits bundle accepted by pinned-key verifier contract", () => {
