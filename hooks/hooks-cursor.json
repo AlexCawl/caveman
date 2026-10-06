@@ -3,7 +3,8 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "node \"${CURSOR_PLUGIN_ROOT}/src/hooks/caveman-session-start-cursor.js\""
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/src/hooks/caveman-host-session-start.js\" cursor",
+        "timeout": 10
       }
     ]
   }

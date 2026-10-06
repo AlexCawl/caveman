@@ -127,3 +127,16 @@ test('watchdog answers when no payload ever arrives', async (t) => {
   assert.ok(r.elapsed < 3500, `took ${r.elapsed}ms`);
   assert.match(JSON.parse(r.stdout).additional_context, /Caveman mode: caveman/);
 });
+
+test('Cursor plugin manifest wires the shared hook, and no hooks/hooks.json exists for Claude Code to load', (t) => {
+  const { dir, env } = fixture(t);
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, '.cursor-plugin/plugin.json'), 'utf8'));
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, manifest.hooks), 'utf8'));
+  const [entry] = hooks.hooks.sessionStart;
+  // Cursor substitutes ${CURSOR_PLUGIN_ROOT} before running the command.
+  const command = entry.command.replace('${CURSOR_PLUGIN_ROOT}', ROOT);
+  const [, script, host] = command.match(/^node "([^"]+)" (\S+)$/);
+  const r = spawnSync(process.execPath, [script, host], { env, cwd: dir, input: '{}', encoding: 'utf8' });
+  assert.match(JSON.parse(r.stdout).additional_context, /Caveman mode: caveman/);
+  assert.equal(fs.existsSync(path.join(ROOT, 'hooks/hooks.json')), false);
+});
