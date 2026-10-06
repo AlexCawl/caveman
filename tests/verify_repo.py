@@ -356,6 +356,7 @@ def verify_manifests_and_syntax() -> None:
         "caveman-statusline.sh",
         "caveman-statusline.ps1",
         "cavecrew-model-overrides.js",
+        "caveman-host-session-start.js",
     }
     manifest: dict[str, str] = {}
     for line in (hook_dir / "checksums.sha256").read_text(encoding="utf-8").splitlines():
@@ -371,6 +372,7 @@ def verify_manifests_and_syntax() -> None:
     run(["node", "--check", "src/hooks/caveman-activate.js"])
     run(["node", "--check", "src/hooks/caveman-mode-tracker.js"])
     run(["node", "--check", "src/hooks/cavecrew-model-overrides.js"])
+    run(["node", "--check", "src/hooks/caveman-host-session-start.js"])
     run(["node", "--check", "bin/install.js"])
     run(["node", "--check", "bin/lib/settings.js"])
     bash = shutil.which("bash")
