@@ -741,9 +741,15 @@ function installViaSkills(ctx, prov) {
 const HERMES_SKILL_DIRS = ['caveman', 'ultracave', 'megacave', 'caveman-commit', 'caveman-review', 'caveman-help', 'caveman-stats', 'caveman-compress', 'cavecrew'];
 
 function hermesConfigDir() {
-  // Hermes uses ~/.hermes by default, or HERMES_HOME env var.
-  if (process.env.HERMES_HOME) return path.join(process.env.HERMES_HOME, 'skills');
-  return path.join(os.homedir(), '.hermes', 'skills');
+  // Hermes uses ~/.hermes by default, or HERMES_HOME env var. Hermes 0.21.5 reads
+  // the override as Path(expanduser(expandvars(value.strip()))); same as hermesHome()
+  // in packages/cli. ponytail: no `~user` or Windows quote/escape forms.
+  const override = (process.env.HERMES_HOME || '').trim();
+  if (!override) return path.join(os.homedir(), '.hermes', 'skills');
+  const lookup = (whole, name) => (process.env[name] !== undefined ? process.env[name] : whole);
+  let home = override.replace(/\$(\w+)|\$\{([^}]*)\}/g, (whole, bare, braced) => lookup(whole, bare !== undefined ? bare : braced));
+  if (process.platform === 'win32') home = home.replace(/%([^%]+)%/g, lookup);
+  return path.join(home.replace(/^~(?=$|[\\/])/, os.homedir()), 'skills');
 }
 
 function installHermes(ctx) {

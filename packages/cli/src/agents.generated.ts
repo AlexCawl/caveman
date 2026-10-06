@@ -111,10 +111,10 @@ export const PROFILES: AgentProfile[] = [
     "attribution": {
       "header": "x-cave-agent"
     },
-    "tested_agent_version": "2.1.289",
+    "tested_agent_version": "2.1.291",
     "injection_completeness": "builder-assisted",
-    "last_verified_at": "2026-10-04",
-    "verified_by": "local pinned-binary probe (claude 2.1.289 on Node 22.22.0, agents/probe-installed.mjs)",
+    "last_verified_at": "2026-10-06",
+    "verified_by": "local pinned-binary probe (claude 2.1.291 on Node 22.22.2, agents/probe-installed.mjs)",
     "fallback": "generic-env",
     "maintainer": null
   },
@@ -215,8 +215,10 @@ export const PROFILES: AgentProfile[] = [
     "attribution": {
       "header": "x-cave-agent"
     },
-    "tested_agent_version": "0.19.1",
+    "tested_agent_version": "0.21.5",
     "injection_completeness": "builder-assisted",
+    "last_verified_at": "2026-10-06",
+    "verified_by": "local pinned-binary probe (hermes 0.21.5 = release v2026.9.24 at f97608f1, editable install on Python 3.12, agents/probe-installed.mjs)",
     "fallback": "generic-env",
     "maintainer": null
   },
@@ -492,10 +494,10 @@ export const PROFILES: AgentProfile[] = [
     "command_hook": {
       "method": "pi-extension"
     },
-    "tested_agent_version": "1.0.2",
+    "tested_agent_version": "1.0.4",
     "injection_completeness": "builder-assisted",
-    "last_verified_at": "2026-10-04",
-    "verified_by": "local pinned-binary probe (pi 1.0.2, agents/probe-installed.mjs); packages/pi-extension suite against pi-coding-agent 1.0.2",
+    "last_verified_at": "2026-10-06",
+    "verified_by": "local pinned-binary probe (pi 1.0.4, agents/probe-installed.mjs); packages/pi-extension suite against pi-coding-agent 1.0.4",
     "fallback": "none",
     "maintainer": null
   },
