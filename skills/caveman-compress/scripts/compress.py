@@ -9,6 +9,7 @@ Usage:
 import contextlib
 import errno
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -386,11 +387,16 @@ CLAUDE_SETTING_SOURCES_ARG = "--setting-sources"
 CLAUDE_STRICT_MCP_ARG = "--strict-mcp-config"
 OPENCODE_CLI = "opencode"
 OPENCODE_RUN_ARG = "run"
+OPENCODE_STANDALONE_ARG = "--standalone"
 OPENCODE_FILE_ARG = "--file"
 MODEL_ARG = "--model"
 OPENCODE_PROMPT_PREFIX = ".caveman-compress-prompt-"
 OPENCODE_PROMPT_SUFFIX = ".md"
 OPENCODE_PROMPT_MESSAGE = "Follow the attached prompt exactly. Return only the final answer."
+# The compressed file is untrusted input sent as a prompt to opencode's agent,
+# which by default can edit files and run bash. claude --print never
+# auto-approves those tools; deny them here for the same guarantee.
+OPENCODE_PERMISSION_DENY = {"edit": "deny", "bash": "deny", "webfetch": "deny"}
 
 # Output ceiling for one SDK call: the max output of the default model
 # (claude-sonnet-4-5). A body that needs more is refused in call_claude(),
@@ -495,6 +501,7 @@ def run_cli(
     binary_name: str,
     args: List[str],
     stdin_prompt: Optional[str] = None,
+    env: Optional[dict] = None,
 ) -> str:
     binary = shutil.which(binary_name) or binary_name
     command = [binary, *args]
@@ -508,6 +515,8 @@ def run_cli(
     }
     if stdin_prompt is not None:
         run_kwargs["input"] = stdin_prompt
+    if env is not None:
+        run_kwargs["env"] = env
     try:
         result = subprocess.run(command, **run_kwargs)
         return strip_llm_wrapper(result.stdout.strip())
@@ -590,6 +599,13 @@ def call_opencode_cli(prompt: str) -> str:
     model = configured_model()
     if model:
         args.extend([MODEL_ARG, model])
+    # --standalone: the shared background service ignores this process's env
+    # (verified on opencode 2.0.22), so the deny config only binds a private
+    # server. Never pass --auto. Any inline config the user set is kept.
+    args.append(OPENCODE_STANDALONE_ARG)
+    config = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
+    config["permission"] = OPENCODE_PERMISSION_DENY
+    env = {**os.environ, "OPENCODE_CONFIG_CONTENT": json.dumps(config)}
 
     prompt_path = None
     try:
@@ -605,7 +621,7 @@ def call_opencode_cli(prompt: str) -> str:
         args.extend(
             [OPENCODE_FILE_ARG, str(prompt_path), OPENCODE_PROMPT_MESSAGE]
         )
-        return run_cli(OPENCODE_CLI, args)
+        return run_cli(OPENCODE_CLI, args, env=env)
     finally:
         if prompt_path is not None:
             # Warn, never raise: raising here would replace the real opencode

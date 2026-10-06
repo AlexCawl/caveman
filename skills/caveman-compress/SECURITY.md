@@ -8,6 +8,8 @@
 
 1. **subprocess usage**: The skill calls the `claude` CLI via `subprocess.run()` as a fallback when `ANTHROPIC_API_KEY` is not set. It can also call `opencode run` when `CAVEMAN_COMPRESS_PROVIDER=opencode`. Subprocess calls use fixed argument lists — no shell interpolation occurs. Claude receives user file content via stdin; opencode receives the generated prompt through a temporary `--file` attachment that is deleted after the call.
 
+   The file being compressed is untrusted input, and opencode's default agent can edit files and run shell commands. Compress therefore runs `opencode run --standalone` with `OPENCODE_CONFIG_CONTENT` setting `permission` to deny `edit`, `bash` and `webfetch`, and never passes `--auto`. `--standalone` matters: the shared opencode background service does not read the caller's environment, so the deny rule only binds a private server.
+
 2. **File read/write**: The skill reads the file the user explicitly points it at, compresses it, and writes the result back to the same path. A `.original.md` backup is saved to an out-of-tree data dir (`$XDG_DATA_HOME/caveman-compress/backups/<parent-dir-name>/`, or `%LOCALAPPDATA%\caveman-compress\backups\<parent-dir-name>\` on Windows). The opencode provider writes a temporary prompt attachment in the OS temp directory and deletes it after the subprocess exits. Beyond the target file, that backup location, and the temporary attachment, no files are read or written.
 
 ### What the skill does NOT do

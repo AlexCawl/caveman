@@ -9,6 +9,7 @@ bytes is detected before the input is overwritten.
 """
 
 import io
+import json
 import os
 import stat
 import sys
@@ -464,8 +465,10 @@ class CompressSafetyTests(unittest.TestCase):
         self.assertNotIn(PROMPT_TEXT, command)
         self.assertNotEqual(prompt_path.parent, Path.cwd())
         self.assertFalse(prompt_path.exists())
+        kwargs = dict(run.call_args.kwargs)
+        kwargs.pop("env")  # asserted in test_opencode_runs_standalone_with_tools_denied
         self.assertEqual(
-            run.call_args.kwargs,
+            kwargs,
             {
                 "text": True,
                 "capture_output": True,
@@ -475,6 +478,27 @@ class CompressSafetyTests(unittest.TestCase):
                 "timeout": compress_mod.CLAUDE_CALL_TIMEOUT_SECONDS,
             },
         )
+
+    def test_opencode_runs_standalone_with_tools_denied(self):
+        # The file being compressed is untrusted input sent as a prompt to
+        # opencode's agent, which by default may edit files and run bash.
+        # The background service ignores the client's env, so the deny
+        # config only applies to a private --standalone server.
+        completed = mock.Mock(stdout=OPENCODE_OUTPUT)
+        with llm_env(CAVEMAN_COMPRESS_PROVIDER=OPENCODE_PROVIDER), \
+             mock.patch.dict(os.environ, {"OPENCODE_CONFIG_CONTENT": '{"model": "x/y"}'}), \
+             mock.patch.object(compress_mod.subprocess, "run", return_value=completed) as run:
+            compress_mod.call_claude(PROMPT_TEXT)
+
+        command = run.call_args.args[0]
+        self.assertIn("--standalone", command)
+        self.assertNotIn("--auto", command)
+        config = json.loads(run.call_args.kwargs["env"]["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual(
+            config["permission"],
+            {"edit": "deny", "bash": "deny", "webfetch": "deny"},
+        )
+        self.assertEqual(config["model"], "x/y")  # user's inline config kept
 
     def test_compression_status_names_configured_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
