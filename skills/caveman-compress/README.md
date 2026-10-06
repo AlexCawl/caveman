@@ -35,16 +35,18 @@ or `%LOCALAPPDATA%\caveman-compress\backups\<parent-dir-name>\` on Windows. Edit
 
 ## Benchmarks
 
-Real results on real project files:
+The five fixture pairs in [`tests/caveman-compress/`](../../tests/caveman-compress/),
+counted with tiktoken o200k. Reproduce with
+`uv run --with tiktoken python skills/caveman-compress/scripts/benchmark.py`.
 
 | File | Original | Compressed | Saved |
 |------|----------:|----------:|------:|
-| `claude-md-preferences.md` | 706 | 285 | 59.6% |
-| `project-notes.md` | 1145 | 535 | 53.3% |
-| `claude-md-project.md` | 1122 | 636 | 43.3% |
-| `todo-list.md` | 627 | 388 | 38.1% |
-| `mixed-with-code.md` | 888 | 560 | 36.9% |
-| Average | 898 | 481 | 46% |
+| `claude-md-preferences.md` | 827 | 421 | 49.1% |
+| `claude-md-project.md` | 1628 | 1117 | 31.4% |
+| `mixed-with-code.md` | 1432 | 1106 | 22.8% |
+| `project-notes.md` | 1431 | 846 | 40.9% |
+| `todo-list.md` | 880 | 648 | 26.4% |
+| Total | 6198 | 4138 | 33.2% |
 
 All fixture validations passed: headings, code blocks, URLs, and file paths were
 preserved exactly.
@@ -55,14 +57,14 @@ preserved exactly.
 <tr>
 <td width="50%">
 
-### Original (706 tokens)
+### Original (827 tokens)
 
 > "I strongly prefer TypeScript with strict mode enabled for all new code. Please don't use `any` type unless there's genuinely no way around it, and if you do, leave a comment explaining the reasoning. I find that taking the time to properly type things catches a lot of bugs before they ever make it to runtime."
 
 </td>
 <td width="50%">
 
-### <img src="../../docs/assets/dancing-rock.svg" width="20" height="20" alt="rock"/> Caveman (285 tokens)
+### <img src="../../docs/assets/dancing-rock.svg" width="20" height="20" alt="rock"/> Caveman (421 tokens)
 
 > "Prefer TypeScript strict mode always. No `any` unless unavoidable; comment why if used. Proper types catch bugs early."
 
@@ -70,7 +72,7 @@ preserved exactly.
 </tr>
 </table>
 
-This fixture produced 59.6% fewer counted tokens. Structural validation passed;
+This fixture produced 49.1% fewer counted tokens. Structural validation passed;
 result does not prove semantic equivalence on other files or models.
 
 ## Security
@@ -159,13 +161,14 @@ Caveman compress natural language. It never touch:
 `CLAUDE.md` loads on every session start. A 1,000-token project memory file adds
 1,000 input tokens each time project opens, or 100,000 across 100 sessions.
 
-Caveman reduced counted tokens by about 46% on five listed fixtures. Validators
-confirmed headings, code blocks, URLs, and file paths. They did not establish
-general semantic or task-quality equivalence.
+Caveman reduced counted tokens by 33.2% in total on the five listed fixtures
+(22.8% to 49.1% per file). Validators confirmed headings, code blocks, URLs,
+and file paths. They did not establish general semantic or task-quality
+equivalence.
 
 ```
 ┌────────────────────────────────────────────┐
-│  TOKEN SAVINGS PER FILE    █████       46% │
+│  TOKEN SAVINGS, ALL FIVE   ███       33.2% │
 │  FIXTURES IN TABLE                       5 │
 │  STRUCTURAL VALIDATION       passed on all │
 │  SETUP TIME                █            1x │

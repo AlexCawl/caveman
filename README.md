@@ -164,7 +164,7 @@ New models already know "be concise", so that line is the real baseline. On top 
 | What | Result |
 |---|---|
 | A web page the agent reads (`caveman browse`, 200-row table) | **121 tokens instead of 15,704** for a Playwright snapshot, 129.8× smaller. Tiny forms lose 2.3×. [Bench](./browse/BENCHMARK.md) |
-| Memory files like `CLAUDE.md` (`/caveman-compress`) | **46% smaller** across five fixtures, with every heading, code block, and path intact. [Bench](./skills/caveman-compress/README.md#benchmarks) |
+| Memory files like `CLAUDE.md` (`/caveman-compress`) | **33.2% smaller** across five fixtures (22.8% to 49.1% per file), with every heading, code block, and path intact. [Bench](./skills/caveman-compress/README.md#benchmarks) |
 
 The rules add about 1,000 input tokens to every call. If you pay per request instead of per token (GitHub Copilot premium requests), a shorter answer costs the same, so skip it. Every case where caveman loses: [HONEST-NUMBERS.md](./docs/HONEST-NUMBERS.md).
 
