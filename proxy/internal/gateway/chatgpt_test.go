@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -53,6 +55,174 @@ func chatgptTestServer(t *testing.T, upstream string) (*Server, *captureSink, *b
 		Logger:          slog.New(slog.NewJSONHandler(logs, nil)),
 	})
 	return srv, sink, logs
+}
+
+func TestPiChatGPTSubscriptionDetection(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		method  string
+		path    string
+		rawPath string
+		query   string
+		agent   string
+		account string
+		auth    string
+		want    bool
+	}{
+		{name: "exact Pi request", method: http.MethodPost, path: "/codex/responses", agent: "pi", account: "acct", auth: "Bearer token", want: true},
+		{name: "wrong method", method: http.MethodGet, path: "/codex/responses", agent: "pi", account: "acct", auth: "Bearer token"},
+		{name: "wrong path", method: http.MethodPost, path: "/responses", agent: "pi", account: "acct", auth: "Bearer token"},
+		{name: "encoded path", method: http.MethodPost, path: "/codex/responses", rawPath: "/codex%2Fresponses", agent: "pi", account: "acct", auth: "Bearer token"},
+		{name: "query", method: http.MethodPost, path: "/codex/responses", query: "x=1", agent: "pi", account: "acct", auth: "Bearer token"},
+		{name: "wrong agent", method: http.MethodPost, path: "/codex/responses", agent: "other", account: "acct", auth: "Bearer token"},
+		{name: "unverified agent path", method: http.MethodPost, path: "/codex/responses", agent: "", account: "acct", auth: "Bearer token"},
+		{name: "missing account", method: http.MethodPost, path: "/codex/responses", agent: "pi", auth: "Bearer token"},
+		{name: "non bearer auth", method: http.MethodPost, path: "/codex/responses", agent: "pi", account: "acct", auth: "Basic nope"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req.URL.RawPath = tt.rawPath
+			req.URL.RawQuery = tt.query
+			req.Header.Set("x-cave-agent", tt.agent)
+			req.Header.Set("ChatGPT-Account-ID", tt.account)
+			req.Header.Set("Authorization", tt.auth)
+			verifiedAgentPath := tt.agent == "pi"
+			if got := isPiChatGPTSubscription(req, verifiedAgentPath); got != tt.want {
+				t.Fatalf("isPiChatGPTSubscription() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPiChatGPTOAuthZstdRoutesAndCompresses(t *testing.T) {
+	live := strings.Repeat("pi oauth zstd tool output ", 40)
+	logical := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"` + live + `"}]}]}`)
+	wire, ok := encodeChatGPTRequestBody(logical, chatGPTRequestZstd)
+	if !ok {
+		t.Fatal("zstd encoder unavailable")
+	}
+	rt := &captureTransport{responses: []string{"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":90,\"output_tokens\":10}}}\n\n"}}
+	sink := &captureSink{}
+	srv := New(Config{
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Sink:            sink,
+		Compressor:      &liveZoneCompressor{},
+		PrefixCache:     newTestPrefixCache(),
+		RecoveryViaMCP:  true,
+		ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+		HTTPClient:      &http.Client{Transport: rt},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/w/pi/codex/responses", bytes.NewReader(wire))
+	req.Header.Set("Authorization", "Bearer pi-oauth-secret")
+	req.Header.Set("ChatGPT-Account-ID", "acct_pi")
+	req.Header.Set("Content-Encoding", "zstd")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
+		t.Fatalf("status/calls = %d/%d body=%s", rec.Code, len(rt.bodies), rec.Body.String())
+	}
+	if got := rt.headers[0].Get("Content-Encoding"); got != "zstd" {
+		t.Fatalf("Content-Encoding = %q, want zstd", got)
+	}
+	if got := rt.headers[0].Get("Authorization"); got != "Bearer pi-oauth-secret" {
+		t.Fatalf("Authorization changed: %q", got)
+	}
+	if got := rt.headers[0].Get("ChatGPT-Account-ID"); got != "acct_pi" {
+		t.Fatalf("ChatGPT-Account-ID changed: %q", got)
+	}
+	if got := rt.headers[0].Get("x-cave-agent"); got != "" {
+		t.Fatalf("proxy-private agent header reached upstream: %q", got)
+	}
+	decoded, encoding, decodeErr := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"))
+	if decodeErr != nil || encoding != chatGPTRequestZstd {
+		t.Fatalf("transformed upstream body is not valid zstd: encoding=%q err=%v", encoding, decodeErr)
+	}
+	if bytes.Contains(decoded, []byte(live)) || !bytes.Contains(decoded, []byte("<<ccr:")) {
+		t.Fatalf("decoded upstream body was not Caveman-compressed: %s", decoded)
+	}
+	row := sink.last(t)
+	if row.AgentSlug != "pi" || row.Model != "gpt-5.5" || row.AuthMode != "subscription" || !row.Stream || row.ErrorCode != "" {
+		t.Fatalf("row attribution wrong: %+v", row)
+	}
+	if row.CompressionTokensBefore <= row.CompressionTokensAfter || row.RecoveryHandle == "" || row.InputTokens != 90 || row.OutputTokens != 10 {
+		t.Fatalf("compression accounting missing: %+v", row)
+	}
+}
+
+func TestPiChatGPTZstdTransformed4xxRetriesExactOriginalWire(t *testing.T) {
+	live := strings.Repeat("pi oauth fallback content ", 40)
+	logical := []byte(`{"model":"gpt-5.5","input":"` + live + `"}`)
+	wire, ok := encodeChatGPTRequestBody(logical, chatGPTRequestZstd)
+	if !ok {
+		t.Fatal("zstd encoder unavailable")
+	}
+	rt := &captureTransport{statuses: []int{http.StatusTooManyRequests, http.StatusOK}}
+	sink := &captureSink{}
+	srv := New(Config{
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Sink:            sink,
+		Compressor:      &liveZoneCompressor{},
+		PrefixCache:     newTestPrefixCache(),
+		RecoveryViaMCP:  true,
+		ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+		HTTPClient:      &http.Client{Transport: rt},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/w/pi/codex/responses", bytes.NewReader(wire))
+	req.Header.Set("Authorization", "Bearer pi-oauth-secret")
+	req.Header.Set("ChatGPT-Account-ID", "acct_pi")
+	req.Header.Set("Content-Encoding", "zstd")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || len(rt.bodies) != 2 {
+		t.Fatalf("status/calls = %d/%d, want 200/2", rec.Code, len(rt.bodies))
+	}
+	if bytes.Equal(rt.bodies[0], wire) {
+		t.Fatal("first attempt did not exercise transformed zstd path")
+	}
+	if !bytes.Equal(rt.bodies[1], wire) {
+		t.Fatal("4xx retry did not restore the exact original zstd bytes")
+	}
+	for i, headers := range rt.headers {
+		if got := headers.Get("Content-Encoding"); got != "zstd" {
+			t.Fatalf("attempt %d Content-Encoding = %q, want zstd", i+1, got)
+		}
+	}
+	row := sink.last(t)
+	if row.RecoveryHandle != "" || row.CompressionTokensBefore != 0 || row.RawRequestSHA256 != row.TransformedRequestSHA256 {
+		t.Fatalf("fallback row must claim no compression: %+v", row)
+	}
+}
+
+func TestPiChatGPTMalformedZstdFailsOpenByteExact(t *testing.T) {
+	wire := []byte("not a zstd frame")
+	rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+	srv := New(Config{
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Sink:            &captureSink{},
+		Compressor:      &liveZoneCompressor{},
+		PrefixCache:     newTestPrefixCache(),
+		RecoveryViaMCP:  true,
+		ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+		HTTPClient:      &http.Client{Transport: rt},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/w/pi/codex/responses", bytes.NewReader(wire))
+	req.Header.Set("Authorization", "Bearer pi-oauth-secret")
+	req.Header.Set("ChatGPT-Account-ID", "acct_pi")
+	req.Header.Set("Content-Encoding", "zstd")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
+		t.Fatalf("status/calls = %d/%d", rec.Code, len(rt.bodies))
+	}
+	if !bytes.Equal(rt.bodies[0], wire) {
+		t.Fatalf("malformed zstd must pass through byte-exact: got %q want %q", rt.bodies[0], wire)
+	}
+	if rec.Header().Get("x-caveman-recovery-handle") != "" {
+		t.Fatal("malformed zstd pass-through disclosed compression")
+	}
 }
 
 func TestChatGPTPathAndQueryPreserved(t *testing.T) {
@@ -156,6 +326,7 @@ func TestChatGPTSSEStreamsThroughAndMetersUsage(t *testing.T) {
 	srv, sink, _ := chatgptTestServer(t, upstream.URL)
 
 	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true}`))
+	req.Header.Set("x-cave-agent", "pi")
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
@@ -177,6 +348,198 @@ func TestChatGPTSSEStreamsThroughAndMetersUsage(t *testing.T) {
 	}
 	if row.RawRequestSHA256 != row.TransformedRequestSHA256 {
 		t.Fatal("passthrough hashes must match — nothing may be transformed")
+	}
+}
+
+func TestChatGPTPiStreamRequestRecognizesSSEWithoutEventStreamHeader(t *testing.T) {
+	sse := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":111,\"output_tokens\":22}}}\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer upstream.Close()
+	srv, sink, _ := chatgptTestServer(t, upstream.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true}`))
+	req.Header.Set("x-cave-agent", "pi")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if got := rec.Body.String(); got != sse {
+		t.Fatalf("SSE body changed: got %q, want %q", got, sse)
+	}
+	row := sink.last(t)
+	if !row.Stream || row.ErrorCode != "" || row.InputTokens != 111 || row.OutputTokens != 22 {
+		t.Fatalf("Pi stream request was not recognized and completed: %+v", row)
+	}
+}
+
+func TestChatGPTSSETerminalEventAtEOFGetsDispatched(t *testing.T) {
+	sse := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":111,\"output_tokens\":22}}}\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer upstream.Close()
+	srv, sink, _ := chatgptTestServer(t, upstream.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true}`))
+	req.Header.Set("x-cave-agent", "pi")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if got, want := rec.Body.String(), sse+"\n"; got != want {
+		t.Fatalf("terminal SSE event was not delimited for Pi:\n got %q\nwant %q", got, want)
+	}
+	row := sink.last(t)
+	if row.ErrorCode != "" || row.InputTokens != 111 || row.OutputTokens != 22 {
+		t.Fatalf("completed stream was not recorded: %+v", row)
+	}
+}
+
+func TestChatGPTSSETerminalDelimiterWithContentLength(t *testing.T) {
+	for _, ending := range []string{"", "\n", "\n\n"} {
+		t.Run(fmt.Sprintf("ending_%q", ending), func(t *testing.T) {
+			sse := "event: response.completed\ndata: {\"type\":\"response.completed\"}" + ending
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Length", strconv.Itoa(len(sse)))
+				_, _ = io.WriteString(w, sse)
+			}))
+			defer upstream.Close()
+			srv, _, _ := chatgptTestServer(t, upstream.URL)
+			proxy := httptest.NewServer(srv.Handler())
+			defer proxy.Close()
+
+			req, err := http.NewRequest(http.MethodPost, proxy.URL+"/chatgpt/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("x-cave-agent", "pi")
+			resp, err := proxy.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read terminal stream: %v", err)
+			}
+			want := strings.TrimRight(sse, "\n") + "\n\n"
+			if string(body) != want {
+				t.Fatalf("terminal SSE body = %q, want %q", body, want)
+			}
+		})
+	}
+}
+
+func TestChatGPTSSECleanEOFWithoutTerminalEventAborts(t *testing.T) {
+	sse := "event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"usage\":{\"input_tokens\":111,\"output_tokens\":22}}}\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Pi requested a stream; the subscription backend may still answer
+		// without an event-stream Content-Type header.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, sse)
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+	srv, sink, _ := chatgptTestServer(t, upstream.URL)
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, err := http.NewRequest(http.MethodPost, proxy.URL+"/chatgpt/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("x-cave-agent", "pi")
+	resp, err := proxy.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if readErr == nil {
+		t.Fatal("clean EOF without response terminal event was returned as complete")
+	}
+	row := sink.last(t)
+	if row.ErrorCode != "cave_upstream_body_read_failed" {
+		t.Fatalf("incomplete stream error code = %q, want cave_upstream_body_read_failed", row.ErrorCode)
+	}
+	if row.InputTokens != 0 || row.OutputTokens != 0 {
+		t.Fatalf("partial SSE usage was recorded: %+v", row)
+	}
+}
+
+type cancelAfterWriteResponseWriter struct {
+	*httptest.ResponseRecorder
+	cancel   context.CancelFunc
+	maxWrite int
+}
+
+func (w *cancelAfterWriteResponseWriter) Write(p []byte) (int, error) {
+	if w.maxWrite > 0 && len(p) > w.maxWrite {
+		p = p[:w.maxWrite]
+	}
+	n, err := w.ResponseRecorder.Write(p)
+	w.cancel()
+	return n, err
+}
+
+type cancelAfterBodyReader struct {
+	body []byte
+	sent bool
+}
+
+func (r *cancelAfterBodyReader) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, context.Canceled
+	}
+	r.sent = true
+	return copy(p, r.body), nil
+}
+
+func TestChatGPTPiClientCancellationOnlySucceedsAfterTerminalDelivered(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		body     string
+		wantCode string
+		wantBody string
+		maxWrite int
+	}{
+		{
+			name:     "after terminal frame",
+			body:     "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+			wantBody: "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+		},
+		{
+			name:     "before terminal frame",
+			body:     "event: response.in_progress\ndata: {\"type\":\"response.in_progress\"}\n\n",
+			wantCode: "cave_client_canceled",
+			wantBody: "event: response.in_progress\ndata: {\"type\":\"response.in_progress\"}\n\n",
+		},
+		{
+			name:     "after observing but before fully writing terminal frame",
+			body:     "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+			wantCode: "cave_client_canceled",
+			wantBody: "e",
+			maxWrite: 1,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			w := &cancelAfterWriteResponseWriter{ResponseRecorder: httptest.NewRecorder(), cancel: cancel, maxWrite: tt.maxWrite}
+			reader := &chatGPTSSECompletionReader{source: &cancelAfterBodyReader{body: []byte(tt.body)}}
+			srv := &Server{}
+
+			_, gotCode := srv.streamResponse(w, httptest.NewRequest(http.MethodPost, "/chatgpt/responses", nil).WithContext(ctx), reader, true, "test", reader)
+			if gotCode != tt.wantCode {
+				t.Fatalf("error code = %q, want %q", gotCode, tt.wantCode)
+			}
+			if got := w.Body.String(); got != tt.wantBody {
+				t.Fatalf("client received %q, want %q", got, tt.wantBody)
+			}
+		})
 	}
 }
 
@@ -676,5 +1039,255 @@ func TestOpenCodeChatGPTSubscriptionDetection(t *testing.T) {
 				t.Fatalf("isOpenCodeChatGPTSubscription() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// chatgptCompressServer wires the /chatgpt route with live-zone compression
+// available; recovery toggles the out-of-band CAVEMAN_RECOVERY=mcp stamp.
+func chatgptCompressServer(rt http.RoundTripper, recovery bool) (*Server, *captureSink, *bytes.Buffer) {
+	sink := &captureSink{}
+	logs := &bytes.Buffer{}
+	srv := New(Config{
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Sink:            sink,
+		Compressor:      &liveZoneCompressor{},
+		PrefixCache:     newTestPrefixCache(),
+		RecoveryViaMCP:  recovery,
+		ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+		HTTPClient:      &http.Client{Transport: rt},
+		Logger:          slog.New(slog.NewJSONHandler(logs, nil)),
+	})
+	return srv, sink, logs
+}
+
+func chatgptProxyLogLine(t *testing.T, logs *bytes.Buffer) map[string]any {
+	t.Helper()
+	for _, line := range bytes.Split(logs.Bytes(), []byte("\n")) {
+		var entry map[string]any
+		if json.Unmarshal(line, &entry) == nil && entry["msg"] == "chatgpt_proxy" {
+			return entry
+		}
+	}
+	t.Fatalf("no chatgpt_proxy log line in %s", logs.String())
+	return nil
+}
+
+// #1155 widened zstd decoding to every /chatgpt/responses caller, so a Codex
+// CLI zstd body that ends up uncompressed must still reach the backend as the
+// exact original wire bytes with its Content-Encoding. #1053: the log says why.
+func TestChatGPTCodexZstdWithoutCompressionForwardsExactWire(t *testing.T) {
+	compressible := `{"model":"gpt-5.5","input":"` + strings.Repeat("codex cli zstd tool output ", 40) + `"}`
+	for _, tt := range []struct {
+		name         string
+		recovery     bool
+		logical      string
+		wantReason   string
+		wantEligible bool
+	}{
+		{name: "recovery unproven", logical: compressible, wantReason: "recovery_unproven"},
+		{name: "nothing compressible", recovery: true, logical: `{"model":"gpt-5.5","input":[]}`, wantReason: "nothing_compressible", wantEligible: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			wire, ok := encodeChatGPTRequestBody([]byte(tt.logical), chatGPTRequestZstd)
+			if !ok {
+				t.Fatal("zstd encoder unavailable")
+			}
+			rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+			srv, sink, logs := chatgptCompressServer(rt, tt.recovery)
+			req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(wire))
+			req.Header.Set("Authorization", "Bearer codex-oauth-secret")
+			req.Header.Set("ChatGPT-Account-ID", "acct_codex")
+			req.Header.Set("Content-Encoding", "zstd")
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
+				t.Fatalf("status/calls = %d/%d", rec.Code, len(rt.bodies))
+			}
+			if !bytes.Equal(rt.bodies[0], wire) {
+				t.Fatal("uncompressed Codex zstd body must forward the exact original wire bytes")
+			}
+			if got := rt.headers[0].Get("Content-Encoding"); got != "zstd" {
+				t.Fatalf("Content-Encoding = %q, want zstd", got)
+			}
+			if rec.Header().Get("x-caveman-recovery-handle") != "" {
+				t.Fatal("uncompressed request disclosed compression")
+			}
+			if got := chatgptProxyLogLine(t, logs)["skip_reason"]; got != tt.wantReason {
+				t.Fatalf("skip_reason = %v, want %q", got, tt.wantReason)
+			}
+			if row := sink.last(t); row.CompressionEligible != tt.wantEligible || row.CompressionTokensBefore != 0 {
+				t.Fatalf("eligible/before = %v/%d, want %v/0", row.CompressionEligible, row.CompressionTokensBefore, tt.wantEligible)
+			}
+		})
+	}
+}
+
+// #1053: without the CAVEMAN_RECOVERY stamp (a manually started caveman-proxy),
+// the request's own Caveman MCP retrieve tool proves recovery on /chatgpt, as it
+// already does on the generic route — top-level tools or Codex's input[]
+// additional_tools catalog, flat or grouped under an MCP namespace.
+func TestChatGPTInBodyRecoveryToolOpensCompression(t *testing.T) {
+	live := strings.Repeat("codex desktop tool output ", 40)
+	input := `{"type":"message","role":"user","content":[{"type":"input_text","text":"` + live + `"}]}`
+	for _, tt := range []struct {
+		name string
+		body string
+		zstd bool
+	}{
+		{name: "top-level tools", body: `{"model":"gpt-5.5","tools":[{"type":"function","name":"mcp__caveman__caveman_retrieve","parameters":{"type":"object"}}],"input":[` + input + `]}`},
+		{name: "additional_tools flat function", body: `{"model":"gpt-5.5","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"mcp__caveman__caveman_retrieve","parameters":{"type":"object"}}]},` + input + `]}`},
+		{name: "additional_tools MCP namespace", body: `{"model":"gpt-5.5","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"mcp__caveman","description":"","tools":[{"type":"function","name":"caveman_retrieve","parameters":{"type":"object"}}]}]},` + input + `]}`},
+		{name: "zstd additional_tools MCP namespace", zstd: true, body: `{"model":"gpt-5.5","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"mcp__caveman__","description":"","tools":[{"type":"function","name":"caveman_retrieve","parameters":{"type":"object"}}]}]},` + input + `]}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			wire := []byte(tt.body)
+			if tt.zstd {
+				var ok bool
+				if wire, ok = encodeChatGPTRequestBody(wire, chatGPTRequestZstd); !ok {
+					t.Fatal("zstd encoder unavailable")
+				}
+			}
+			rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+			srv, sink, logs := chatgptCompressServer(rt, false)
+			req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(wire))
+			req.Header.Set("Authorization", "Bearer codex-oauth-secret")
+			req.Header.Set("ChatGPT-Account-ID", "acct_codex")
+			if tt.zstd {
+				req.Header.Set("Content-Encoding", "zstd")
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
+				t.Fatalf("status/calls = %d/%d", rec.Code, len(rt.bodies))
+			}
+			upstream, _, decodeErr := decodeChatGPTRequestBody(rt.bodies[0], rt.headers[0].Get("Content-Encoding"))
+			if decodeErr != nil || bytes.Contains(upstream, []byte(live)) || !bytes.Contains(upstream, []byte("<<ccr:")) {
+				t.Fatalf("in-body recovery tool did not open compression: %s", upstream)
+			}
+			row := sink.last(t)
+			if !row.CompressionEligible || row.CompressionTokensBefore <= row.CompressionTokensAfter || row.RecoveryHandle == "" {
+				t.Fatalf("compression accounting missing: %+v", row)
+			}
+			if got, present := chatgptProxyLogLine(t, logs)["skip_reason"]; present && got != "" {
+				t.Fatalf("compressed request logged skip_reason %v", got)
+			}
+		})
+	}
+}
+
+// Only the namespaced Caveman MCP spelling proves recovery. A bare
+// caveman_retrieve (possibly a caller's own tool) or one under another
+// namespace must not, wherever it appears.
+func TestChatGPTUnprovenRecoveryToolsStayExact(t *testing.T) {
+	live := strings.Repeat("must stay exact ", 40)
+	for _, tools := range []string{
+		`[{"type":"function","name":"caveman_retrieve"}]`,
+		`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"caveman_retrieve"}]}]`,
+		`[{"type":"namespace","name":"mcp__other","tools":[{"type":"function","name":"caveman_retrieve"}]}]`,
+		`[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"mcp__caveman__caveman_retrieve"}]}]`,
+	} {
+		t.Run(tools, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-5.5","input":[{"type":"additional_tools","role":"developer","tools":` + tools + `},{"type":"message","role":"user","content":[{"type":"input_text","text":"` + live + `"}]}]}`)
+			rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+			srv, sink, logs := chatgptCompressServer(rt, false)
+			req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK || len(rt.bodies) != 1 || !bytes.Equal(rt.bodies[0], body) {
+				t.Fatalf("unproven recovery changed bytes: status=%d body=%s", rec.Code, rt.bodies[0])
+			}
+			if got := chatgptProxyLogLine(t, logs)["skip_reason"]; got != "recovery_unproven" {
+				t.Fatalf("skip_reason = %v, want recovery_unproven", got)
+			}
+			if sink.last(t).CompressionEligible {
+				t.Fatal("unproven recovery recorded as eligible")
+			}
+		})
+	}
+}
+
+// A stamped request that never reaches the compressor forwards its exact wire
+// bytes, names the reason in the log, and is not counted eligible: eligible
+// means the request reached compressRequest, the generic route's denominator.
+func TestChatGPTSkippedStampedRequestIsNotEligible(t *testing.T) {
+	compressible := `{"model":"gpt-5.5","input":"` + strings.Repeat("codex desktop tool output ", 40) + `"}`
+	// Decodes past the 4 MiB logical cap an identity body on this route gets,
+	// while the zstd frame itself stays far under the wire cap.
+	bigLogical := []byte(`{"model":"gpt-5.5","input":"` + strings.Repeat("a", chatGPTCaptureLimit) + `"}`)
+	bigZstd, ok := encodeChatGPTRequestBody(bigLogical, chatGPTRequestZstd)
+	if !ok || len(bigZstd) > chatGPTCaptureLimit {
+		t.Fatalf("zstd fixture: ok=%v len=%d", ok, len(bigZstd))
+	}
+	// Past the decoder's memory ceiling, which DecodeAll refuses with its own error.
+	hugeZstd, ok := encodeChatGPTRequestBody(bytes.Repeat([]byte("a"), chatGPTCaptureLimit*8+1), chatGPTRequestZstd)
+	if !ok || len(hugeZstd) > chatGPTCaptureLimit {
+		t.Fatalf("zstd fixture: ok=%v len=%d", ok, len(hugeZstd))
+	}
+	for _, tt := range []struct {
+		name     string
+		wire     []byte
+		encoding string
+		headers  map[string]string
+		reason   string
+	}{
+		{name: "undecodable zstd", wire: []byte("not a zstd frame"), encoding: "zstd", reason: "content_encoding_unsupported"},
+		{name: "gzip forwards as sent", wire: []byte("\x1f\x8bgzip bytes"), encoding: "gzip", reason: "content_encoding_unsupported"},
+		{name: "zstd decodes past the cap", wire: bigZstd, encoding: "zstd", reason: "body_over_limit"},
+		{name: "zstd past the decoder ceiling", wire: hugeZstd, encoding: "zstd", reason: "body_over_limit"},
+		{name: "identity over the wire cap", wire: bigLogical, reason: "body_over_limit"},
+		{name: "cache epoch without digest", wire: []byte(compressible), headers: map[string]string{"x-cave-cache-epoch": "epoch-without-digest"}, reason: "cache_epoch_diverged"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+			srv, sink, logs := chatgptCompressServer(rt, true)
+			req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", bytes.NewReader(tt.wire))
+			if tt.encoding != "" {
+				req.Header.Set("Content-Encoding", tt.encoding)
+			}
+			for name, value := range tt.headers {
+				req.Header.Set(name, value)
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK || len(rt.bodies) != 1 || !bytes.Equal(rt.bodies[0], tt.wire) {
+				t.Fatalf("skipped request changed bytes: status=%d calls=%d", rec.Code, len(rt.bodies))
+			}
+			if got := rt.headers[0].Get("Content-Encoding"); got != tt.encoding {
+				t.Fatalf("Content-Encoding = %q, want %q", got, tt.encoding)
+			}
+			if got := chatgptProxyLogLine(t, logs)["skip_reason"]; got != tt.reason {
+				t.Fatalf("skip_reason = %v, want %s", got, tt.reason)
+			}
+			if row := sink.last(t); row.CompressionEligible || row.CompressionTokensBefore != 0 {
+				t.Fatalf("eligible/before = %v/%d, want false/0", row.CompressionEligible, row.CompressionTokensBefore)
+			}
+		})
+	}
+}
+
+// An explicit Content-Encoding: identity is a plain body. The generic route
+// accepts it, and /chatgpt compressed it before it learned to decode zstd.
+func TestChatGPTExplicitIdentityEncodingCompresses(t *testing.T) {
+	live := strings.Repeat("codex identity tool output ", 40)
+	body := `{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"` + live + `"}]}]}`
+	rt := &captureTransport{responses: []string{`{"id":"resp"}`}}
+	srv, sink, logs := chatgptCompressServer(rt, true)
+	req := httptest.NewRequest(http.MethodPost, "/chatgpt/responses", strings.NewReader(body))
+	req.Header.Set("Content-Encoding", "Identity")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || len(rt.bodies) != 1 {
+		t.Fatalf("status/calls = %d/%d", rec.Code, len(rt.bodies))
+	}
+	if upstream := string(rt.bodies[0]); strings.Contains(upstream, live) || !strings.Contains(upstream, "<<ccr:") {
+		t.Fatalf("identity body was not compressed (skip_reason %v): %s", chatgptProxyLogLine(t, logs)["skip_reason"], upstream)
+	}
+	if row := sink.last(t); !row.CompressionEligible || row.CompressionTokensBefore <= row.CompressionTokensAfter {
+		t.Fatalf("compression accounting missing: %+v", row)
 	}
 }

@@ -6016,10 +6016,10 @@ function spawnLocalProxyProcess(mode: WrapRuntimeMode, mcpRecovery: boolean, too
     CAVEMAN_MODE: mode,
     CAVEMAN_LISTEN: `${host}:${port}`,
     // The recovery half of the proxy's subscription gate, and the switch that lets
-    // it compress streams at all. Stamped EXPLICITLY in both directions: wrap
-    // derives it from the agent's OWN MCP install (and
-    // forces it off for codex-subscription and observe-only runs), so an exported
-    // CAVEMAN_RECOVERY=mcp must not survive that answer — the proxy would elide
+    // it compress streams at all. Stamped EXPLICITLY in both directions: wrap,
+    // `enable`, the agent shortcut and the native hook derive it from the agent's
+    // OWN MCP install (codex-subscription included; observe-only runs force it
+    // off), so an exported CAVEMAN_RECOVERY=mcp must not survive that answer — the proxy would elide
     // spans behind markers this agent has no caveman_retrieve tool to expand, while
     // the CLI printed that compression was off. (honesty rule: no-placeholder)
     CAVEMAN_RECOVERY: mcpRecovery ? "mcp" : "",
