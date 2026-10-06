@@ -20,22 +20,41 @@ const pixelOptimizerID = "pixel-render"
 // pixelRequest applies S4 text-to-PNG compression to provider wire formats. It
 // gates by measured model allowlist, stores the original before publishing lossy
 // bytes, and reports inferred estimates only.
+//
+// It has rewriteRequest's shape. Decisions on record are followed: a render an
+// earlier turn was cached with is re-sent, and a text that went out as text
+// stays text. A NEW render is remembered only once the request carrying it is
+// known to go out, its original stored and the request spliced. If either
+// fails, the new renders go out as text and record that, and the earlier
+// renders still go: dropping them would bust the prefix they were cached in.
 func (s *Server) pixelRequest(body []byte, meta providers.RequestMetadata, transform *providers.TransformResult, requestID string) *compressionOutcome {
 	if s.compressor == nil || !pixel.Allowed(meta.Model) {
 		return nil
 	}
 
-	opts := pixel.DefaultTransformOptions(meta.Model)
-	out, info, err := transformPixelLiveZone(meta, body, pixelDecider{s: s, opts: opts})
-	if err != nil || len(out) == 0 {
+	d := &pixelDecider{s: s, opts: pixel.DefaultTransformOptions(meta.Model)}
+	collectPixelLiveZone(meta, body, d)
+	if len(d.reps) == 0 {
 		return nil
 	}
-
 	handle, err := s.compressor.StoreOriginal(body)
-	if err != nil {
+	if err != nil || handle == "" {
 		if s.logger != nil {
-			s.logger.Warn("pixel recovery store failed; forwarding original bytes unchanged", "error", redact.Error(err), "request_id", requestID)
+			s.logger.Warn("pixel recovery store failed; new renders go out as text", "error", redact.Error(err), "request_id", requestID)
 		}
+		handle = ""
+		d.dropFresh()
+	}
+	out, info, err := applyPixelReplacements(body, d.reps)
+	if err != nil && d.dropFresh() {
+		out, info, err = applyPixelReplacements(body, d.reps)
+	}
+	if err == nil && d.remember() {
+		out, info, err = applyPixelReplacements(body, d.reps)
+	}
+	if err != nil || len(out) == 0 {
+		// ponytail: the memo rows spliced when first sent, so only a
+		// non-deterministic splice gets here; that turn goes out as text.
 		return nil
 	}
 
@@ -63,6 +82,13 @@ type pixelReplacement struct {
 	after      int
 	imageCount int
 	imageBytes int
+	// fresh marks a render made by this request, not yet remembered; scope,
+	// key, parts and wrap are what remembering or dropping it needs.
+	fresh bool
+	scope string
+	key   []byte
+	parts []byte
+	wrap  func([]byte) []byte
 }
 
 // PixelHandle marks a PrefixCache row holding rendered image parts.
@@ -101,12 +127,14 @@ func asIs(parts []byte) []byte { return parts }
 type pixelDecider struct {
 	s    *Server
 	opts pixel.TransformOptions
+	reps []pixelReplacement
 }
 
 // add decides the JSON string at text. replace is the span its rendering
 // replaces and wrap shapes the image parts for that span; only a live text may
-// be rendered for the first time.
-func (d pixelDecider) add(reps *[]pixelReplacement, body []byte, text, replace gatewayJSONSpan, family pixelFamily, live bool, minChars int, wrap func([]byte) []byte) {
+// be rendered for the first time, and that render waits in d.reps, fresh, for
+// pixelRequest to remember or drop it.
+func (d *pixelDecider) add(body []byte, text, replace gatewayJSONSpan, family pixelFamily, live bool, minChars int, wrap func([]byte) []byte) {
 	render := func() (pixelReplacement, bool) {
 		value, ok := gatewayDecodeJSONString(body[text.start:text.end])
 		if !ok || len(value) < minChars {
@@ -116,7 +144,8 @@ func (d pixelDecider) add(reps *[]pixelReplacement, body []byte, text, replace g
 		if !ok {
 			return pixelReplacement{}, false
 		}
-		return pixelReplacement{span: replace, raw: parts, before: before, after: after, imageCount: imageCount, imageBytes: imageBytes}, true
+		return pixelReplacement{span: replace, raw: wrap(parts), before: before, after: after, imageCount: imageCount, imageBytes: imageBytes,
+			fresh: true, parts: parts, wrap: wrap}, true
 	}
 	cache := d.s.prefixCache
 	if cache == nil {
@@ -124,72 +153,127 @@ func (d pixelDecider) add(reps *[]pixelReplacement, body []byte, text, replace g
 			return
 		}
 		if rep, ok := render(); ok {
-			rep.raw = wrap(rep.raw)
-			*reps = append(*reps, rep)
+			d.reps = append(d.reps, rep)
 		}
 		return
 	}
 	// The model is in the scope: geometry is resolved per reader model, and a
 	// model switch starts a new provider cache anyway.
 	scope := family.scope + d.opts.Model
-	original := body[text.start:text.end]
-	if stored, handle, hit := cache.LookupReplacement(scope, original); hit {
+	key := body[text.start:text.end]
+	if stored, handle, hit := cache.LookupReplacement(scope, key); hit {
 		if handle != RawDecisionHandle {
-			*reps = append(*reps, pixelReplacement{span: replace, raw: wrap(stored)})
+			d.reps = append(d.reps, pixelReplacement{span: replace, raw: wrap(stored)})
 		}
 		return
 	}
-	rep, ok := pixelReplacement{}, false
 	// Text while the store could not record it; a stored row outranks that
 	// (see rewriteRequest), so it is recorded below like any text decision.
-	if live && !d.s.unpersistedRaw.has(scope, original) {
-		rep, ok = render()
+	if live && !d.s.unpersistedRaw.has(scope, key) {
+		if rep, ok := render(); ok {
+			rep.scope, rep.key = scope, key
+			d.reps = append(d.reps, rep)
+			return
+		}
 	}
-	parts, handle := rep.raw, PixelHandle
-	if !ok {
-		parts, handle = nil, RawDecisionHandle // going out as text: that is its decision
+	d.keepText(scope, key, replace, wrap)
+}
+
+// keepText records that the text at key goes out as text. If another request
+// already decided it (a concurrent fork, a lookup that failed), the store
+// answers with that decision and it is followed instead.
+func (d *pixelDecider) keepText(scope string, key []byte, replace gatewayJSONSpan, wrap func([]byte) []byte) {
+	if d.s.prefixCache == nil {
+		return
 	}
-	stored, err := cache.RememberReplacement(scope, original, parts, handle)
-	switch {
-	case err != nil:
-		d.s.unpersistedRaw.add(scope, original)
-	case len(stored) == 0:
-	case ok && bytes.Equal(stored, parts):
-		rep.raw = wrap(stored) // rendered here: books its saving
-		*reps = append(*reps, rep)
-	default:
-		*reps = append(*reps, pixelReplacement{span: replace, raw: wrap(stored)})
+	stored, err := d.s.prefixCache.RememberReplacement(scope, key, nil, RawDecisionHandle)
+	if err != nil {
+		d.s.unpersistedRaw.add(scope, key)
+	} else if len(stored) > 0 {
+		d.reps = append(d.reps, pixelReplacement{span: replace, raw: wrap(stored)})
 	}
 }
 
-func transformPixelLiveZone(meta providers.RequestMetadata, body []byte, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
+// dropFresh sends this request's new renders as text, recording that, and
+// reports whether there were any.
+func (d *pixelDecider) dropFresh() bool {
+	var fresh []pixelReplacement
+	kept := make([]pixelReplacement, 0, len(d.reps))
+	for _, rep := range d.reps {
+		if rep.fresh {
+			fresh = append(fresh, rep)
+		} else {
+			kept = append(kept, rep)
+		}
+	}
+	d.reps = kept
+	for _, rep := range fresh {
+		d.keepText(rep.scope, rep.key, rep.span, rep.wrap)
+	}
+	return len(fresh) > 0
+}
+
+// remember records this request's new renders once it is known to go out. A
+// render the store cannot take does not go out at all, since the next turn
+// could not re-send it, and one another request decided first gives way to
+// that decision. It reports whether any render changed.
+func (d *pixelDecider) remember() bool {
+	cache := d.s.prefixCache
+	if cache == nil {
+		return false
+	}
+	changed := false
+	kept := make([]pixelReplacement, 0, len(d.reps))
+	for _, rep := range d.reps {
+		if !rep.fresh {
+			kept = append(kept, rep)
+			continue
+		}
+		stored, err := cache.RememberReplacement(rep.scope, rep.key, rep.parts, PixelHandle)
+		switch {
+		case err != nil:
+			d.s.unpersistedRaw.add(rep.scope, rep.key)
+			changed = true
+		case len(stored) == 0:
+			changed = true // text came first
+		case !bytes.Equal(stored, rep.parts):
+			kept = append(kept, pixelReplacement{span: rep.span, raw: rep.wrap(stored)})
+			changed = true
+		default:
+			kept = append(kept, rep) // rendered here: books its saving
+		}
+	}
+	d.reps = kept
+	return changed
+}
+
+// collectPixelLiveZone fills d.reps with the request's pixel decisions.
+func collectPixelLiveZone(meta providers.RequestMetadata, body []byte, d *pixelDecider) {
 	// A token count must measure the caller's exact prompt: neither a new
 	// rendering nor an earlier one may alter it.
 	if strings.Contains(meta.Endpoint, "count_tokens") || strings.HasSuffix(meta.Endpoint, "/input_tokens") {
-		return nil, pixel.TransformInfo{Reason: "count_endpoint"}, nil
+		return
 	}
 	switch meta.Provider {
 	case "anthropic":
-		return transformAnthropicPixelLiveZone(body, d)
+		collectAnthropicPixelLiveZone(body, d)
 	case "openai", "azure_openai", "openai_compatible":
-		return transformOpenAIPixelLiveZone(body, d)
-	default:
-		return nil, pixel.TransformInfo{Reason: "unsupported_live_zone_pixel"}, nil
+		collectOpenAIPixelLiveZone(body, d)
 	}
 }
 
-func transformAnthropicPixelLiveZone(body []byte, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
+func collectAnthropicPixelLiveZone(body []byte, d *pixelDecider) {
 	root, ok := gatewayRootObjectSpan(body)
 	if !ok {
-		return nil, pixel.TransformInfo{Reason: "parse_error"}, nil
+		return
 	}
 	messagesSpan, ok := gatewayFindObjectField(body, root, "messages")
 	if !ok || messagesSpan.start >= len(body) || body[messagesSpan.start] != '[' {
-		return nil, pixel.TransformInfo{Reason: "no_messages"}, nil
+		return
 	}
 	messageSpans, ok := gatewayArrayElements(body, messagesSpan)
 	if !ok {
-		return nil, pixel.TransformInfo{Reason: "parse_error"}, nil
+		return
 	}
 	rawMessages := make([]json.RawMessage, 0, len(messageSpans))
 	for _, span := range messageSpans {
@@ -203,29 +287,27 @@ func transformAnthropicPixelLiveZone(body []byte, d pixelDecider) ([]byte, pixel
 			break
 		}
 	}
-	var reps []pixelReplacement
 	for i, msg := range messageSpans {
 		if gatewayObjectStringField(body, msg, "role") == "user" {
-			collectAnthropicPixelCandidates(body, msg, d, i == target, &reps)
+			collectAnthropicPixelCandidates(body, msg, d, i == target)
 		}
 	}
-	return applyPixelReplacements(body, reps)
 }
 
-func collectAnthropicPixelCandidates(body []byte, msg gatewayJSONSpan, d pixelDecider, live bool, reps *[]pixelReplacement) {
+func collectAnthropicPixelCandidates(body []byte, msg gatewayJSONSpan, d *pixelDecider, live bool) {
 	content, ok := gatewayFindObjectField(body, msg, "content")
 	if !ok {
 		return
 	}
 	switch {
 	case gatewayIsJSONString(body, content):
-		d.add(reps, body, content, content, anthropicPixel, live, d.opts.MinCompressChars, bracketed)
+		d.add(body, content, content, anthropicPixel, live, d.opts.MinCompressChars, bracketed)
 	case content.start < content.end && body[content.start] == '[':
-		collectAnthropicPixelBlocks(body, content, d, live, reps)
+		collectAnthropicPixelBlocks(body, content, d, live)
 	}
 }
 
-func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, d pixelDecider, live bool, reps *[]pixelReplacement) {
+func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, d *pixelDecider, live bool) {
 	blocks, ok := gatewayArrayElements(body, blocksSpan)
 	if !ok {
 		return
@@ -240,7 +322,7 @@ func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, d pixe
 			if !ok || !gatewayIsJSONString(body, textSpan) {
 				continue
 			}
-			d.add(reps, body, textSpan, block, anthropicPixel, live, d.opts.MinCompressChars, asIs)
+			d.add(body, textSpan, block, anthropicPixel, live, d.opts.MinCompressChars, asIs)
 		case "tool_result":
 			content, ok := gatewayFindObjectField(body, block, "content")
 			if !ok {
@@ -248,37 +330,33 @@ func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, d pixe
 			}
 			switch {
 			case gatewayIsJSONString(body, content):
-				d.add(reps, body, content, content, anthropicPixel, live, d.opts.MinToolResultChars, bracketed)
+				d.add(body, content, content, anthropicPixel, live, d.opts.MinToolResultChars, bracketed)
 			case content.start < content.end && body[content.start] == '[':
-				collectAnthropicPixelBlocks(body, content, d, live, reps)
+				collectAnthropicPixelBlocks(body, content, d, live)
 			}
 		}
 	}
 }
 
-func transformOpenAIPixelLiveZone(body []byte, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
+func collectOpenAIPixelLiveZone(body []byte, d *pixelDecider) {
 	root, ok := gatewayRootObjectSpan(body)
 	if !ok {
-		return nil, pixel.TransformInfo{Reason: "parse_error"}, nil
+		return
 	}
-	messagesSpan, ok := gatewayFindObjectField(body, root, "messages")
-	if ok {
-		return transformOpenAIChatPixelLiveZone(body, messagesSpan, d)
+	if messagesSpan, ok := gatewayFindObjectField(body, root, "messages"); ok {
+		collectOpenAIChatPixelLiveZone(body, messagesSpan, d)
+	} else if inputSpan, ok := gatewayFindObjectField(body, root, "input"); ok {
+		collectOpenAIResponsesPixelLiveZone(body, inputSpan, d)
 	}
-	inputSpan, ok := gatewayFindObjectField(body, root, "input")
-	if ok {
-		return transformOpenAIResponsesPixelLiveZone(body, inputSpan, d)
-	}
-	return nil, pixel.TransformInfo{Reason: "no_messages_or_input"}, nil
 }
 
-func transformOpenAIChatPixelLiveZone(body []byte, messagesSpan gatewayJSONSpan, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
+func collectOpenAIChatPixelLiveZone(body []byte, messagesSpan gatewayJSONSpan, d *pixelDecider) {
 	if messagesSpan.start >= len(body) || body[messagesSpan.start] != '[' {
-		return nil, pixel.TransformInfo{Reason: "messages_not_array"}, nil
+		return
 	}
 	messageSpans, ok := gatewayArrayElements(body, messagesSpan)
 	if !ok {
-		return nil, pixel.TransformInfo{Reason: "parse_error"}, nil
+		return
 	}
 	target := -1
 	for i := len(messageSpans) - 1; i >= 0; i-- {
@@ -288,9 +366,8 @@ func transformOpenAIChatPixelLiveZone(body []byte, messagesSpan gatewayJSONSpan,
 		}
 	}
 	if target < 0 {
-		return nil, pixel.TransformInfo{Reason: "no_live_user"}, nil
+		return
 	}
-	var reps []pixelReplacement
 	for i, msg := range messageSpans {
 		if gatewayObjectStringField(body, msg, "role") != "user" {
 			continue
@@ -302,7 +379,7 @@ func transformOpenAIChatPixelLiveZone(body []byte, messagesSpan gatewayJSONSpan,
 		live := i == target
 		switch {
 		case gatewayIsJSONString(body, content):
-			d.add(&reps, body, content, content, openAIChatPixel, live, d.opts.MinCompressChars, bracketed)
+			d.add(body, content, content, openAIChatPixel, live, d.opts.MinCompressChars, bracketed)
 		case content.start < content.end && body[content.start] == '[':
 			parts, ok := gatewayArrayElements(body, content)
 			if !ok {
@@ -319,29 +396,27 @@ func transformOpenAIChatPixelLiveZone(body []byte, messagesSpan gatewayJSONSpan,
 				if !ok || !gatewayIsJSONString(body, textSpan) {
 					continue
 				}
-				d.add(&reps, body, textSpan, part, openAIChatPixel, live, d.opts.MinCompressChars, asIs)
+				d.add(body, textSpan, part, openAIChatPixel, live, d.opts.MinCompressChars, asIs)
 			}
 		}
 	}
-	return applyPixelReplacements(body, reps)
 }
 
-func transformOpenAIResponsesPixelLiveZone(body []byte, inputSpan gatewayJSONSpan, d pixelDecider) ([]byte, pixel.TransformInfo, error) {
+func collectOpenAIResponsesPixelLiveZone(body []byte, inputSpan gatewayJSONSpan, d *pixelDecider) {
 	if gatewayIsJSONString(body, inputSpan) {
 		// A bare string input is one user turn; the next turn sends it back as a
 		// message's content string, which shares this decision.
-		var reps []pixelReplacement
-		d.add(&reps, body, inputSpan, inputSpan, openAIResponsesPixel, true, d.opts.MinCompressChars, func(parts []byte) []byte {
+		d.add(body, inputSpan, inputSpan, openAIResponsesPixel, true, d.opts.MinCompressChars, func(parts []byte) []byte {
 			return append(append([]byte(`[{"type":"message","role":"user","content":[`), parts...), `]}]`...)
 		})
-		return applyPixelReplacements(body, reps)
+		return
 	}
 	if inputSpan.start >= inputSpan.end || body[inputSpan.start] != '[' {
-		return nil, pixel.TransformInfo{Reason: "input_not_string_or_array"}, nil
+		return
 	}
 	items, ok := gatewayArrayElements(body, inputSpan)
 	if !ok {
-		return nil, pixel.TransformInfo{Reason: "parse_error"}, nil
+		return
 	}
 	latestUser, latestTool := -1, -1
 	recoveredCalls := map[string]bool{}
@@ -363,7 +438,6 @@ func transformOpenAIResponsesPixelLiveZone(body []byte, inputSpan gatewayJSONSpa
 			latestUser = i
 		}
 	}
-	var reps []pixelReplacement
 	for i, item := range items {
 		if item.start >= item.end || body[item.start] != '{' {
 			continue
@@ -373,24 +447,23 @@ func transformOpenAIResponsesPixelLiveZone(body []byte, inputSpan gatewayJSONSpa
 				continue
 			}
 			if output, found := gatewayFindObjectField(body, item, "output"); found && gatewayIsJSONString(body, output) {
-				d.add(&reps, body, output, output, openAIResponsesPixel, i == latestTool, d.opts.MinToolResultChars, bracketed)
+				d.add(body, output, output, openAIResponsesPixel, i == latestTool, d.opts.MinToolResultChars, bracketed)
 			}
 			continue
 		}
 		if gatewayObjectStringField(body, item, "role") == "user" {
-			collectOpenAIResponsesUserPixelCandidates(body, item, d, i == latestUser, &reps)
+			collectOpenAIResponsesUserPixelCandidates(body, item, d, i == latestUser)
 		}
 	}
-	return applyPixelReplacements(body, reps)
 }
 
-func collectOpenAIResponsesUserPixelCandidates(body []byte, item gatewayJSONSpan, d pixelDecider, live bool, reps *[]pixelReplacement) {
+func collectOpenAIResponsesUserPixelCandidates(body []byte, item gatewayJSONSpan, d *pixelDecider, live bool) {
 	content, ok := gatewayFindObjectField(body, item, "content")
 	if !ok {
 		return
 	}
 	if gatewayIsJSONString(body, content) {
-		d.add(reps, body, content, content, openAIResponsesPixel, live, d.opts.MinCompressChars, bracketed)
+		d.add(body, content, content, openAIResponsesPixel, live, d.opts.MinCompressChars, bracketed)
 		return
 	}
 	if content.start >= content.end || body[content.start] != '[' {
@@ -409,7 +482,7 @@ func collectOpenAIResponsesUserPixelCandidates(body []byte, item gatewayJSONSpan
 		if !found || !gatewayIsJSONString(body, textSpan) {
 			continue
 		}
-		d.add(reps, body, textSpan, part, openAIResponsesPixel, live, d.opts.MinCompressChars, asIs)
+		d.add(body, textSpan, part, openAIResponsesPixel, live, d.opts.MinCompressChars, asIs)
 	}
 }
 

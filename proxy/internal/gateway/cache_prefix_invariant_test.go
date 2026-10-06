@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1636,6 +1637,26 @@ func TestCachePrefixInvariantPixel(t *testing.T) {
 				t.Fatal("test setup: turn 2 should have been accepted raw")
 			}
 			h.send(pixelConversation(a, b, c), false)
+		}},
+		{"recovery store fails on a later turn", func(t *testing.T, h *pixelHarness) {
+			// A failed write keeps only NEW content from rendering: the turn
+			// still re-sends turn 1's renders, and its own block is on record
+			// as the text it went out as.
+			h.send(pixelConversation(a), false)
+			h.comp.storeErr = errors.New("ccr down")
+			if !rendered(h.send(pixelConversation(a, b), false)) {
+				t.Error("the turn whose recovery write failed dropped turn 1's renders")
+			}
+			h.comp.storeErr = nil
+			h.send(pixelConversation(a, b, c), false)
+		}},
+		{"recovery store fails on the first turn", func(t *testing.T, h *pixelHarness) {
+			h.comp.storeErr = errors.New("ccr down")
+			if rendered(h.send(pixelConversation(a), false)) {
+				t.Fatal("test setup: turn 1 should have gone out as text")
+			}
+			h.comp.storeErr = nil
+			h.send(pixelConversation(a, b), false)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
