@@ -561,9 +561,10 @@ async function installClaude(ctx) {
   //   --no-hooks       → skip
   //   --with-hooks     → wire (warn if the plugin manifest also wires them)
   //   default / --all  → wire only if the plugin install did NOT succeed.
-  // The plugin manifest already wires SessionStart + UserPromptSubmit when the
-  // plugin install succeeds; wiring them again in settings.json fires both per
-  // event (two CAVEMAN MODE blocks, two reinforcement lines).
+  // The plugin manifest already wires SessionStart + UserPromptSubmit +
+  // SessionEnd when the plugin install succeeds; wiring them again in
+  // settings.json fires both per event (two CAVEMAN MODE blocks, two
+  // reinforcement lines).
   let shouldWireHooks;
   if (opts.withHooks === false) {
     shouldWireHooks = false;
