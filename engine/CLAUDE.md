@@ -13,7 +13,7 @@ is what the proxy, CLI, SDKs, MCP, and WASM build all share. Everything it repor
 - `safety/` — the S0–S4 registry; S4 is lossy and `RequiresCCR`. Unknown class → fail closed.
 - `tokens/` — `Counter` interface; default is an offline, vocab-embedded BPE tokenizer (o200k_base). `inferred` always.
 - `contextwindow/` — deterministic BM25 context packer with recency/error/priority signals and token-budget accounting.
-- `compressors/` — `Compressor` interface + registry; structural JSON/log/test-report/search/diff/text/HTML/table/config/code compressors plus forced-only TOON/tool-schema/tool-schema-annotations/accessibility/repetition paths — `Default()` registers 16. `toolschema-annotations` stays manifest-excluded because no compiled plan routes to it; advertising it would rotate `RegistrySHA256` and fail existing Cave Build locks. A compressor is a pure byte transform.
+- `compressors/` — `Compressor` interface + registry; structural JSON/log/test-report/search/diff/text/HTML/table/config/code compressors plus forced-only TOON/tool-schema/tool-schema-annotations/accessibility/repetition paths — `Default()` registers 16. `test-report` and `toolschema-annotations` stay manifest-excluded because no compiled plan routes to them (the proxy's `compiledContentType` allowlist has neither); advertising either would rotate `RegistrySHA256` and fail existing Cave Build locks. A compressor is a pure byte transform.
 - `ccr/` — `~/.caveman/ccr.db` SQLite recovery plus typed native-session store;
   content-addressed handles, byte-exact `Get`, session scope, dependencies,
   current/stale state, and Hot/Warm/Cold/Archived lifecycle. Embedded SQLite uses

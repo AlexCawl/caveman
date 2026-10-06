@@ -335,10 +335,10 @@ func parseJestJSON(input []byte) (*testReport, error) {
 		TestResults     []struct {
 			Name             string `json:"name"`
 			AssertionResults []struct {
-				AncestorTitles []string `json:"ancestorTitles"`
-				Title          string   `json:"title"`
-				FullName       string   `json:"fullName"`
-				Status         string   `json:"status"`
+				AncestorTitles  []string `json:"ancestorTitles"`
+				Title           string   `json:"title"`
+				FullName        string   `json:"fullName"`
+				Status          string   `json:"status"`
 				FailureMessages []string `json:"failureMessages"`
 			} `json:"assertionResults"`
 		} `json:"testResults"`

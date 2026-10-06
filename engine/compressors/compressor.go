@@ -146,6 +146,9 @@ type Provenance struct {
 // for invalidating every lock in the field.
 var manifestExcluded = map[string]bool{
 	toolSchemaAnnotationsType: true,
+	// The proxy's compiledContentType allowlist has no test-report, so no
+	// compiled plan can route to it; it is reached by Detect only.
+	"test-report": true,
 }
 
 // Capabilities exports the default engine registry in stable transform-ID

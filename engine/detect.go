@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"regexp"
 
 	"github.com/JuliusBrussee/caveman/engine/compressors"
@@ -49,14 +50,16 @@ func (e *Engine) Detect(input []byte) string {
 	if len(trimmed) == 0 {
 		return TypeText
 	}
-	// Test reports are detected before generic JSON because pytest/Jest reports
-	// are valid JSON with a specific semantic shape that deserves specialized
-	// compression. The structural check is fast and specific.
-	if looksLikeTestReport(input) {
-		return TypeTestReport
-	}
 	if (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid(trimmed) {
+		if trimmed[0] == '{' && looksLikeTestReportJSON(trimmed) {
+			return TypeTestReport
+		}
 		return TypeJSON
+	}
+	// JUnit runs before terminal so a report whose failure messages carry ANSI
+	// colors still routes to the test-report compressor.
+	if looksLikeJUnitXML(trimmed) {
+		return TypeTestReport
 	}
 	// Terminal output is detected before diff/code/log because its ANSI-escape
 	// signal is conclusive: only raw command/terminal output carries it, so this
@@ -215,31 +218,42 @@ func looksLikeSearchResult(input []byte) bool {
 	return matched >= 4 && matched*3 >= len(lines)
 }
 
-// looksLikeTestReport detects test report formats deterministically. JUnit XML
-// is conclusive from its root elements. pytest and Jest JSON reports require
-// both their structural keys present to reduce false positives.
-func looksLikeTestReport(input []byte) bool {
-	s := bytes.ToLower(bytes.TrimSpace(input))
-
-	// JUnit XML: root <testsuites> or <testsuite> with <testcase> children
-	if bytes.HasPrefix(s, []byte("<testsuite")) || bytes.HasPrefix(s, []byte("<testsuites")) {
-		return true
+// looksLikeTestReportJSON reads only the top-level keys of a JSON object: a
+// pytest-json-report has "exitcode" plus a "tests" array, a Jest report has
+// "numFailedTests" plus a "testResults" array. Keys nested deeper never count,
+// so unrelated JSON that mentions them keeps the JSON compressor.
+func looksLikeTestReportJSON(trimmed []byte) bool {
+	// Byte pre-check so ordinary JSON is not decoded a second time.
+	if !bytes.Contains(trimmed, []byte(`"exitcode"`)) && !bytes.Contains(trimmed, []byte(`"numFailedTests"`)) {
+		return false
 	}
-	if bytes.Contains(s, []byte("<testcase")) &&
-		(bytes.Contains(s, []byte("<testsuite")) || bytes.Contains(s, []byte("<testsuites"))) {
-		return true
+	var top map[string]json.RawMessage
+	if json.Unmarshal(trimmed, &top) != nil {
+		return false
 	}
-
-	// pytest JSON: requires BOTH "exitcode" AND "tests" keys at top level
-	if bytes.Contains(s, []byte("\"exitcode\"")) && bytes.Contains(s, []byte("\"tests\"")) {
-		return true
-	}
-
-	// Jest JSON: requires BOTH "numFailedTests" AND "testResults" keys
-	if bytes.Contains(s, []byte("\"numfailedtests\"")) && bytes.Contains(s, []byte("\"testresults\"")) {
-		return true
-	}
-
-	return false
+	isArray := func(key string) bool { v := top[key]; return len(v) > 0 && v[0] == '[' }
+	_, exitcode := top["exitcode"]
+	_, numFailed := top["numFailedTests"]
+	return (exitcode && isArray("tests")) || (numFailed && isArray("testResults"))
 }
 
+// looksLikeJUnitXML reports whether the document's root element is
+// <testsuites> or <testsuite>. Only the prolog (declaration, comments, doctype)
+// is read before that first element, so a diff or source file that mentions
+// JUnit tags never counts.
+func looksLikeJUnitXML(trimmed []byte) bool {
+	if trimmed[0] != '<' {
+		return false
+	}
+	dec := xml.NewDecoder(bytes.NewReader(trimmed))
+	for i := 0; i < 16; i++ {
+		tok, err := dec.RawToken()
+		if err != nil {
+			return false
+		}
+		if el, ok := tok.(xml.StartElement); ok {
+			return el.Name.Local == "testsuites" || el.Name.Local == "testsuite"
+		}
+	}
+	return false
+}

@@ -306,13 +306,14 @@ func TestTestReportDetection(t *testing.T) {
 		{"junit_xml_multi", `<testsuites><testsuite><testcase/></testsuite></testsuites>`, engine.TypeTestReport, true},
 		{"pytest_json", `{"exitcode": 0, "tests": []}`, engine.TypeTestReport, true},
 		{"jest_json", `{"numFailedTests": 0, "testResults": []}`, engine.TypeTestReport, true},
-		{"jest_json_case_insensitive", `{"numfailedtests": 0, "testresults": []}`, engine.TypeTestReport, true},
 
 		// False positives (should NOT match test-report)
 		{"generic_json_with_tests_only", `{"tests": []}`, engine.TypeJSON, false},
 		{"generic_json_with_testresults_only", `{"testResults": []}`, engine.TypeJSON, false},
 		{"generic_json_with_exitcode_only", `{"exitcode": 0}`, engine.TypeJSON, false},
 		{"generic_json_with_numfailedtests_only", `{"numFailedTests": 0}`, engine.TypeJSON, false},
+		// Jest emits camelCase keys; lowercase spellings are some other JSON.
+		{"lowercase_jest_keys", `{"numfailedtests": 0, "testresults": []}`, engine.TypeJSON, false},
 
 		// Non-JUnit XML
 		{"other_xml", `<test>not junit</test>`, engine.TypeText, false},
@@ -334,6 +335,35 @@ func TestTestReportDetection(t *testing.T) {
 				if got == engine.TypeTestReport {
 					t.Errorf("Detect(%q) = %q, should NOT be test-report", tc.name, got)
 				}
+			}
+		})
+	}
+}
+
+// TestTestReportDetectionIsAnchored pins that detection reads only top-level
+// shape. Payloads that merely mention JUnit tags or pytest keys somewhere inside
+// must keep their own type: the test-report parser rejects them, and a rejected
+// payload passes through uncompressed instead of getting diff/code/JSON
+// compression.
+func TestTestReportDetectionIsAnchored(t *testing.T) {
+	e := engine.New(nil, nil)
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"diff editing junit testcases", "diff --git a/report.xml b/report.xml\n--- a/report.xml\n+++ b/report.xml\n@@ -1,4 +1,4 @@\n <testsuite name=\"s\">\n-  <testcase name=\"old\"/>\n+  <testcase name=\"new\"/>\n </testsuite>\n", engine.TypeDiff},
+		{"go source printing junit tags", "package report\n\nimport \"fmt\"\n\nfunc emit() {\n\tfmt.Println(\"<testsuite name=\\\"x\\\">\")\n\tfmt.Println(\"<testcase name=\\\"y\\\"/>\")\n\tfmt.Println(\"</testsuite>\")\n}\n", engine.TypeCode},
+		{"json with nested exitcode", `{"job":{"steps":[{"exitcode":0}]},"tests":["a"]}`, engine.TypeJSON},
+		{"json with nested jest keys", `{"run":{"numFailedTests":0},"testResults":[]}`, engine.TypeJSON},
+		{"junit with xml prolog and comment", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- generated -->\n<testsuites><testsuite name=\"s\"><testcase name=\"t\"/></testsuite></testsuites>", engine.TypeTestReport},
+		{"junit with ansi-colored failure", "<testsuite name=\"s\"><testcase name=\"t\"><failure message=\"boom\">\x1b[31mexpected 1, got 2\x1b[0m</failure></testcase></testsuite>", engine.TypeTestReport},
+		{"pytest report", `{"exitcode":1,"duration":0.2,"tests":[{"nodeid":"t.py::a","outcome":"failed"}]}`, engine.TypeTestReport},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := e.Detect([]byte(tc.input)); got != tc.want {
+				t.Errorf("Detect = %q, want %q", got, tc.want)
 			}
 		})
 	}
