@@ -6,6 +6,7 @@ __pycache__/
 .claude/worktrees/
 evals/snapshots/*.html
 evals/snapshots/*.png
+evals/snapshots/*.partial.json
 # Agent scratch: specs and implementation notes are not shipped artifacts.
 /context/
 

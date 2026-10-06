@@ -379,7 +379,7 @@ For agents without hook systems, the always-on snippet lives in `INSTALL.md`'s "
 
 Honest delta = **skill vs terse**, not skill vs baseline. Baseline comparison conflates skill with generic terseness — that cheating. Harness designed to prevent this.
 
-`llm_run.py` calls `claude -p --system-prompt ...` per (prompt, arm), saves to `evals/snapshots/results.json`. `measure.py` reads snapshot offline with tiktoken (OpenAI BPE — approximates Claude tokenizer, ratios meaningful, absolute numbers approximate).
+`llm_run.py` calls `claude -p --system-prompt-file ... --output-format json` per (prompt, arm), isolated from user settings, plugins and MCP, saves text plus Claude-reported usage (input/output/cache tokens, cost) to `evals/snapshots/results.json` (`results.<lang>.json` with `CAVEMAN_EVAL_LANG`). `measure.py` reads snapshot offline with tiktoken (OpenAI BPE — approximates Claude tokenizer, ratios meaningful, absolute numbers approximate). `CAVEMAN_EVAL_SET=fidelity` runs the regex-checked cases in `evals/prompts/fidelity.json` into `snapshots/fidelity.json`; `score_fidelity.py` scores it offline.
 
 Add skill: drop `skills/<name>/SKILL.md`. Harness auto-discovers. Add prompt: append line to `evals/prompts/en.txt`.
 
