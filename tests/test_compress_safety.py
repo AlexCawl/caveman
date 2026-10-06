@@ -859,6 +859,34 @@ class OpenAICompatProviderTests(unittest.TestCase):
             urlopen.call_args.kwargs["timeout"], compress_mod.CLAUDE_CALL_TIMEOUT_SECONDS
         )
 
+    def test_api_key_is_not_forwarded_on_redirect(self):
+        import urllib.request
+
+        with llm_env(
+            CAVEMAN_COMPRESS_PROVIDER="openai-compat",
+            CAVEMAN_COMPRESS_MODEL="m",
+            CAVEMAN_COMPRESS_API_KEY="sk-local",
+        ), mock.patch("urllib.request.urlopen", return_value=self._response()) as urlopen:
+            compress_mod.call_claude(PROMPT_TEXT)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer sk-local")
+        redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+            request, io.BytesIO(), 302, "Found", {}, "http://elsewhere.example/v1/chat/completions"
+        )
+        self.assertIsNone(redirected.get_header("Authorization"))
+
+    def test_malformed_response_body_is_a_runtime_error(self):
+        for body in (b"<html>502 Bad Gateway</html>", b'{"error": "model loading"}', b"[]"):
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = body
+            with self.subTest(body=body), \
+                 llm_env(CAVEMAN_COMPRESS_PROVIDER="openai-compat", CAVEMAN_COMPRESS_MODEL="m"), \
+                 mock.patch("urllib.request.urlopen", return_value=response):
+                with self.assertRaisesRegex(RuntimeError, "unexpected response") as raised:
+                    compress_mod.call_claude(PROMPT_TEXT)
+                self.assertIn(body.decode(), str(raised.exception))
+
     def test_defaults_to_local_ollama_without_auth_header(self):
         with llm_env(CAVEMAN_COMPRESS_PROVIDER="openai-compat", CAVEMAN_COMPRESS_MODEL="m"), \
              mock.patch("urllib.request.urlopen", return_value=self._response()) as urlopen:

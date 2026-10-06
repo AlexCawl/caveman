@@ -669,17 +669,20 @@ def call_openai_compat(prompt: str) -> str:
             f"{ENV_COMPRESS_MODEL} is required for provider '{PROVIDER_OPENAI_COMPAT}'"
         )
     base = os.environ.get(ENV_COMPRESS_ENDPOINT, DEFAULT_OPENAI_COMPAT_ENDPOINT).rstrip("/")
-    headers = {"Content-Type": "application/json"}
-    api_key = os.environ.get(ENV_COMPRESS_API_KEY)
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
     body = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
     request = urllib.request.Request(
-        f"{base}/chat/completions", data=json.dumps(body).encode("utf-8"), headers=headers
+        f"{base}/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
     )
+    api_key = os.environ.get(ENV_COMPRESS_API_KEY)
+    if api_key:
+        # Unredirected: urllib copies ordinary headers onto a redirect, even
+        # one to another host.
+        request.add_unredirected_header("Authorization", f"Bearer {api_key}")
     try:
         with urllib.request.urlopen(request, timeout=CLAUDE_CALL_TIMEOUT_SECONDS) as response:
-            payload = json.loads(response.read())
+            raw = response.read()
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")[:500]
         raise RuntimeError(
@@ -688,14 +691,21 @@ def call_openai_compat(prompt: str) -> str:
     except OSError as error:  # URLError, refused connection, timeout
         reason = getattr(error, "reason", error)
         raise RuntimeError(f"{PROVIDER_OPENAI_COMPAT} call to {base} failed: {reason}") from error
-    choice = payload["choices"][0]
+    try:
+        choice = json.loads(raw)["choices"][0]
+        content = choice["message"].get("content")
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        detail = raw.decode("utf-8", "replace")[:500]
+        raise RuntimeError(
+            f"{PROVIDER_OPENAI_COMPAT} call to {base} returned an unexpected response: {detail}"
+        ) from None
     # Same rule as the SDK path: a truncated body is never returned.
     if choice.get("finish_reason") == "length":
         raise RuntimeError(
             f"{PROVIDER_OPENAI_COMPAT} output hit the server's token cap, so the result is "
             "incomplete. Split the file into smaller parts and compress each one."
         )
-    return strip_llm_wrapper((choice["message"].get("content") or "").strip())
+    return strip_llm_wrapper((content or "").strip())
 
 
 def call_claude(prompt: str) -> str:
