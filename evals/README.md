@@ -166,8 +166,10 @@ numbers and units, every not/never/only/except, the user's language,
 verbatim errors, safety wording before destructive steps, normal prose in
 persisted artifacts.
 
-`prompts/fidelity.json` holds the cases: `{id, category, prompt, checks}`
-with `checks.must_include` and `checks.must_not_include` as regex lists.
+`prompts/fidelity.json` holds the cases: `{id, category, prompt, checks,
+examples}` with `checks.must_include` and `checks.must_not_include` as
+regex lists, and `examples.pass` / `examples.fail` as answers the checks
+must accept / reject.
 A case passes for an arm when every `must_include` pattern matches the
 output and no `must_not_include` pattern does (Python `re.search`,
 case-insensitive). There is no judge model, so the same snapshot always
@@ -201,8 +203,11 @@ quality-equivalence claim without a committed, reviewed snapshot.
 | `mode-boundaries` | Explicit activation, mode switch, persistence and deactivation boundaries preserved. |
 
 To add a case, append it to `prompts/fidelity.json` with a unique `id`,
-one of the categories above, and at least one check, then rerun the
-fidelity eval. `tests/test_eval_fidelity.py` checks the file's shape.
+one of the categories above, at least one check, and at least one
+known-good and one known-bad example answer, then rerun the fidelity
+eval. `tests/test_eval_fidelity.py` checks the file's shape and runs
+every case's checks against its examples, so a check that rejects a
+correct answer fails there instead of after a paid run.
 
 ## What this does NOT measure
 
