@@ -117,6 +117,25 @@ func bracketed(parts []byte) []byte { return append(append([]byte("["), parts...
 
 func asIs(parts []byte) []byte { return parts }
 
+// keepMarker shapes the images that replace a whole Anthropic block. A
+// cache_control on that block moves onto the last image: without it the
+// provider writes no entry at the client's breakpoint, and the next turn has
+// none to read.
+func keepMarker(body []byte, block gatewayJSONSpan) func([]byte) []byte {
+	marker, ok := gatewayFindObjectField(body, block, "cache_control")
+	if !ok {
+		return asIs
+	}
+	value := body[marker.start:marker.end]
+	return func(parts []byte) []byte {
+		if len(parts) == 0 {
+			return parts
+		}
+		out := append([]byte(nil), parts[:len(parts)-1]...) // reopen the last image
+		return append(append(append(out, `,"cache_control":`...), value...), '}')
+	}
+}
+
 // pixelDecider makes pixel rendering first-decision-wins across turns, the way
 // compressRequest does for text. Pixel used to render only the live message
 // and forget it, so the next turn re-sent that message as text and busted the
@@ -322,7 +341,7 @@ func collectAnthropicPixelBlocks(body []byte, blocksSpan gatewayJSONSpan, d *pix
 			if !ok || !gatewayIsJSONString(body, textSpan) {
 				continue
 			}
-			d.add(body, textSpan, block, anthropicPixel, live, d.opts.MinCompressChars, asIs)
+			d.add(body, textSpan, block, anthropicPixel, live, d.opts.MinCompressChars, keepMarker(body, block))
 		case "tool_result":
 			content, ok := gatewayFindObjectField(body, block, "content")
 			if !ok {

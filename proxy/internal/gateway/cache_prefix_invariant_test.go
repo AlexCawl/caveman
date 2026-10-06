@@ -68,9 +68,14 @@ func cachedPrefixView(t testing.TB, x exchange) prefixView {
 	if !ok {
 		t.Fatalf("client body has no cached prefix: %.300s", x.client)
 	}
-	forwarded, _, ok := anthropic.CachedPrefixComponents(x.forwarded)
+	forwarded, forwardedCached, ok := anthropic.CachedPrefixComponents(x.forwarded)
 	if !ok || len(forwarded) != len(client) {
 		t.Fatalf("forwarded body does not mirror the client's components (ok=%v %d vs %d): %.300s", ok, len(forwarded), len(client), x.forwarded)
+	}
+	if forwardedCached < cached {
+		// The provider writes no entry at a breakpoint caveman removed, so the
+		// next turn has none to read.
+		t.Errorf("the client asked the provider to cache %d components, the forwarded request caches %d: a breakpoint was dropped", cached, forwardedCached)
 	}
 	return prefixView{client: client, forwarded: forwarded, cached: cached}
 }
@@ -1597,9 +1602,9 @@ func (h *pixelHarness) assert() {
 	}
 }
 
-// pixelConversation is a Claude Code shaped claude-fable-5 conversation whose
-// user turns are long tool results, the newest one marked.
-func pixelConversation(turns ...string) string {
+// pixelConversation is a Claude Code shaped claude-fable-5 conversation: each
+// user turn one block, the newest one marked.
+func pixelConversation(block func(i int, text, marker string) string, turns ...string) string {
 	msgs := make([]string, 0, 2*len(turns))
 	for i, text := range turns {
 		if i > 0 {
@@ -1609,9 +1614,21 @@ func pixelConversation(turns ...string) string {
 		if i == len(turns)-1 {
 			marker = `,"cache_control":{"type":"ephemeral"}`
 		}
-		msgs = append(msgs, `{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_`+strconv.Itoa(i)+`","content":`+jsonText(text)+marker+`}]}`)
+		msgs = append(msgs, `{"role":"user","content":[`+block(i, text, marker)+`]}`)
 	}
 	return `{"model":"claude-fable-5","max_tokens":128,"system":"You are Claude Code.","messages":[` + strings.Join(msgs, ",") + `]}`
+}
+
+// toolResultTurn is a long tool result; its marker sits on the tool_result
+// block, outside the content pixel renders.
+func toolResultTurn(i int, text, marker string) string {
+	return `{"type":"tool_result","tool_use_id":"tool_` + strconv.Itoa(i) + `","content":` + jsonText(text) + marker + `}`
+}
+
+// textTurn is a long prompt or pasted log; pixel replaces the whole block,
+// marker included.
+func textTurn(_ int, text, marker string) string {
+	return `{"type":"text","text":` + jsonText(text) + marker + `}`
 }
 
 // pixelRows is a tool result long enough to render.
@@ -1630,33 +1647,39 @@ func TestCachePrefixInvariantPixel(t *testing.T) {
 		{"raw retry pins the conversation", func(t *testing.T, h *pixelHarness) {
 			// The provider cached turn 2 as text: turn 3 extends that text and
 			// must not render turn 1 back in.
-			if !rendered(h.send(pixelConversation(a), false)) {
+			if !rendered(h.send(pixelConversation(toolResultTurn, a), false)) {
 				t.Fatal("test setup: turn 1 was not rendered")
 			}
-			if raw := h.send(pixelConversation(a, b), true); !bytes.Equal(raw, []byte(pixelConversation(a, b))) {
+			if raw := h.send(pixelConversation(toolResultTurn, a, b), true); !bytes.Equal(raw, []byte(pixelConversation(toolResultTurn, a, b))) {
 				t.Fatal("test setup: turn 2 should have been accepted raw")
 			}
-			h.send(pixelConversation(a, b, c), false)
+			h.send(pixelConversation(toolResultTurn, a, b, c), false)
 		}},
 		{"recovery store fails on a later turn", func(t *testing.T, h *pixelHarness) {
 			// A failed write keeps only NEW content from rendering: the turn
 			// still re-sends turn 1's renders, and its own block is on record
 			// as the text it went out as.
-			h.send(pixelConversation(a), false)
+			h.send(pixelConversation(toolResultTurn, a), false)
 			h.comp.storeErr = errors.New("ccr down")
-			if !rendered(h.send(pixelConversation(a, b), false)) {
+			if !rendered(h.send(pixelConversation(toolResultTurn, a, b), false)) {
 				t.Error("the turn whose recovery write failed dropped turn 1's renders")
 			}
 			h.comp.storeErr = nil
-			h.send(pixelConversation(a, b, c), false)
+			h.send(pixelConversation(toolResultTurn, a, b, c), false)
 		}},
 		{"recovery store fails on the first turn", func(t *testing.T, h *pixelHarness) {
 			h.comp.storeErr = errors.New("ccr down")
-			if rendered(h.send(pixelConversation(a), false)) {
+			if rendered(h.send(pixelConversation(toolResultTurn, a), false)) {
 				t.Fatal("test setup: turn 1 should have gone out as text")
 			}
 			h.comp.storeErr = nil
-			h.send(pixelConversation(a, b), false)
+			h.send(pixelConversation(toolResultTurn, a, b), false)
+		}},
+		{"a rendered text block keeps its breakpoint", func(t *testing.T, h *pixelHarness) {
+			if !rendered(h.send(pixelConversation(textTurn, a), false)) {
+				t.Fatal("test setup: turn 1 was not rendered")
+			}
+			h.send(pixelConversation(textTurn, a, b), false)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

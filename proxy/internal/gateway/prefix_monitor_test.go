@@ -448,3 +448,23 @@ func TestTripwireLeverFreezeIsNotCavemansBust(t *testing.T) {
 		t.Fatalf("the rollover must be recorded as %q, got %q", bustCauseLeverFreeze, row.CacheBustCause)
 	}
 }
+
+// TestTripwireFlagsADroppedBreakpoint: a forwarded request that caches less
+// than the client asked for leaves the next turn no entry to read, and only
+// caveman changes forwarded bytes.
+func TestTripwireFlagsADroppedBreakpoint(t *testing.T) {
+	var logs bytes.Buffer
+	srv := New(Config{PrefixCache: newTestPrefixCache(), Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))})
+	adapter := anthropic.New("https://upstream.test")
+	meta := providers.RequestMetadata{Provider: "anthropic", Endpoint: "/v1/messages", Model: "claude-fable-5"}
+	body := []byte(`{"model":"claude-fable-5","system":"S","messages":[{"role":"user","content":[{"type":"text","text":"a long log","cache_control":{"type":"ephemeral"}}]}]}`)
+	accepted := []byte(`{"model":"claude-fable-5","system":"S","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]}]}`)
+
+	cause := srv.observeCachedPrefix(adapter, meta, body, accepted, acceptance{sent: srv.prefixSeq.Add(1), session: "sess-marker", requestID: "req-marker"})
+	if cause != bustCauseCaveman {
+		t.Fatalf("a dropped breakpoint must count as caveman's bust, got %q", cause)
+	}
+	if !strings.Contains(logs.String(), `level=ERROR msg="caveman dropped a cache breakpoint the client set"`) {
+		t.Fatalf("no ERROR line for a dropped breakpoint:\n%s", logs.String())
+	}
+}

@@ -254,10 +254,11 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 	if a.stripFrozen {
 		o.rollover = sharedComponents(adapter)
 	}
+	forwardedCached := cached
 	if sent {
 		// Only a request that went out as sent can be one held to a raw pin.
 		o.pinned = s.rawPinCoverage(adapter, newPrefixDigests(client))
-	} else if o.forwarded, _, ok = cachedPrefix(adapter, meta, accepted); !ok || len(o.forwarded) != len(client) {
+	} else if o.forwarded, forwardedCached, ok = cachedPrefix(adapter, meta, accepted); !ok || len(o.forwarded) != len(client) {
 		return ""
 	} else if !componentsEqual(o.forwarded[:cached], client[:cached]) {
 		// Did it follow a replaced lineage past a raw anchor it repeats? Asked
@@ -279,8 +280,16 @@ func (s *Server) observeCachedPrefix(adapter providers.Adapter, meta providers.R
 		o.cached = 0
 	}
 	cause, index := s.prefixMonitor.observe(key, o)
+	attrs := []any{"request_id", requestID, "session_id", sessionID, "index", index}
+	if forwardedCached < cached {
+		// The provider writes no entry at a breakpoint caveman removed, so the
+		// next turn has none to read, whatever the anchors say.
+		if s.logger != nil {
+			s.logger.Error("caveman dropped a cache breakpoint the client set", append(attrs, "cached", cached, "forwarded_cached", forwardedCached)...)
+		}
+		return bustCauseCaveman
+	}
 	if s.logger != nil {
-		attrs := []any{"request_id", requestID, "session_id", sessionID, "index", index}
 		switch cause {
 		case bustCauseCaveman:
 			s.logger.Error("caveman changed bytes the provider already cached", attrs...)
