@@ -110,8 +110,6 @@ function hasClaudeCli() {
 const STATUSLINE_FILE = process.platform === 'win32'
   ? 'caveman-statusline.ps1'
   : 'caveman-statusline.sh';
-const FAKE_CLAUDE = process.platform === 'win32' ? 'claude.cmd' : 'claude';
-const FAKE_CLAUDE_BODY = process.platform === 'win32' ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n';
 
 test('isolated Claude install and uninstall complete without network or real user config', () => {
   const dir = freshTmpDir();
@@ -861,19 +859,14 @@ test('lib settings.addCommandHook is idempotent across two synthetic install pas
   }
 });
 
-test('claude hook install wires SessionEnd stats recorder once', () => {
+test('claude hook install wires SessionEnd stats recorder once, and uninstall removes it', () => {
   const dir = freshTmpDir();
-  const fakeBin = path.join(dir, 'bin');
   const configDir = path.join(dir, 'claude-config');
-  fs.mkdirSync(fakeBin, { recursive: true });
-  const fakeClaudePath = path.join(fakeBin, FAKE_CLAUDE);
-  fs.writeFileSync(fakeClaudePath, FAKE_CLAUDE_BODY);
-  fs.chmodSync(fakeClaudePath, 0o755);
+  const env = isolatedInstallEnv(dir);
 
   try {
-    const envPath = fakeBin + path.delimiter + process.env.PATH;
-    const r1 = runInstaller(['--only', 'claude', '--with-hooks'], configDir, { PATH: envPath });
-    const r2 = runInstaller(['--only', 'claude', '--with-hooks'], configDir, { PATH: envPath });
+    const r1 = runInstaller(['--only', 'claude', '--with-hooks'], configDir, env);
+    const r2 = runInstaller(['--only', 'claude', '--with-hooks'], configDir, env);
     assert.equal(r1.status, 0, `first install failed:\n${r1.stdout}\n${r1.stderr}`);
     assert.equal(r2.status, 0, `second install failed:\n${r2.stdout}\n${r2.stderr}`);
 
@@ -881,6 +874,11 @@ test('claude hook install wires SessionEnd stats recorder once', () => {
     const sessionEnd = cavemanHookCommands(settings, 'SessionEnd', 'caveman-stats');
     assert.equal(sessionEnd.length, 1, `expected 1 SessionEnd stats hook, got ${sessionEnd.length}`);
     assert.match(sessionEnd[0].command, /caveman-stats\.js" --record$/);
+
+    const removed = runInstaller(['--uninstall'], configDir, env);
+    assert.equal(removed.status, 0, removed.stderr || removed.stdout);
+    const clean = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8'));
+    assert.deepEqual(cavemanHookCommands(clean, 'SessionEnd', 'caveman-stats'), []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -894,17 +892,10 @@ test('claude plugin install success reports SessionEnd manifest coverage', {
   skip: process.platform === 'win32' && 'installer cannot spawn a claude.cmd shim, so the plugin-success path is unreachable',
 }, () => {
   const dir = freshTmpDir();
-  const fakeBin = path.join(dir, 'bin');
   const configDir = path.join(dir, 'claude-config');
-  fs.mkdirSync(fakeBin, { recursive: true });
-  const fakeClaudePath = path.join(fakeBin, FAKE_CLAUDE);
-  fs.writeFileSync(fakeClaudePath, FAKE_CLAUDE_BODY);
-  fs.chmodSync(fakeClaudePath, 0o755);
 
   try {
-    const r = runInstaller(['--only', 'claude'], configDir, {
-      PATH: fakeBin + path.delimiter + process.env.PATH,
-    });
+    const r = runInstaller(['--only', 'claude'], configDir, isolatedInstallEnv(dir));
     assert.equal(r.status, 0, `install failed:\n${r.stdout}\n${r.stderr}`);
     assert.match(r.stdout, /plugin manifest handles SessionStart \+ UserPromptSubmit \+ SessionEnd/);
   } finally {
