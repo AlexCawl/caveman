@@ -34,8 +34,11 @@ type captureUpstreamTransport struct {
 }
 
 func (t *captureUpstreamTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	body, _ := io.ReadAll(r.Body)
-	t.body = append([]byte(nil), body...)
+	t.body = nil
+	if r.Body != nil { // metadata GETs forward with no body
+		body, _ := io.ReadAll(r.Body)
+		t.body = append([]byte(nil), body...)
+	}
 	t.headers = r.Header.Clone()
 	t.url = r.URL.String()
 	status := t.status
