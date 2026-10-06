@@ -359,7 +359,8 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	transformedHash := sha256.Sum256(transform.Body)
 	evidence.acceptedBody = transform.Body
 	providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown := providerPrefixEvidence(adapter, transform.Body, meta)
-	cacheBust := false
+	cacheBustCause := ""
+	rawRetried := false
 
 	upstreamURL, err := adapter.ResolveUpstreamURL(r.Context(), r, providers.RouteContext{})
 	if err != nil {
@@ -414,7 +415,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, r, http.StatusBadGateway, "cave_upstream_unavailable", "Upstream provider unavailable.")
 		estimateWG.Wait() // join the observe estimate before record() reads it
-		s.record(start, 0, requestID, traceID, rc, meta, authMode, http.StatusBadGateway, 0, len(body), rawHash, transformedHash, "cave_upstream_unavailable", transform.OptimizerIDs, providers.UsageObservation{CacheStatus: "unknown"}, comp, toolSchemaHandle, false, estimate, evidence, providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown, cacheBust, compressionEligible)
+		s.record(start, 0, requestID, traceID, rc, meta, authMode, http.StatusBadGateway, 0, len(body), rawHash, transformedHash, "cave_upstream_unavailable", transform.OptimizerIDs, providers.UsageObservation{CacheStatus: "unknown"}, comp, toolSchemaHandle, false, estimate, evidence, providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown, cacheBustCause, compressionEligible)
 		return
 	}
 	// byte-safe fail-open: if the upstream rejects a request whose bytes we
@@ -450,12 +451,13 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, r, http.StatusBadGateway, "cave_upstream_unavailable", "Upstream provider unavailable.")
 			estimateWG.Wait() // join the observe estimate; passed uniformly (zeroed at Record on this failed status)
 			evidence.acceptedBody = body
-			s.record(start, 0, requestID, traceID, rc, meta, authMode, http.StatusBadGateway, 0, len(body), rawHash, rawHash, "cave_upstream_unavailable", []string{}, providers.UsageObservation{CacheStatus: "unknown"}, nil, "", false, estimate, evidence, providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown, cacheBust, compressionEligible)
+			s.record(start, 0, requestID, traceID, rc, meta, authMode, http.StatusBadGateway, 0, len(body), rawHash, rawHash, "cave_upstream_unavailable", []string{}, providers.UsageObservation{CacheStatus: "unknown"}, nil, "", false, estimate, evidence, providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown, cacheBustCause, compressionEligible)
 			return
 		}
 		if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
 			s.pinRaw(adapter, meta, body, transform.Body)
 		}
+		rawRetried = true
 		resp = retryResp
 		upstreamHeaders = retryHeaders
 		transform = providers.TransformResult{Body: body, OptimizerIDs: []string{}}
@@ -479,21 +481,20 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 			RetryOriginal: true,
 		}, wholeBody(body), wholeBody(body))
 	}
-	// Observe-only prefix-monotonicity check (issue #133): compare this request's
-	// frozen-prefix component hashes against the previous request in the same
-	// session and flag cache_bust if the new prefix does not extend the prior one.
-	// It never blocks or modifies traffic — the flag is persisted and a Warn names
-	// the first diverging component index. It runs once, on the bytes the provider
-	// ACCEPTED: a rejected attempt cached nothing, and anchoring it made the turn
-	// after a raw retry read as a bust.
-	if resp.StatusCode < 400 {
-		var divergingComponentIndex int
-		cacheBust, divergingComponentIndex = s.prefixMonitor.observe(evidence.SessionID, providerCacheComponentSHA256)
-		if cacheBust && s.logger != nil {
-			s.logger.Warn("session frozen-cache prefix did not extend prior request; possible cache bust",
-				"request_id", requestID, "session_id", evidence.SessionID,
-				"diverging_component_index", divergingComponentIndex)
-		}
+	// The cache tripwire (prefix_monitor.go) compares what this request repeats
+	// of its session's cached prefixes, client bytes and forwarded bytes both.
+	// It never blocks or modifies traffic. It runs once, on the bytes the
+	// provider ACCEPTED: a rejected attempt cached nothing, and anchoring it made
+	// the turn after a raw retry read as a bust. A request the caller opted out
+	// of transforms is skipped: its raw bytes are the caller's choice, not ours.
+	// Splitting two large bodies is not free, so it runs alongside the response
+	// stream; estimateWG is joined before every record() that reads the cause.
+	if resp.StatusCode < 400 && effectiveRuntimeMode == rc.RuntimeMode {
+		estimateWG.Add(1)
+		go func(meta providers.RequestMetadata, accepted []byte, rawRetried bool, sessionID string) {
+			defer estimateWG.Done()
+			cacheBustCause = s.observeCachedPrefix(adapter, meta, body, accepted, rawRetried, sessionID, requestID)
+		}(meta, transform.Body, rawRetried, evidence.SessionID)
 	}
 	var retrieveCalls []providers.UsageObservation
 	var retrieved bool
@@ -528,7 +529,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		if rerr != nil {
 			httpx.Error(w, r, http.StatusBadGateway, "cave_upstream_body_read_failed", "Upstream response could not be read completely.")
 			estimateWG.Wait()
-			s.record(start, 0, requestID, traceID, rc, meta, authMode, http.StatusBadGateway, 0, len(body), rawHash, transformedHash, "cave_upstream_body_read_failed", transform.OptimizerIDs, providers.UsageObservation{CacheStatus: "unknown"}, comp, toolSchemaHandle, false, estimate, evidence, providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown, cacheBust, compressionEligible)
+			s.record(start, 0, requestID, traceID, rc, meta, authMode, http.StatusBadGateway, 0, len(body), rawHash, transformedHash, "cave_upstream_body_read_failed", transform.OptimizerIDs, providers.UsageObservation{CacheStatus: "unknown"}, comp, toolSchemaHandle, false, estimate, evidence, providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown, cacheBustCause, compressionEligible)
 			return
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(data))
@@ -617,7 +618,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		combinedUsage.CallObservations = append(append([]providers.UsageObservation{}, retrieveCalls...), finalUsage)
 	}
 	estimateWG.Wait() // join the observe estimate; overlapped the upstream round-trip + response stream
-	s.record(start, ttfb, requestID, traceID, rc, meta, authMode, resp.StatusCode, counter.n, len(body), rawHash, transformedHash, errCode, transform.OptimizerIDs, combinedUsage, comp, toolSchemaHandle, retrieved, estimate, evidence, providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown, cacheBust, compressionEligible)
+	s.record(start, ttfb, requestID, traceID, rc, meta, authMode, resp.StatusCode, counter.n, len(body), rawHash, transformedHash, errCode, transform.OptimizerIDs, combinedUsage, comp, toolSchemaHandle, retrieved, estimate, evidence, providerCachePrefixSHA256, providerCacheComponentSHA256, cacheBoundaryKnown, cacheBustCause, compressionEligible)
 	if copyErrCode != "" {
 		// Headers are committed. Abort HTTP framing instead of returning a clean
 		// EOF for an incomplete SSE/gzip body; never replay a partial response.
@@ -1412,7 +1413,7 @@ func (s *Server) matchAdapter(r *http.Request) providers.Adapter {
 
 // record prices the request from the catalog and writes one truthful row to the
 // sink. Standalone savings are always labeled "inferred".
-func (s *Server) record(start time.Time, ttfb int64, requestID, traceID string, rc RequestContext, meta providers.RequestMetadata, authMode AuthMode, status int, responseBytes int64, requestBytes int, rawHash, transformedHash [32]byte, errorCode string, optimizers []string, usage providers.UsageObservation, comp *compressionOutcome, toolSchemaHandle string, retrieved bool, estimate *estimateOutcome, evidence requestEvidence, providerCachePrefixSHA256, providerCacheComponentSHA256 string, cacheBoundaryKnown, cacheBust, compressionEligible bool) {
+func (s *Server) record(start time.Time, ttfb int64, requestID, traceID string, rc RequestContext, meta providers.RequestMetadata, authMode AuthMode, status int, responseBytes int64, requestBytes int, rawHash, transformedHash [32]byte, errorCode string, optimizers []string, usage providers.UsageObservation, comp *compressionOutcome, toolSchemaHandle string, retrieved bool, estimate *estimateOutcome, evidence requestEvidence, providerCachePrefixSHA256, providerCacheComponentSHA256 string, cacheBoundaryKnown bool, cacheBustCause string, compressionEligible bool) {
 	if s.sink == nil {
 		return
 	}
@@ -1508,7 +1509,8 @@ func (s *Server) record(start time.Time, ttfb int64, requestID, traceID string, 
 		ProviderCachePrefixSHA256:    providerCachePrefixSHA256,
 		ProviderCacheComponentSHA256: providerCacheComponentSHA256,
 		CacheBoundaryKnown:           cacheBoundaryKnown,
-		CacheBust:                    cacheBust,
+		CacheBust:                    cacheBustCause != "",
+		CacheBustCause:               cacheBustCause,
 		CompressionEligible:          compressionEligible,
 		AgentSlug:                    labelOrDefault(rc.AgentSlug, "unlabeled-agent"),
 		Provider:                     meta.Provider,

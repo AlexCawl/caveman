@@ -236,11 +236,13 @@ type RequestRecord struct {
 	ProviderCachePrefixSHA256    string
 	ProviderCacheComponentSHA256 string
 	CacheBoundaryKnown           bool
-	// CacheBust is set by the observe-only prefix-monotonicity check when this
-	// request's frozen prefix did not extend the previous request in the same
-	// session (see prefix_monitor.go). It is a diagnostic flag only — it never
-	// blocks or modifies traffic and never affects any savings figure.
-	CacheBust bool
+	// CacheBust is set by the observe-only cache tripwire when this request did
+	// not extend the prefix its session cached (see prefix_monitor.go), and
+	// CacheBustCause says who changed the bytes: "client", "caveman" or
+	// "raw_retry". Diagnostic only — it never blocks or modifies traffic and
+	// never affects any savings figure.
+	CacheBust      bool
+	CacheBustCause string
 	// CompressionEligible marks that this request reached the compression path as a
 	// candidate (compress mode, recovery-reachable, cache-epoch allowed) regardless
 	// of whether any bytes were ultimately saved. It is the denominator behind the
@@ -345,9 +347,9 @@ type Server struct {
 	// rawPins are conversations the provider accepted only raw (see raw_pin.go).
 	rawPins    rawPins
 	cacheGuard *cacheguard.Guard
-	// prefixMonitor runs the observe-only per-session prefix-monotonicity check
-	// (see prefix_monitor.go). It flags cache_bust when a request's frozen prefix
-	// does not extend the prior request in the same session.
+	// prefixMonitor is the observe-only cache tripwire (see prefix_monitor.go). It
+	// flags cache_bust when a request does not extend what its session cached,
+	// and says whether the client or caveman changed the bytes.
 	prefixMonitor *prefixMonitor
 	// recoveryViaMCP records that the wrapped agent fulfills caveman_retrieve itself
 	// (via the caveman MCP server, sharing the CCR store) — set by `caveman wrap`

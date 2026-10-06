@@ -291,6 +291,7 @@ type invariantHarness struct {
 	cache *testPrefixCache
 	rt    *invariantTransport
 	srv   *Server
+	sink  *captureSink
 	// strip turns on the tool-schema annotation strip.
 	strip bool
 
@@ -306,6 +307,7 @@ func newInvariantHarness(t testing.TB) *invariantHarness {
 		comp:  &invariantCompressor{},
 		cache: newTestPrefixCache(),
 		rt:    &invariantTransport{attempts: map[int][]upstreamAttempt{}, respond: map[int]respondFunc{}},
+		sink:  &captureSink{},
 	}
 	h.restart("")
 	return h
@@ -325,6 +327,7 @@ func (h *invariantHarness) restart(nonce string) {
 		Adapters:        []providers.Adapter{anthropic.New("https://upstream.test")},
 		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
 		Creds:           passthroughTestCreds{},
+		Sink:            h.sink,
 		Compressor:      h.comp,
 		PrefixCache:     h.cache,
 		HTTPClient:      &http.Client{Transport: h.rt},
@@ -384,6 +387,15 @@ func (h *invariantHarness) sendBody(body []byte, session string, o sendOpts) (in
 func (h *invariantHarness) assert() {
 	h.t.Helper()
 	assertCachedPrefixPreserved(h.t, h.xs)
+	// The runtime tripwire must agree: a run the invariant accepts has no bust
+	// caveman caused.
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
+	for i, row := range h.sink.rows {
+		if row.CacheBustCause == bustCauseCaveman {
+			h.t.Errorf("tripwire reported a caveman bust on recorded request %d of %d", i, len(h.sink.rows))
+		}
+	}
 }
 
 // compressedSomething guards against a scenario passing vacuously.
@@ -1152,6 +1164,9 @@ func TestPrefixMonitorAnchorsAcceptedBytes(t *testing.T) {
 	}
 	if row := sink.last(t); row.CacheBust {
 		t.Fatal("the turn that extends the accepted raw request was flagged as a cache bust")
+	}
+	if row := sink.rows[2]; row.CacheBustCause != bustCauseRawRetry {
+		t.Fatalf("the raw retry itself must be classified raw_retry, got %q", row.CacheBustCause)
 	}
 }
 
