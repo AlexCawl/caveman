@@ -11694,10 +11694,16 @@ const HERMES_PLUGIN_ENABLE_END = "# <<< caveman:hermes-plugin-enable";
 const HERMES_PLUGIN_NAME = "caveman_shrink";
 
 export function hermesHome(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
-  // Hermes 0.19.1 hermes_constants.py: native Windows uses LOCALAPPDATA,
-  // overrides are stripped, and Path(value) does not expand a literal tilde.
+  // Hermes 0.21.5 hermes_constants.py: native Windows uses LOCALAPPDATA,
+  // overrides are stripped, then Path(expanduser(expandvars(value))).
+  // ponytail: no `~user` or Windows quote/escape forms; add if a user hits one.
   const override = env.HERMES_HOME?.trim();
-  if (override) return resolve(override);
+  if (override) {
+    const lookup = (whole: string, name: string) => env[name] ?? whole;
+    let expanded = override.replace(/\$(\w+)|\$\{([^}]*)\}/g, (whole, bare, braced) => lookup(whole, bare ?? braced));
+    if (platform === "win32") expanded = expanded.replace(/%([^%]+)%/g, lookup);
+    return resolve(expanded.replace(/^~(?=$|[\\/])/, homedir()));
+  }
   if (platform === "win32") {
     return join(env.LOCALAPPDATA?.trim() || join(homedir(), "AppData", "Local"), "hermes");
   }
