@@ -264,7 +264,8 @@ function removeCavemanHooks(settings) {
 function rewriteLegacyManagedHookCommands(settings, absoluteNode, platform = process.platform) {
   if (!settings || !settings.hooks || !absoluteNode) return 0;
   let rewritten = 0;
-  const reBare = /^node\s+("([^"]+)"|'([^']+)'|(\S+))\s*$/;
+  // The one trailing arg we ever wire: SubagentStart's --subagent (#621).
+  const reBare = /^node\s+("([^"]+)"|'([^']+)'|(\S+))(\s+--subagent)?\s*$/;
   for (const ev of Object.keys(settings.hooks)) {
     if (!Array.isArray(settings.hooks[ev])) continue;
     for (const entry of settings.hooks[ev]) {
@@ -279,7 +280,7 @@ function rewriteLegacyManagedHookCommands(settings, absoluteNode, platform = pro
         // One shape, one place. This used to emit PowerShell call-operator
         // syntax on win32, which Git Bash — Claude Code's default hook shell
         // on Windows — rejects as a syntax error (#835).
-        h.command = hookCommand(absoluteNode, [scriptPath], platform);
+        h.command = hookCommand(absoluteNode, m[5] ? [scriptPath, '--subagent'] : [scriptPath], platform);
         rewritten++;
       }
     }

@@ -577,7 +577,7 @@ async function installClaude(ctx) {
     // 'auto'
     shouldWireHooks = !pluginInstallSucceeded;
     if (!shouldWireHooks) {
-      note('  hooks: plugin manifest handles SessionStart + UserPromptSubmit');
+      note('  hooks: plugin manifest handles SessionStart + SubagentStart + UserPromptSubmit');
       note('  (pass --with-hooks to also wire standalone hooks in settings.json)');
       results.skipped.push(['claude-hooks', 'plugin manifest handles hooks']);
     } else {
@@ -1317,7 +1317,7 @@ async function installHooks(ctx) {
   if (opts.dryRun) {
     note(`  would mkdir -p ${hooksDir}`);
     for (const f of HOOK_FILES) note(`  would install ${path.join(hooksDir, f)}`);
-    note(`  would merge SessionStart + UserPromptSubmit + statusline into ${settingsPath}`);
+    note(`  would merge SessionStart + SubagentStart + UserPromptSubmit + statusline into ${settingsPath}`);
     return 'ok';
   }
 
@@ -1422,6 +1422,14 @@ async function installHooks(ctx) {
     marker: 'caveman-activate',
     timeout: 30,
     statusMessage: 'Loading caveman mode...',
+  });
+
+  // #621: subagents inherit this session's mode. Same script, read-only path.
+  SETTINGS.addCommandHook(settings, 'SubagentStart', {
+    command: PLATFORM_PATHS.hookCommand(node, [activate, '--subagent']),
+    marker: 'caveman-activate',
+    timeout: 30,
+    statusMessage: 'Loading caveman mode for subagent...',
   });
 
   SETTINGS.addCommandHook(settings, 'UserPromptSubmit', {
@@ -1979,7 +1987,7 @@ FLAGS
   --all                 Turn on hooks + init. (mcp-shrink needs an upstream;
                         pass --with-mcp-shrink="<cmd>" to add it.)
   --minimal             Just the plugin/extension install.
-  --with-hooks          Claude Code: install SessionStart/UserPromptSubmit hooks
+  --with-hooks          Claude Code: install SessionStart/SubagentStart/UserPromptSubmit hooks
                         + statusline badge. (Default ON.)
   --no-hooks            Skip the hooks installer.
   --with-init           Write per-repo IDE rule files into \$PWD.

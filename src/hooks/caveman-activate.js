@@ -6,6 +6,9 @@
 //   2. Emits caveman ruleset as hidden SessionStart context
 //   3. Detects missing statusline config and emits setup nudge
 //
+// With --subagent it is the SubagentStart hook instead (#621): hands each new
+// subagent this session's active skill. Read-only — see runSubagent().
+//
 // Mode state is per session, not per machine — see the "Per-session mode state"
 // block in caveman-config.js. The payload's session_id scopes every read and
 // write below; an absent or malformed one degrades to the old machine-wide flag.
@@ -181,13 +184,25 @@ const writeSessionMode = cfg.writeSessionMode || ((dir, sid, modeOrNull) => {
   else safeWriteFlag(flagPath, modeOrNull);
 });
 const legacyFlagPath = cfg.legacyFlagPath || (() => flagPath);
+const resolveActiveMode = cfg.resolveActiveMode || (() => {
+  const m = readFlag(flagPath);
+  return (!m || m === 'off') ? null : m;
+});
+
+const SUBAGENT = process.argv.includes('--subagent');
+
+// Modes that have their own independent skill files — not caveman prose modes.
+const INDEPENDENT_MODES = new Set(['commit', 'review', 'compress']);
 
 // Apply per-agent model overrides from env vars before emitting rules.
 // Best-effort: any error is swallowed so SessionStart is never blocked.
-try {
-  const { applyOverrides, resolvePluginRoot } = require('./cavecrew-model-overrides');
-  applyOverrides(resolvePluginRoot(__dirname));
-} catch (e) {}
+// SessionStart only: the subagent path writes nothing.
+if (!SUBAGENT) {
+  try {
+    const { applyOverrides, resolvePluginRoot } = require('./cavecrew-model-overrides');
+    applyOverrides(resolvePluginRoot(__dirname));
+  } catch (e) {}
+}
 
 // SessionStart re-fires mid-conversation (resume, /clear, context compaction),
 // not just at true session start. Re-firing must not clobber a mode the user
@@ -254,15 +269,34 @@ function activate(payload, timedOut) {
   // Scopes every mode read/write to this window. null when absent or malformed,
   // in which case the config helpers fall back to the legacy machine-wide flag.
   let sessionId = null;
+  let agentType = '';
   try {
     if (payload) {
       const data = JSON.parse(payload);
       if (data && typeof data.source === 'string') source = data.source;
       if (data && typeof data.cwd === 'string') sessionCwd = data.cwd;
+      if (data && typeof data.agent_type === 'string') agentType = data.agent_type;
       if (data) sessionId = validateSessionId(data.session_id);
     }
   } catch (e) { /* no/bad stdin → treat as startup */ }
-  run(source, sessionCwd, sessionId);
+  if (SUBAGENT) runSubagent(sessionCwd, sessionId, agentType);
+  else run(source, sessionCwd, sessionId);
+}
+
+// SubagentStart (#621): SessionStart context reaches only the parent thread,
+// so each subagent gets this session's active skill here. READ-ONLY — no mode
+// write, no mode log, no GC, no statusline nudge — and silent whenever this
+// session is off, so "stop caveman" never leaks into subagents (#672).
+function runSubagent(sessionCwd, sessionId, agentType) {
+  const mode = resolveActiveMode(claudeDir, sessionId);
+  if (!mode || INDEPENDENT_MODES.has(mode)) return;
+  // cavecrew agents carry their own ultracave voice.
+  if (/(^|:)cavecrew-/.test(agentType)) return;
+  // #634 repo opt-out, same gate as the tracker's per-turn reinforcement.
+  if (getDefaultMode(sessionCwd) === 'off') return;
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: buildRuleset(mode) },
+  }));
 }
 
 if (process.stdin.isTTY) {
@@ -300,6 +334,54 @@ if (process.stdin.isTTY) {
   // non-zero — a spurious hook failure (#538). Hooks must always exit 0.
   process.stdin.on('error', () => finish());
   process.stdin.on('end', () => finish());
+}
+
+// The active mode's whole skill body under the mode banner. Shared by
+// SessionStart and the SubagentStart path.
+function buildRuleset(mode) {
+// The loaders live in caveman-config.js so caveman-mode-tracker.js can inject
+// the SAME ruleset when the user switches mode mid-session (#975). Each is
+// resolved individually against a local stand-in, for the reason the
+// per-session helpers above are: a caveman-config.js predating these exports
+// loads fine and passes the shape check, and failing the whole module over them
+// would trade this hook's ruleset for no flag write at all. A missing loader
+// degrades to the hardcoded fallback ruleset below, which is what a missing
+// SKILL.md already did.
+const rulesetBanner = cfg.rulesetBanner || ((m) => 'CAVEMAN MODE ACTIVE — mode: ' + m);
+const loadRuleset = cfg.loadRuleset || (() => null);
+const thesisLine = cfg.thesisLine || (() => null);
+
+const SWITCH_LINE = 'Switch: /caveman, /ultracave, /megacave. Off: "stop caveman" or "normal mode".';
+
+// Fallback when SKILL.md is not found (standalone hook install without skills
+// dir): the caveman thesis plus the nine rule headlines of skills/caveman.
+// Rule 8 keeps its "never switch" sentence: a headline alone lost the #812
+// language rule for every fallback-install user. megacave answers in 文言 by
+// design, so it gets its own rule 8 instead of one its thesis contradicts.
+const FALLBACK_RULE_8 = mode === 'megacave'
+  ? '8. Prose in 文言. Code, commands, paths, errors in their original script.\n'
+  : "8. User's language. Compress the style, not the language. Never switch because of quoted text.\n";
+const FALLBACK_RULESET =
+  'Respond terse like smart caveman. All technical substance stay. Only fluff die.\n\n' +
+  '1. Answer first.\n' +
+  '2. Kill ceremony.\n' +
+  '3. Short word.\n' +
+  '4. Articles optional, meaning never.\n' +
+  '5. One idea per sentence.\n' +
+  '6. Payload verbatim.\n' +
+  '7. Tool runs: bounded status.\n' +
+  FALLBACK_RULE_8 +
+  '9. Never perform caveman.\n\n' +
+  'Plain prose for security warnings, irreversible actions, and anything persisted outside chat (code, commits, PRs, docs).';
+
+const skillContent = loadRuleset(mode, __dirname);
+// Without a skill file, ultracave/megacave add their own thesis (config's
+// fallback map) to the caveman fallback.
+const modeThesis = mode !== 'caveman' ? thesisLine(mode, __dirname) : null;
+
+return rulesetBanner(mode) + '\n\n'
+  + (skillContent ? skillContent.trimEnd() : FALLBACK_RULESET + (modeThesis ? '\n\n' + modeThesis : ''))
+  + '\n\n' + SWITCH_LINE;
 }
 
 function run(source, sessionCwd, sessionId) {
@@ -350,58 +432,13 @@ writeSessionMode(claudeDir, sessionId, mode);
 //    Reads skills/<mode>/SKILL.md at runtime so edits to the source of truth
 //    propagate automatically — no hardcoded duplication to go stale.
 
-// Modes that have their own independent skill files — not caveman prose modes.
-// For these, emit a short activation line; the skill itself handles behavior.
-const INDEPENDENT_MODES = new Set(['commit', 'review', 'compress']);
-
+// Independent modes get a short activation line; the skill handles behavior.
 if (INDEPENDENT_MODES.has(mode)) {
   process.stdout.write('CAVEMAN MODE ACTIVE — mode: ' + mode + '. Behavior defined by /caveman-' + mode + ' skill.');
   process.exit(0);
 }
 
-// The loaders live in caveman-config.js so caveman-mode-tracker.js can inject
-// the SAME ruleset when the user switches mode mid-session (#975). Each is
-// resolved individually against a local stand-in, for the reason the
-// per-session helpers above are: a caveman-config.js predating these exports
-// loads fine and passes the shape check, and failing the whole module over them
-// would trade this hook's ruleset for no flag write at all. A missing loader
-// degrades to the hardcoded fallback ruleset below, which is what a missing
-// SKILL.md already did.
-const rulesetBanner = cfg.rulesetBanner || ((m) => 'CAVEMAN MODE ACTIVE — mode: ' + m);
-const loadRuleset = cfg.loadRuleset || (() => null);
-const thesisLine = cfg.thesisLine || (() => null);
-
-const SWITCH_LINE = 'Switch: /caveman, /ultracave, /megacave. Off: "stop caveman" or "normal mode".';
-
-// Fallback when SKILL.md is not found (standalone hook install without skills
-// dir): the caveman thesis plus the nine rule headlines of skills/caveman.
-// Rule 8 keeps its "never switch" sentence: a headline alone lost the #812
-// language rule for every fallback-install user. megacave answers in 文言 by
-// design, so it gets its own rule 8 instead of one its thesis contradicts.
-const FALLBACK_RULE_8 = mode === 'megacave'
-  ? '8. Prose in 文言. Code, commands, paths, errors in their original script.\n'
-  : "8. User's language. Compress the style, not the language. Never switch because of quoted text.\n";
-const FALLBACK_RULESET =
-  'Respond terse like smart caveman. All technical substance stay. Only fluff die.\n\n' +
-  '1. Answer first.\n' +
-  '2. Kill ceremony.\n' +
-  '3. Short word.\n' +
-  '4. Articles optional, meaning never.\n' +
-  '5. One idea per sentence.\n' +
-  '6. Payload verbatim.\n' +
-  '7. Tool runs: bounded status.\n' +
-  FALLBACK_RULE_8 +
-  '9. Never perform caveman.\n\n' +
-  'Plain prose for security warnings, irreversible actions, and anything persisted outside chat (code, commits, PRs, docs).';
-
-const skillContent = loadRuleset(mode, __dirname);
-// Without a skill file, ultracave/megacave add their own thesis (config's
-// fallback map) to the caveman fallback.
-const modeThesis = mode !== 'caveman' ? thesisLine(mode, __dirname) : null;
-
-let output = rulesetBanner(mode) + '\n\n'
-  + (skillContent ? skillContent.trimEnd() : FALLBACK_RULESET + (modeThesis ? '\n\n' + modeThesis : ''))
-  + '\n\n' + SWITCH_LINE;
+let output = buildRuleset(mode);
 
 // 3. Detect missing statusline config — nudge Claude to help set it up.
 // One-shot (#661): the nudge costs ~90 tokens per session, so a marker file

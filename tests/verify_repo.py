@@ -706,6 +706,10 @@ def verify_hook_install_flow() -> None:
         hooks = settings["hooks"]
         ensure(settings["statusLine"]["command"] == "bash /tmp/existing-statusline.sh", "install.sh clobbered existing statusLine")
         ensure("SessionStart" in hooks, "SessionStart hook missing after install")
+        ensure(
+            any("--subagent" in h.get("command", "") for e in hooks.get("SubagentStart", []) for h in e.get("hooks", [])),
+            "SubagentStart hook missing after install",
+        )
         ensure("UserPromptSubmit" in hooks, "UserPromptSubmit hook missing after install")
 
         activate = run(

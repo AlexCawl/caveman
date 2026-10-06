@@ -120,6 +120,20 @@ test('CAVEMAN_DEFAULT_MODE=off still opts out without the config module', () => 
   });
 });
 
+// #621: with no state module there is no session state to inherit, so the
+// SubagentStart path stays silent rather than guessing a mode.
+test('--subagent exits 0 and injects nothing without the config module', () => {
+  withInstall(['caveman-config.js'], ({ hooks }) => {
+    const r = spawnSync(process.execPath, [path.join(hooks, 'caveman-activate.js'), '--subagent'], {
+      input: JSON.stringify({ session_id: 't', cwd: '/tmp', hook_event_name: 'SubagentStart', agent_type: 'Explore' }),
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: hooks },
+    });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.stdout, '');
+  });
+});
+
 console.log('\ncaveman-mode-tracker.js — missing siblings');
 
 test('missing caveman-config.js: exits 0, emits nothing', () => {

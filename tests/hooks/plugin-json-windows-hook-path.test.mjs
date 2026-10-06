@@ -19,6 +19,11 @@ function hookCommand(hookName) {
   return plugin.hooks[hookName][0].hooks[0].command;
 }
 
+// #621: SubagentStart reuses the SessionStart script behind --subagent.
+test('SubagentStart runs caveman-activate.js with --subagent', () => {
+  assert.match(hookCommand('SubagentStart'), /caveman-activate\.js" --subagent$/);
+});
+
 // The hook command is a shell snippet, and the shell that runs it is not ours
 // to choose. Every case below therefore runs under `sh` as well as `bash`: on
 // Debian and Ubuntu /bin/sh is dash, where a bashism is not a portability nit
@@ -53,7 +58,7 @@ function which(tool) {
   return spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
 }
 
-for (const hookName of ['SessionStart', 'UserPromptSubmit']) {
+for (const hookName of ['SessionStart', 'SubagentStart', 'UserPromptSubmit']) {
   for (const shell of SHELLS) {
     // #489: Claude Code installs natively now, so node is not a given. Without
     // it every hook run errored ("node: not found", exit 127) on every session

@@ -252,6 +252,19 @@ test('rewriteLegacyManagedHookCommands emits a bash-safe command on Windows', ()
   );
 });
 
+// src/hooks/install.sh wires SubagentStart as a bare `node <activate> --subagent`.
+test('rewriteLegacyManagedHookCommands keeps the --subagent flag', () => {
+  const s = {
+    hooks: {
+      SubagentStart: [{ hooks: [{ type: 'command', command: 'node "/abs/hooks/caveman-activate.js" --subagent' }] }],
+    },
+  };
+  const n = SETTINGS.rewriteLegacyManagedHookCommands(s, '/usr/local/bin/node', 'linux');
+  assert.equal(n, 1);
+  assert.equal(s.hooks.SubagentStart[0].hooks[0].command,
+    '"/usr/local/bin/node" "/abs/hooks/caveman-activate.js" "--subagent"');
+});
+
 test('rewriteLegacyManagedHookCommands ignores already-absolute node commands', () => {
   const s = {
     hooks: {

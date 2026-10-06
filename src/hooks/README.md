@@ -53,6 +53,13 @@ nothing injected until an explicit `/caveman`. Interactive surfaces (terminal,
 VS Code, desktop) are unaffected. Set `CAVEMAN_DEFAULT_MODE=<mode>` in the
 environment to opt a headless run back in.
 
+### `caveman-activate.js --subagent` — SubagentStart hook
+
+- SessionStart context reaches only the main conversation, so subagents never saw caveman. This hook hands each new subagent **this session's** active skill
+- Injects nothing when the session is off, so "stop caveman" never leaks into subagents
+- Skips the cavecrew agents (they already talk ultracave), one-shot modes (`commit`/`review`/`compress`), and projects whose repo config says `defaultMode: "off"`
+- Read-only: it never writes mode state, logs, or marker files
+
 ### `caveman-mode-tracker.js` — UserPromptSubmit hook
 
 - Fires on every user prompt, checks for `/caveman`, `/ultracave`, `/megacave` commands and natural-language activation/deactivation phrases ("talk like caveman", "stop caveman", "normal mode")
@@ -185,7 +192,7 @@ node bin/install.js --uninstall
 
 Or manually:
 1. Remove the caveman hook files from `$CLAUDE_CONFIG_DIR/hooks/` (default `~/.claude/hooks/`): `caveman-activate.js`, `caveman-mode-tracker.js`, `caveman-parse.js`, `caveman-stats.js`, `caveman-config.js`, `cavecrew-model-overrides.js`, and `caveman-statusline.{sh,ps1}`.
-2. Remove the SessionStart, UserPromptSubmit, and statusLine entries from `$CLAUDE_CONFIG_DIR/settings.json`.
+2. Remove the SessionStart, SubagentStart, UserPromptSubmit, and statusLine entries from `$CLAUDE_CONFIG_DIR/settings.json`.
 3. Delete the mode state from `$CLAUDE_CONFIG_DIR`: the `.caveman-sessions/` directory, `.caveman-active`, `.caveman-active.prev`, `.caveman-mode-log.jsonl`, `.caveman-statusline-suffix`, and `.caveman-nudge-shown`.
 
 The uninstaller does all of step 3 for you, but deliberately leaves

@@ -126,6 +126,7 @@ test('isolated Claude install and uninstall complete without network or real use
     }
     const settings = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8'));
     assert.ok(SETTINGS.hasCavemanHook(settings, 'SessionStart', 'caveman-activate'));
+    assert.ok(SETTINGS.hasCavemanHook(settings, 'SubagentStart', 'caveman-activate.js" "--subagent"'));
     assert.ok(SETTINGS.hasCavemanHook(settings, 'UserPromptSubmit', 'caveman-mode-tracker'));
     assert.match(getStatuslineCommand(settings), /caveman-statusline/);
 
@@ -137,6 +138,7 @@ test('isolated Claude install and uninstall complete without network or real use
     }
     const clean = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8'));
     assert.equal(SETTINGS.hasCavemanHook(clean, 'SessionStart', 'caveman-activate'), false);
+    assert.equal(SETTINGS.hasCavemanHook(clean, 'SubagentStart', 'caveman-activate'), false);
     assert.equal(SETTINGS.hasCavemanHook(clean, 'UserPromptSubmit', 'caveman-mode-tracker'), false);
     assert.doesNotMatch(getStatuslineCommand(clean), /caveman-statusline/);
   } finally {
@@ -455,6 +457,9 @@ test('idempotent install does not duplicate hook entries (skipped without `claud
 
     const ups = cavemanHookCommands(settings, 'UserPromptSubmit', 'caveman-mode-tracker');
     assert.equal(ups.length, 1, `expected 1 UserPromptSubmit caveman hook, got ${ups.length}`);
+
+    const sub = cavemanHookCommands(settings, 'SubagentStart', 'caveman-activate');
+    assert.equal(sub.length, 1, `expected 1 SubagentStart caveman hook, got ${sub.length}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -1,5 +1,5 @@
 # caveman — one-command hook installer for Claude Code (Windows PowerShell)
-# Installs: SessionStart hook (auto-load rules) + UserPromptSubmit hook (mode tracking)
+# Installs: SessionStart hook (auto-load rules) + SubagentStart hook (subagent mode) + UserPromptSubmit hook (mode tracking)
 # Usage: powershell -ExecutionPolicy Bypass -File src\hooks\install.ps1
 #   or:  powershell -ExecutionPolicy Bypass -File src\hooks\install.ps1 -Force
 #   or (remote, no -Force support via pipe):
@@ -101,6 +101,7 @@ if (-not $Force) {
                 return $false
             }
             $HooksWired = (& $hasCavemanHook "SessionStart" "caveman-activate.js") `
+                -and (& $hasCavemanHook "SubagentStart" "caveman-activate.js") `
                 -and (& $hasCavemanHook "UserPromptSubmit" "caveman-mode-tracker.js")
             $HasStatusLine = $null -ne $settingsObj.statusLine
         } catch {
@@ -196,6 +197,22 @@ if (!hasStart) {
   });
 }
 
+// SubagentStart — hand subagents this session's active mode (#621)
+if (!settings.hooks.SubagentStart) settings.hooks.SubagentStart = [];
+const hasSubagent = settings.hooks.SubagentStart.some(e =>
+  e.hooks && e.hooks.some(h => h.command && h.command.includes('caveman-activate.js'))
+);
+if (!hasSubagent) {
+  settings.hooks.SubagentStart.push({
+    hooks: [{
+      type: 'command',
+      command: 'node "' + hooksDir + '/caveman-activate.js" --subagent',
+      timeout: 30,
+      statusMessage: 'Loading caveman mode for subagent...'
+    }]
+  });
+}
+
 // UserPromptSubmit
 if (!settings.hooks.UserPromptSubmit) settings.hooks.UserPromptSubmit = [];
 const hasPrompt = settings.hooks.UserPromptSubmit.some(e =>
@@ -254,6 +271,7 @@ Write-Host "Done! Restart Claude Code to activate." -ForegroundColor Green
 Write-Host ""
 Write-Host "What's installed:"
 Write-Host "  - SessionStart hook: auto-loads caveman rules every session"
+Write-Host "  - SubagentStart hook: subagents inherit the session's active mode"
 Write-Host "  - Mode tracker hook: updates statusline badge when you switch modes"
 Write-Host "    (/caveman, /ultracave, /megacave, /caveman-commit, etc.)"
 Write-Host "  - Statusline badge: shows [CAVEMAN], [ULTRACAVE] or [MEGACAVE]"

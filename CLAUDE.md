@@ -272,6 +272,8 @@ Runs on every SessionStart — `source` is `startup`, `resume`, `clear`, `compac
 
 Silent-fails on all filesystem errors — never blocks session start.
 
+**`--subagent`: the SubagentStart hook (#621).** SessionStart context reaches only the parent thread, so the same script is registered for SubagentStart with `--subagent` (plugin.json, `bin/install.js`, `src/hooks/install.{sh,ps1}`). It reuses the stdin reader and watchdog, resolves THIS session's mode via `resolveActiveMode`, and prints `{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":<that mode's skill>}}`. Nothing is printed when the session is off (no "stop caveman" leak, #672), in a one-shot mode, for `cavecrew-*` agents (they carry their own ultracave voice), or under a repo `defaultMode: "off"` (#634, same gate as the tracker's reinforcement). Read-only: no mode write, no mode log, no GC, no nudge, no cavecrew model overrides. Uninstall needs nothing extra — `removeCavemanHooks` walks every event and matches the `caveman-activate.js` basename.
+
 ### `src/hooks/caveman-mode-tracker.js` — UserPromptSubmit hook
 
 Reads JSON from stdin — `session_id` scopes every read and write. Three responsibilities:
@@ -306,7 +308,7 @@ Configured in `settings.json` under `statusLine.command`. PowerShell counterpart
 
 **Plugin install** — hooks wired automatically by plugin system.
 
-**Standalone install** — `bin/install.js` (the unified Node installer) copies hook files into `$CLAUDE_CONFIG_DIR/hooks/` and merges SessionStart + UserPromptSubmit + statusline into `settings.json`. Uses the JSONC-tolerant helpers in `bin/lib/settings.js` so a commented `settings.json` no longer crashes the merge. Defensive `validateHookFields` runs before every write to prevent a single malformed hook from poisoning the entire file (Claude Code Zod silently discards the whole `settings.json` on schema mismatch).
+**Standalone install** — `bin/install.js` (the unified Node installer) copies hook files into `$CLAUDE_CONFIG_DIR/hooks/` and merges SessionStart + SubagentStart + UserPromptSubmit + statusline into `settings.json`. Uses the JSONC-tolerant helpers in `bin/lib/settings.js` so a commented `settings.json` no longer crashes the merge. Defensive `validateHookFields` runs before every write to prevent a single malformed hook from poisoning the entire file (Claude Code Zod silently discards the whole `settings.json` on schema mismatch).
 
 The `install.sh` / `install.ps1` shims at the repo root delegate to `bin/install.js` via `node` (local clone) or `npx -y github:JuliusBrussee/caveman` (curl|bash). No legacy fallback path remains — earlier `install.sh.legacy` / `install.ps1.legacy` files were removed.
 
@@ -348,7 +350,7 @@ How caveman reaches each agent type:
 
 | Agent | Mechanism | Auto-activates? |
 |-------|-----------|----------------|
-| Claude Code | Plugin (hooks + skills) or standalone hooks | Yes — SessionStart hook injects rules |
+| Claude Code | Plugin (hooks + skills) or standalone hooks | Yes — SessionStart hook injects rules; SubagentStart passes the session's mode to subagents |
 | Codex | Plugin in `plugins/caveman/` plus repo `.codex/hooks.json` and `.codex/config.toml` | Yes on macOS/Linux — SessionStart hook |
 | Gemini CLI | Extension with `GEMINI.md` context file | Yes — context file loads every session |
 | opencode | Native plugin (`src/plugins/opencode/`) copied into `~/.config/opencode/plugins/caveman/` + `AGENTS.md` ruleset + skills/agents/commands directories. Plugin uses `session.created` and `tui.prompt.append` lifecycle hooks. No statusline (opencode TUI exposes no plugin-writable badge). | Yes — `session.created` writes flag, `AGENTS.md` carries always-on ruleset |

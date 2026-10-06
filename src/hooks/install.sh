@@ -1,6 +1,6 @@
 #!/bin/bash
 # caveman — one-command hook installer for Claude Code
-# Installs: SessionStart hook (auto-load rules) + UserPromptSubmit hook (mode tracking)
+# Installs: SessionStart hook (auto-load rules) + SubagentStart hook (subagent mode) + UserPromptSubmit hook (mode tracking)
 # Usage: bash src/hooks/install.sh
 #   or:  bash <(curl -s https://raw.githubusercontent.com/JuliusBrussee/caveman/main/src/hooks/install.sh)
 #   or:  bash src/hooks/install.sh --force   (re-install over existing hooks)
@@ -104,6 +104,7 @@ if [ "$FORCE" -eq 0 ]; then
         );
       process.exit(
         hasCavemanHook('SessionStart', 'caveman-activate.js') &&
+        hasCavemanHook('SubagentStart', 'caveman-activate.js') &&
         hasCavemanHook('UserPromptSubmit', 'caveman-mode-tracker.js') &&
         !!settings.statusLine
           ? 0
@@ -197,6 +198,22 @@ CAVEMAN_SETTINGS="$SETTINGS" CAVEMAN_HOOKS_DIR="$HOOKS_DIR" CAVEMAN_SETTINGS_HEL
     });
   }
 
+  // SubagentStart — hand subagents this session's active mode (#621)
+  if (!settings.hooks.SubagentStart) settings.hooks.SubagentStart = [];
+  const hasSubagent = settings.hooks.SubagentStart.some(e =>
+    e.hooks && e.hooks.some(h => h.command && h.command.includes('caveman-activate.js'))
+  );
+  if (!hasSubagent) {
+    settings.hooks.SubagentStart.push({
+      hooks: [{
+        type: 'command',
+        command: 'node \"' + hooksDir + '/caveman-activate.js\" --subagent',
+        timeout: 30,
+        statusMessage: 'Loading caveman mode for subagent...'
+      }]
+    });
+  }
+
   // UserPromptSubmit — track mode changes when user types /caveman commands
   if (!settings.hooks.UserPromptSubmit) settings.hooks.UserPromptSubmit = [];
   const hasPrompt = settings.hooks.UserPromptSubmit.some(e =>
@@ -242,6 +259,7 @@ echo "Done! Restart Claude Code to activate."
 echo ""
 echo "What's installed:"
 echo "  - SessionStart hook: auto-loads caveman rules every session"
+echo "  - SubagentStart hook: subagents inherit the session's active mode"
 echo "  - Mode tracker hook: updates statusline badge when you switch modes"
 echo "    (/caveman, /ultracave, /megacave, /caveman-commit, etc.)"
 echo "  - Statusline badge: shows [CAVEMAN], [ULTRACAVE] or [MEGACAVE]"
