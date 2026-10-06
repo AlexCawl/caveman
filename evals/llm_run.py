@@ -36,6 +36,11 @@ Environment:
   CAVEMAN_EVAL_LANG    prompt language: picks prompts/<lang>.txt and the
                        terse prefix for that language (default: en). Any
                        language other than en writes snapshots/results.<lang>.json
+  CAVEMAN_EVAL_SET     "length" (default) runs prompts/<lang>.txt into
+                       snapshots/results[.<lang>].json; "fidelity" runs the
+                       case prompts in prompts/fidelity.json into
+                       snapshots/fidelity.json for score_fidelity.py
+                       (English control only)
   CAVEMAN_EVAL_SKILLS  optional comma-separated skill ids (e.g.
                        caveman,ultracave,megacave) restricting the skill arms;
                        default runs every skills/*/SKILL.md. Unknown ids abort.
@@ -83,10 +88,14 @@ TERSE_PREFIXES = {
 }
 
 LANG = os.environ.get("CAVEMAN_EVAL_LANG", "en")
+EVAL_SET = os.environ.get("CAVEMAN_EVAL_SET", "length")
 PROMPTS = EVALS / "prompts" / f"{LANG}.txt"
 SNAPSHOT = EVALS / "snapshots" / (
     "results.json" if LANG == "en" else f"results.{LANG}.json"
 )
+if EVAL_SET == "fidelity":
+    PROMPTS = EVALS / "prompts" / "fidelity.json"
+    SNAPSHOT = EVALS / "snapshots" / "fidelity.json"
 
 CALL_TIMEOUT = float(os.environ.get("CAVEMAN_EVAL_TIMEOUT", "300"))
 RETRY_DELAYS = (5, 20)
@@ -164,6 +173,10 @@ def claude_version() -> str:
 
 def main() -> None:
     # Checked here, not at import, so tests can import the module.
+    if EVAL_SET not in ("length", "fidelity"):
+        raise SystemExit(f"CAVEMAN_EVAL_SET={EVAL_SET}: use length or fidelity")
+    if EVAL_SET == "fidelity" and LANG != "en":
+        raise SystemExit("CAVEMAN_EVAL_SET=fidelity: cases are English; unset CAVEMAN_EVAL_LANG")
     if not PROMPTS.exists():
         available = sorted(p.stem for p in (EVALS / "prompts").glob("*.txt"))
         raise SystemExit(
@@ -177,7 +190,10 @@ def main() -> None:
         )
     terse_prefix = TERSE_PREFIXES[LANG]
 
-    prompts = [p.strip() for p in PROMPTS.read_text(encoding="utf-8").splitlines() if p.strip()]
+    if PROMPTS.suffix == ".json":
+        prompts = [c["prompt"] for c in json.loads(PROMPTS.read_text(encoding="utf-8"))["cases"]]
+    else:
+        prompts = [p.strip() for p in PROMPTS.read_text(encoding="utf-8").splitlines() if p.strip()]
     skills = sorted(p.name for p in SKILLS.iterdir() if (p / "SKILL.md").exists())
     if only := os.environ.get("CAVEMAN_EVAL_SKILLS"):
         wanted = {s.strip() for s in only.split(",") if s.strip()}
@@ -197,6 +213,7 @@ def main() -> None:
             "model": os.environ.get("CAVEMAN_EVAL_MODEL", "default"),
             "n_prompts": len(prompts),
             "lang": LANG,
+            "eval_set": EVAL_SET,
             "terse_prefix": terse_prefix,
         },
         "prompts": prompts,
@@ -235,11 +252,12 @@ def main() -> None:
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             # Auth, quota or a bad model would fail every remaining call
             # too, so stop rather than burn through them.
-            stderr = error.stderr or ""
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode("utf-8", "replace")
+            # With --output-format json the CLI reports API errors on stdout.
+            detail = error.stderr or error.stdout or ""
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", "replace")
             snapshot["metadata"]["error"] = (
-                f"{arm} prompt {i}: {error} {stderr[-500:]}".strip()
+                f"{arm} prompt {i}: {error} {detail[-500:]}".strip()
             )
             partial = SNAPSHOT.with_suffix(".partial.json")
             partial.parent.mkdir(parents=True, exist_ok=True)

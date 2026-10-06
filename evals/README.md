@@ -70,7 +70,11 @@ installed could reach every arm. `llm_run.py` now isolates each call
   the median input tokens the skill adds per call (skill arm minus terse
   arm, cache tokens included).
 - `snapshot_contract.py` — rejects incomplete or malformed snapshot matrices
-  before `measure.py` reports metrics.
+  before `measure.py` or `score_fidelity.py` reports metrics.
+- `prompts/fidelity.json` — fixed correctness cases, each with regex
+  checks (see [Fidelity](#fidelity)).
+- `score_fidelity.py` — scores `snapshots/fidelity.json` against those
+  checks, offline, stdlib only.
 - `snapshots/results.json` — committed source of truth, regenerated only
   when SKILL.md files or prompts change. Other languages write
   `results.<lang>.json` next to it; none is committed yet.
@@ -152,11 +156,57 @@ Drop a `skills/<name>/SKILL.md`, then refresh the snapshot. `llm_run.py`
 picks up every skill directory automatically, unless `CAVEMAN_EVAL_SKILLS`
 is set, in which case add the new id to that list.
 
+## Fidelity
+
+The length eval alone rewards a skill that replies `k` to everything.
+The fidelity eval asks whether each arm kept what the answer needs: exact
+numbers and units, every not/never/only/except, the user's language,
+verbatim errors, safety wording before destructive steps, normal prose in
+persisted artifacts.
+
+`prompts/fidelity.json` holds the cases: `{id, category, prompt, checks}`
+with `checks.must_include` and `checks.must_not_include` as regex lists.
+A case passes for an arm when every `must_include` pattern matches the
+output and no `must_not_include` pattern does (Python `re.search`,
+case-insensitive). There is no judge model, so the same snapshot always
+gets the same score, and checks can be fixed and re-scored without new
+calls. The first six cases come from
+[#1061](https://github.com/JuliusBrussee/caveman/pull/1061) by alexis.
+
+```bash
+CAVEMAN_EVAL_SET=fidelity CAVEMAN_EVAL_MODEL=claude-opus-5-5 \
+  CAVEMAN_EVAL_SKILLS=caveman,ultracave,megacave python3 evals/llm_run.py
+python3 evals/score_fidelity.py
+```
+
+The run uses the same arms, isolation, retries and usage capture as the
+length eval and writes `snapshots/fidelity.json`. The scorer prints the
+pass rate per arm, overall and per category, then every failed check.
+It refuses a snapshot whose prompts no longer match the case file.
+
+No fidelity snapshot is committed yet. A regex pass is evidence, not a
+verdict: read the failures before citing a rate, and publish no
+quality-equivalence claim without a committed, reviewed snapshot.
+
+| Category | What the checks look for |
+|----------|--------------------------|
+| `substance-preservation` | Filler removed, the technical substance needed to act kept. |
+| `exact-preservation` | Polarity, limits, numbers, units, code, identifiers, APIs, commands and quoted errors unchanged. |
+| `no-caricature` | No fake grammar, mode prefixes, invented abbreviations or arrows. |
+| `language-and-grammar` | The requested or dominant language kept, grammatical markers kept. |
+| `safety-clarity` | Plain, complete warnings for destructive actions, security, data loss and ordered recovery steps. |
+| `artifact-boundary` | Persisted or external human-facing artifacts in normal prose. |
+| `mode-boundaries` | Explicit activation, mode switch, persistence and deactivation boundaries preserved. |
+
+To add a case, append it to `prompts/fidelity.json` with a unique `id`,
+one of the categories above, and at least one check, then rerun the
+fidelity eval. `tests/test_eval_fidelity.py` checks the file's shape.
+
 ## What this does NOT measure
 
-- **Fidelity** — does the compressed answer preserve the technical
-  claims? A skill that replies `k` to everything would score −99% and
-  "win". A future v2 could add a judge-model rubric.
+- **Fidelity beyond the checks** — the fidelity eval only sees what its
+  regexes test. Tone, ordering and whether an explanation is actually
+  right are left to human review of the outputs.
 - **Latency or cost** — latency is out of scope. Skills add input tokens
   on every call, so output savings are not the full economic picture.
   Snapshots with `usage` record that input cost per call; the committed

@@ -95,7 +95,7 @@ class LlmRunTests(unittest.TestCase):
     def run_main(self, fake: FakeClaude, env: dict[str, str] | None = None):
         llm_run = load("llm_run", env)
         llm_run.SKILLS = self.root / "skills"
-        llm_run.PROMPTS = self.root / "prompts" / f"{llm_run.LANG}.txt"
+        llm_run.PROMPTS = self.root / "prompts" / llm_run.PROMPTS.name
         llm_run.SNAPSHOT = self.root / "snapshots" / llm_run.SNAPSHOT.name
         self.sleep = mock.Mock()
         with mock.patch.object(llm_run.subprocess, "run", fake), \
@@ -198,6 +198,38 @@ class LlmRunTests(unittest.TestCase):
         self.assertEqual(data["metadata"]["lang"], "fr")
         self.assertEqual(data["metadata"]["terse_prefix"], "Réponds de façon concise.")
         self.assertIn(("Réponds de façon concise.", "fq1"), fake.attempts)
+
+    # Proves the fidelity set reuses the arm loop on the case prompts and
+    # writes its own snapshot, never results.json.
+    def test_fidelity_set_runs_case_prompts(self) -> None:
+        cases = {"cases": [
+            {"id": "a", "category": "exact-preservation", "prompt": "port?",
+             "checks": {"must_include": ["5432"]}},
+            {"id": "b", "category": "safety-clarity", "prompt": "drop it",
+             "checks": {"must_not_include": ["DROP"]}},
+        ]}
+        (self.root / "prompts" / "fidelity.json").write_text(json.dumps(cases), encoding="utf-8")
+        fake = FakeClaude()
+        llm_run = self.run_main(fake, {"CAVEMAN_EVAL_SET": "fidelity"})
+
+        self.assertEqual(llm_run.SNAPSHOT.name, "fidelity.json")
+        self.assertFalse((self.root / "snapshots" / "results.json").exists())
+        data = json.loads(llm_run.SNAPSHOT.read_text(encoding="utf-8"))
+        snapshot_contract.validate_snapshot(data)
+        self.assertEqual(data["prompts"], ["port?", "drop it"])
+        self.assertEqual(data["metadata"]["eval_set"], "fidelity")
+        self.assertEqual(data["arms"]["caveman"], ["answer to port?", "answer to drop it"])
+
+    # Proves an unknown eval set, or fidelity with a non-English control,
+    # stops before any call.
+    def test_bad_eval_set_exits_before_any_call(self) -> None:
+        for env, message in (({"CAVEMAN_EVAL_SET": "nope"}, "CAVEMAN_EVAL_SET=nope"),
+                             ({"CAVEMAN_EVAL_SET": "fidelity", "CAVEMAN_EVAL_LANG": "fr"},
+                              "English")):
+            fake = FakeClaude()
+            with self.subTest(env=env), self.assertRaisesRegex(SystemExit, message):
+                self.run_main(fake, env)
+            self.assertEqual(fake.calls, [])
 
     # Proves an untranslated language fails closed before any claude call.
     def test_unknown_language_exits_before_any_call(self) -> None:
