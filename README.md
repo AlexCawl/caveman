@@ -95,15 +95,18 @@ Claude on the web, the phone app, or Cowork? No terminal. Add caveman to your Cl
 # Claude Code plugin, auto-starts every session
 claude plugin marketplace add JuliusBrussee/caveman && claude plugin install caveman@caveman
 
-# Already inside Claude Code? Same rock, slash form:
-/plugin marketplace add JuliusBrussee/caveman
-/plugin install caveman@caveman
-
 # Gemini CLI
 gemini extensions install https://github.com/JuliusBrussee/caveman
 
 # Every agent on your machine at once, plus the Claude Code statusline badge (Node.js 22.13+)
 curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.1.0/install.sh | bash
+```
+
+Already inside Claude Code? Same rock, slash form. Type these where you talk to Claude:
+
+```text
+/plugin marketplace add JuliusBrussee/caveman
+/plugin install caveman@caveman
 ```
 
 Windows, PowerShell 5.1+:
@@ -166,7 +169,7 @@ New models already know "be concise", so that line is the real baseline. On top 
 | What | Result |
 |---|---|
 | A web page the agent reads (`caveman browse`, 200-row table) | **121 tokens instead of 15,704** for a Playwright snapshot, 129.8× smaller. Tiny forms lose 2.3×. [Bench](./browse/BENCHMARK.md) |
-| Memory files like `CLAUDE.md` (`/caveman-compress`) | **33.2% smaller** across five fixtures (22.8% to 49.1% per file), with every heading, code block, and path intact. [Bench](./skills/caveman-compress/README.md#benchmarks) |
+| Memory files like `CLAUDE.md` (`/caveman-compress`) | **4,138 tokens instead of 6,198** across five fixtures, 22.8% to 49.1% smaller per file, with every heading, code block, and path intact. [Bench](./skills/caveman-compress/README.md#benchmarks) |
 
 The rules add about 1,000 input tokens to every call. If you pay per request instead of per token (GitHub Copilot premium requests), a shorter answer costs the same, so skip it. Every case where caveman loses: [HONEST-NUMBERS.md](./docs/HONEST-NUMBERS.md).
 
