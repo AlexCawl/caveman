@@ -34,8 +34,10 @@ function sessionContext(payload) {
   if (!RULESET_MODES.includes(mode)) return null;
   const ruleset = loadRuleset(mode, __dirname);
   if (!ruleset) return null;
-  // `Caveman mode:` is the line the skills relay for `/caveman status`.
-  return rulesetBanner(mode) + '\nCaveman mode: ' + mode + '\n\n' + ruleset.trimEnd();
+  // The banner already names the mode. A separate `Caveman mode: <mode>` line
+  // got echoed at the top of ordinary answers in Copilot CLI live runs, so
+  // that line stays reserved for an explicit `/caveman status` reply.
+  return rulesetBanner(mode) + '\n\n' + ruleset.trimEnd();
 }
 
 function respond(payload) {

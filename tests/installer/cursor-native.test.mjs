@@ -73,7 +73,7 @@ test('install lands agents, hook payload and one sessionStart entry; rerun and u
 
   // The registered command runs from the owned copy, outside the repo.
   const sh = spawnSync(entries[1].command, { shell: true, cwd: dir, env, input: '{}', encoding: 'utf8' });
-  assert.match(JSON.parse(sh.stdout).additional_context, /Caveman mode: caveman/);
+  assert.match(JSON.parse(sh.stdout).additional_context, /CAVEMAN MODE ACTIVE — mode: caveman/);
 
   r = run('--only', 'cursor');
   assert.equal(r.status, 0, r.stdout + r.stderr);

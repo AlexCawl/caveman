@@ -47,7 +47,10 @@ test('copilot: ultracave default emits the ultracave skill under additionalConte
   env.CAVEMAN_DEFAULT_MODE = 'ultracave';
   const out = run('copilot', { env, cwd: dir, payload: { sessionId: 's', source: 'startup', cwd: dir } });
   assert.deepEqual(Object.keys(out), ['additionalContext']);
-  assert.match(out.additionalContext, /^CAVEMAN MODE ACTIVE — mode: ultracave\nCaveman mode: ultracave\n\n/);
+  assert.match(out.additionalContext, /^CAVEMAN MODE ACTIVE — mode: ultracave\n\n/);
+  // No standalone `Caveman mode:` line: Copilot CLI 1.0.92 echoed it at the
+  // top of ordinary answers (2 of 3 live runs; 0 of 3 without it).
+  assert.doesNotMatch(out.additionalContext, /^Caveman mode:/m);
   assert.ok(out.additionalContext.includes(skillBody('ultracave')));
 });
 
@@ -55,7 +58,7 @@ test('cursor: default mode emits the caveman skill under additional_context', (t
   const { dir, env } = fixture(t);
   const out = run('cursor', { env, cwd: dir, payload: { session_id: 's', workspace_roots: [dir] } });
   assert.deepEqual(Object.keys(out), ['additional_context']);
-  assert.match(out.additional_context, /Caveman mode: caveman\n/);
+  assert.match(out.additional_context, /^CAVEMAN MODE ACTIVE — mode: caveman\n\n/);
   assert.ok(out.additional_context.includes(skillBody('caveman')));
 });
 
@@ -117,7 +120,7 @@ test('returns on the first complete JSON object while the writer stays open', as
   const r = await runHoldingStdinOpen(JSON.stringify({ workspace_roots: [dir] }), env, dir);
   assert.equal(r.code, 0);
   assert.ok(r.elapsed < 1500, `took ${r.elapsed}ms`);
-  assert.match(JSON.parse(r.stdout).additional_context, /Caveman mode: caveman/);
+  assert.match(JSON.parse(r.stdout).additional_context, /CAVEMAN MODE ACTIVE — mode: caveman/);
 });
 
 test('watchdog answers when no payload ever arrives', async (t) => {
@@ -125,7 +128,7 @@ test('watchdog answers when no payload ever arrives', async (t) => {
   const r = await runHoldingStdinOpen(null, env, dir);
   assert.equal(r.code, 0);
   assert.ok(r.elapsed < 3500, `took ${r.elapsed}ms`);
-  assert.match(JSON.parse(r.stdout).additional_context, /Caveman mode: caveman/);
+  assert.match(JSON.parse(r.stdout).additional_context, /CAVEMAN MODE ACTIVE — mode: caveman/);
 });
 
 test('Cursor plugin manifest wires the shared hook, and no hooks/hooks.json exists for Claude Code to load', (t) => {
@@ -137,6 +140,6 @@ test('Cursor plugin manifest wires the shared hook, and no hooks/hooks.json exis
   const command = entry.command.replace('${CURSOR_PLUGIN_ROOT}', ROOT);
   const [, script, host] = command.match(/^node "([^"]+)" (\S+)$/);
   const r = spawnSync(process.execPath, [script, host], { env, cwd: dir, input: '{}', encoding: 'utf8' });
-  assert.match(JSON.parse(r.stdout).additional_context, /Caveman mode: caveman/);
+  assert.match(JSON.parse(r.stdout).additional_context, /CAVEMAN MODE ACTIVE — mode: caveman/);
   assert.equal(fs.existsSync(path.join(ROOT, 'hooks/hooks.json')), false);
 });
