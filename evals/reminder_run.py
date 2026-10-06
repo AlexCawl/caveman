@@ -42,8 +42,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from llm_run import (  # noqa: E402
-    PROMPTS, SKILLS, TERSE_PREFIX, claude_bin, claude_version,
+    LANG, PROMPTS, SKILLS, TERSE_PREFIXES, claude_bin, claude_version,
 )
+
+TERSE_PREFIX = TERSE_PREFIXES[LANG]
 
 ROOT = Path(__file__).parent.parent
 HOOKS = ROOT / "src" / "hooks"

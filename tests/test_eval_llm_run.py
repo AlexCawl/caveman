@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -230,6 +231,14 @@ class LlmRunTests(unittest.TestCase):
             with self.subTest(env=env), self.assertRaisesRegex(SystemExit, message):
                 self.run_main(fake, env)
             self.assertEqual(fake.calls, [])
+
+    # Proves reminder_run.py, which borrows llm_run's prompts and control,
+    # still imports and picks the control matching the prompt language.
+    def test_reminder_run_imports(self) -> None:
+        with mock.patch.object(sys, "path", list(sys.path)), mock.patch.dict(sys.modules):
+            reminder_run = load("reminder_run", {"CAVEMAN_EVAL_LANG": "fr"})
+        self.assertEqual(reminder_run.TERSE_PREFIX, "Réponds de façon concise.")
+        self.assertEqual(reminder_run.PROMPTS.name, "fr.txt")
 
     # Proves an untranslated language fails closed before any claude call.
     def test_unknown_language_exits_before_any_call(self) -> None:
