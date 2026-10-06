@@ -17,14 +17,19 @@ ROOT = Path(__file__).resolve().parents[1]
 EVALS = ROOT / "evals"
 
 
-def load(name: str, env: dict[str, str] | None = None):
-    """Import an evals module fresh, with eval env vars controlled."""
+def eval_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """The host environment minus any CAVEMAN_EVAL_* the shell set, plus `env`."""
     clean = {k: v for k, v in os.environ.items() if not k.startswith("CAVEMAN_EVAL_")}
     clean.update(env or {})
+    return clean
+
+
+def load(name: str, env: dict[str, str] | None = None):
+    """Import an evals module fresh, with eval env vars controlled."""
     spec = importlib.util.spec_from_file_location(name, EVALS / f"{name}.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
-    with mock.patch.dict(os.environ, clean, clear=True):
+    with mock.patch.dict(os.environ, eval_env(env), clear=True):
         spec.loader.exec_module(module)
     return module
 
@@ -101,7 +106,7 @@ class LlmRunTests(unittest.TestCase):
         self.sleep = mock.Mock()
         with mock.patch.object(llm_run.subprocess, "run", fake), \
                 mock.patch.object(llm_run.time, "sleep", self.sleep), \
-                mock.patch.dict(os.environ, env or {}):
+                mock.patch.dict(os.environ, eval_env(env), clear=True):
             llm_run.main()
         return llm_run
 
