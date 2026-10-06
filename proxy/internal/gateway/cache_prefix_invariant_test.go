@@ -800,7 +800,23 @@ func TestCachePrefixInvariant(t *testing.T) {
 			h.send(a.toolResult(filler("a reads z")), sendOpts{})
 			h.send(b.user(filler("b wraps up")), sendOpts{})
 		}},
-		{"tool-schema strip through a store failure and a raw retry", func(t *testing.T, h *invariantHarness) {
+		{"tool-schema strip whose first recovery write fails", func(t *testing.T, h *invariantHarness) {
+			// The catalog's first sight cannot store its original, so it goes
+			// out unstripped, and that is its decision on every later turn.
+			h.strip = true
+			h.restart("")
+			main := newCCConversation("You are Claude Code.", session)
+			h.comp.mu.Lock()
+			h.comp.failStore = true
+			h.comp.mu.Unlock()
+			h.send(main.user(filler("first sight while CCR is down")), sendOpts{})
+			h.comp.mu.Lock()
+			h.comp.failStore = false
+			h.comp.mu.Unlock()
+			h.send(main.user(filler("store back")), sendOpts{})
+			h.send(main.user(filler("store still back")), sendOpts{})
+		}},
+		{"tool-schema strip through a message store failure and a raw retry", func(t *testing.T, h *invariantHarness) {
 			h.strip = true
 			h.restart("")
 			main := newCCConversation("You are Claude Code.", session)
