@@ -421,6 +421,14 @@ export const PROFILES: AgentProfile[] = [
                   "X-Cave-Agent": "opencode"
                 }
               }
+            },
+            "opencode-go": {
+              "options": {
+                "baseURL": "{{cave_base_url}}/compat/opencode-go/v1",
+                "headers": {
+                  "X-Cave-Agent": "opencode"
+                }
+              }
             }
           }
         },

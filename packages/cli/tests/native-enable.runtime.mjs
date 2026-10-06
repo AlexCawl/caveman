@@ -50,23 +50,27 @@ if (process.argv[2] === "shrink-hook") {
   process.stdout.write(JSON.stringify({ output_replacement: "[CommandResult] full: ccr://fixture" }));
 }
 `, { mode: 0o755 });
-  return {
-    home,
-    env: {
-      ...process.env,
-      HOME: home,
-      CAVEMAN_HOME: join(home, ".caveman"),
-      CAVEMAN_MCP_BIN: mcp,
-      CAVEMAN_PROXY_BIN: proxy,
-      // Full CLI suite runs several process-heavy files concurrently. Keep this
-      // fixture's valid shell probes distinct from dedicated 2s hung-probe tests.
-      CAVE_BINARY_PROBE_TIMEOUT_MS: "10000",
-      CAVEMAN_TELEMETRY: "0",
-      CAVE_NATIVE_CAPTURE: join(home, "native-capture.jsonl"),
-      NO_COLOR: "1",
-      PATH: `${bin}:${process.env.PATH}`,
-    },
+  const env = {
+    ...process.env,
+    HOME: home,
+    CAVEMAN_HOME: join(home, ".caveman"),
+    CAVEMAN_MCP_BIN: mcp,
+    CAVEMAN_PROXY_BIN: proxy,
+    // Full CLI suite runs several process-heavy files concurrently. Keep this
+    // fixture's valid shell probes distinct from dedicated 2s hung-probe tests.
+    CAVE_BINARY_PROBE_TIMEOUT_MS: "10000",
+    CAVEMAN_TELEMETRY: "0",
+    CAVE_NATIVE_CAPTURE: join(home, "native-capture.jsonl"),
+    NO_COLOR: "1",
+    PATH: `${bin}:${process.env.PATH}`,
   };
+  // Whoever runs this suite may well have a real OPENAI_API_KEY exported in
+  // their own shell (that's normal, not a fixture bug) — but detectCodexWrapAuthMode
+  // reads it as a fallback, so an inherited one silently forces every codex
+  // fixture below into api-key mode regardless of what auth.json under `home`
+  // says. Strip it so auth-mode detection only ever sees the fixture's auth.json.
+  delete env.OPENAI_API_KEY;
+  return { home, env };
 }
 
 function run(argv, env, input = undefined) {
@@ -489,6 +493,78 @@ test("doctor reports Codex routing degraded when auth lane changes", async () =>
   assert.equal(result.capabilities.provider_proxy.active, false);
   assert.equal(result.capabilities.post_tool_rewrite.supported, false);
   assert.equal(result.repair, "caveman doctor codex --fix");
+});
+
+test("codex SessionStart hook self-heals a stale route after api-key to subscription auth switch", async () => {
+  const fx = fixture();
+  mkdirSync(join(fx.home, ".codex"), { recursive: true });
+  const authPath = join(fx.home, ".codex", "auth.json");
+  const configPath = join(fx.home, ".codex", "config.toml");
+  writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-local" }));
+  assert.equal((await run(["enable", "codex"], fx.env)).code, 0);
+  assert.match(readFileSync(configPath, "utf8"), /base_url = "http:\/\/127\.0\.0\.1:8787\/w\/codex\/v1"/);
+  writeFileSync(authPath, JSON.stringify({ tokens: { account_id: "acct_1" } }));
+  const hookOut = await run(["native-hook", "codex"], fx.env, JSON.stringify({ hook_event_name: "SessionStart", session_id: "s1" }));
+  assert.equal(hookOut.code, 0, hookOut.stderr);
+  assert.match(readFileSync(configPath, "utf8"), /base_url = "http:\/\/127\.0\.0\.1:8787\/chatgpt"/);
+  const after = JSON.parse((await run(["doctor", "codex"], fx.env)).stdout);
+  assert.equal(after.state, "installed");
+  assert.equal(after.components.routing, true);
+});
+
+test("codex SessionStart hook self-heals a stale route after subscription to api-key auth switch", async () => {
+  const fx = fixture();
+  mkdirSync(join(fx.home, ".codex"), { recursive: true });
+  const authPath = join(fx.home, ".codex", "auth.json");
+  const configPath = join(fx.home, ".codex", "config.toml");
+  writeFileSync(authPath, JSON.stringify({ tokens: { account_id: "acct_1" } }));
+  assert.equal((await run(["enable", "codex"], fx.env)).code, 0);
+  assert.match(readFileSync(configPath, "utf8"), /base_url = "http:\/\/127\.0\.0\.1:8787\/chatgpt"/);
+  writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-local" }));
+  const hookOut = await run(["native-hook", "codex"], fx.env, JSON.stringify({ hook_event_name: "SessionStart", session_id: "s1" }));
+  assert.equal(hookOut.code, 0, hookOut.stderr);
+  assert.match(readFileSync(configPath, "utf8"), /base_url = "http:\/\/127\.0\.0\.1:8787\/w\/codex\/v1"/);
+  const after = JSON.parse((await run(["doctor", "codex"], fx.env)).stdout);
+  assert.equal(after.state, "installed");
+  assert.equal(after.components.routing, true);
+});
+
+test("codex SessionStart hook leaves config alone when degraded for an unrelated reason", async () => {
+  const fx = fixture();
+  mkdirSync(join(fx.home, ".codex"), { recursive: true });
+  const authPath = join(fx.home, ".codex", "auth.json");
+  const configPath = join(fx.home, ".codex", "config.toml");
+  writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-local" }));
+  assert.equal((await run(["enable", "codex"], fx.env)).code, 0);
+  const configBefore = readFileSync(configPath, "utf8");
+  // Force a degraded state that has nothing to do with routing: mark the
+  // installed pack as older than what this build ships, same as an in-place
+  // CLI upgrade would leave behind. Routing itself is untouched and still
+  // matches the current auth mode.
+  const journalPath = join(fx.home, ".caveman", "integrations", "codex.json");
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  journal.pack_version = "0.0.1";
+  writeFileSync(journalPath, JSON.stringify(journal, null, 2));
+  const before = JSON.parse((await run(["doctor", "codex"], fx.env)).stdout);
+  assert.equal(before.state, "degraded");
+  assert.equal(before.components.routing, true, "routing itself must still be healthy in this fixture");
+  const hookOut = await run(["native-hook", "codex"], fx.env, JSON.stringify({ hook_event_name: "SessionStart", session_id: "s1" }));
+  assert.equal(hookOut.code, 0, hookOut.stderr);
+  assert.equal(readFileSync(configPath, "utf8"), configBefore, "config.toml must not be rewritten for non-routing drift");
+});
+
+test("codex SessionStart route check never spawns the codex binary when the route is current", async () => {
+  const fx = fixture();
+  mkdirSync(join(fx.home, ".codex"), { recursive: true });
+  writeFileSync(join(fx.home, ".codex", "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-local" }));
+  assert.equal((await run(["enable", "codex"], fx.env)).code, 0);
+  // The delegated SessionStart gets 3s in total; a `codex --version` probe
+  // per launch spends part of that on every session start for nothing.
+  const spawnLog = join(fx.home, "codex-spawns.log");
+  writeFileSync(join(fx.home, "bin", "codex"), `#!/bin/sh\necho "$@" >> '${spawnLog}'\nif [ "$1" = "--version" ]; then echo 'codex 1.0.0'; fi\n`, { mode: 0o755 });
+  const hookOut = await run(["native-hook", "codex"], fx.env, JSON.stringify({ hook_event_name: "SessionStart", session_id: "s1" }));
+  assert.equal(hookOut.code, 0, hookOut.stderr);
+  assert.equal(existsSync(spawnLog) ? readFileSync(spawnLog, "utf8") : "", "");
 });
 
 test("doctor reports a present but unlaunchable host as unavailable", async () => {
@@ -1068,6 +1144,9 @@ test("enable/disable opencode installs one native plugin, routed providers and r
   assert.equal(installed.provider.openai.options.baseURL, "http://127.0.0.1:8787/w/opencode/openai/v1");
   assert.equal(installed.provider.openai.options.keep, true);
   assert.equal(installed.provider.anthropic.options.baseURL, "http://127.0.0.1:8787/w/opencode/anthropic/v1");
+  // opencode-go serves OpenAI and Anthropic wire shapes from opencode.ai, so it
+  // needs the proxy's opencode-go mount, not the openai/anthropic routes (#1090).
+  assert.equal(installed.provider["opencode-go"].options.baseURL, "http://127.0.0.1:8787/w/opencode/compat/opencode-go/v1");
   assert.equal(installed.provider.custom.options.baseURL, "https://custom.example");
   assert.match(installed.mcp.caveman.command[0], /caveman-mcp/);
   const pluginPath = join(configDir, "plugins", "caveman-native.js");
@@ -1123,6 +1202,7 @@ test("enable/disable opencode installs one native plugin, routed providers and r
   assert.equal(restored.provider.openai.options.baseURL, "https://openai.before");
   assert.equal(restored.provider.openai.options.later, 1);
   assert.equal(restored.provider.anthropic, undefined);
+  assert.equal(restored.provider["opencode-go"], undefined);
   assert.equal(restored.provider.custom.options.baseURL, "https://custom.example");
   assert.equal(restored.mcp.other.command[0], "other");
   assert.equal(restored.mcp.later.command[0], "later");
@@ -1176,6 +1256,39 @@ test("status keeps native OpenCode MCP recovery when provider routing drifts", a
 
   const output = status.stdout + status.stderr;
   assert.doesNotMatch(output, /MCP recovery missing/);
+});
+
+test("doctor and status warn when OpenCode's active provider is not routed (#1190)", async () => {
+  const fx = fixture();
+  const env = { ...fx.env, XDG_DATA_HOME: join(fx.home, ".local", "share") };
+  const configDir = join(fx.home, ".config", "opencode");
+  mkdirSync(configDir, { recursive: true });
+  const configPath = join(configDir, "opencode.json");
+  writeFileSync(configPath, JSON.stringify({ model: "github-copilot/gpt-5" }) + "\n");
+  assert.equal((await run(["enable", "opencode"], env)).code, 0);
+  const warning = /OpenCode's active provider "github-copilot" is not routed through Caveman/;
+
+  const doctor = JSON.parse((await run(["doctor", "opencode"], env)).stdout);
+  assert.equal(doctor.state, "installed", "an unrouted provider is a warning, not a broken install");
+  assert.match(doctor.warnings.join("\n"), warning);
+  const status = await run(["status"], env);
+  assert.equal(status.code, 0, status.stderr);
+  assert.match(status.stdout, warning);
+
+  // No model set: a Copilot-only sign-in is the active provider.
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  delete config.model;
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  mkdirSync(join(fx.home, ".local", "share", "opencode"), { recursive: true });
+  writeFileSync(join(fx.home, ".local", "share", "opencode", "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth" } }));
+  assert.match(JSON.parse((await run(["doctor", "opencode"], env)).stdout).warnings.join("\n"), warning);
+
+  config.model = "openai/gpt-5";
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  assert.deepEqual(JSON.parse((await run(["doctor", "opencode"], env)).stdout).warnings, []);
+  config.model = "opencode-go/glm-5.2";
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  assert.deepEqual(JSON.parse((await run(["doctor", "opencode"], env)).stdout).warnings, []);
 });
 
 test("status recognizes native OpenCode MCP recovery when the config rewrites key order", async () => {
@@ -1392,6 +1505,33 @@ test("doctor reports opencode degraded after the host upgrades past the installe
 
   assert.equal((await run(["doctor", "opencode", "--fix"], fx.env)).code, 0);
   assert.match(readFileSync(pluginPath, "utf8"), /async setup\(ctx\)/, "--fix regenerates against the new host major");
+  assert.equal(JSON.parse((await run(["doctor", "opencode"], fx.env)).stdout).state, "installed");
+});
+
+test("doctor flags an opencode install that predates the opencode-go route and --fix adds it", async () => {
+  const fx = fixture();
+  const configDir = join(fx.home, ".config", "opencode");
+  mkdirSync(configDir, { recursive: true });
+  const configPath = join(configDir, "opencode.json");
+  writeFileSync(configPath, JSON.stringify({}) + "\n");
+  assert.equal((await run(["enable", "opencode"], fx.env)).code, 0);
+
+  // Rewind config and journal to what an enable before #1090 wrote.
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  delete config.provider["opencode-go"];
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  const journalPath = join(fx.home, ".caveman", "integrations", "opencode.json");
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  const op = journal.operations.find((item) => item.kind === "opencode-config");
+  delete op.owned.routes["opencode-go"];
+  delete op.owned.previous_routes["opencode-go"];
+  writeFileSync(journalPath, JSON.stringify(journal, null, 2));
+
+  const doctor = JSON.parse((await run(["doctor", "opencode"], fx.env)).stdout);
+  assert.equal(doctor.state, "degraded");
+  assert.equal(doctor.components.routing, false);
+  assert.equal((await run(["doctor", "opencode", "--fix"], fx.env)).code, 0);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).provider["opencode-go"].options.baseURL, "http://127.0.0.1:8787/w/opencode/compat/opencode-go/v1");
   assert.equal(JSON.parse((await run(["doctor", "opencode"], fx.env)).stdout).state, "installed");
 });
 
