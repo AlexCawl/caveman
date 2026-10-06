@@ -84,6 +84,10 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 		// nil body: this route exists only for subscription wrap, which proves
 		// recovery out of band before starting its dedicated proxy.
 		s.compressor != nil && s.liveZoneCompressionAllowed(adapter, nil) && compiledPlanAllowed
+	// As in proxy.go: the tripwire holds this request only to prefixes accepted
+	// before its forwarding was decided.
+	sentSeq := s.prefixSeq.Add(1)
+	rawRetried := false
 	if compressEligible {
 		captured, readErr := io.ReadAll(io.LimitReader(r.Body, chatGPTCaptureLimit+1))
 		if readErr == nil && len(captured) <= chatGPTCaptureLimit {
@@ -178,7 +182,7 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, r, http.StatusBadGateway, "cave_upstream_unreachable", "ChatGPT upstream is unreachable.")
 		requestHashComplete := chatGPTRequestHashComplete(requestBodyFullyRead, r.ContentLength, reqCapture, requestBodyTracker)
-		s.recordChatGPT(rc, r, requestID, traceID, suffix, start, 0, "cave_upstream_unreachable", reqCapture, reqHash.Sum(nil), transformedChatGPTHash(reqHash.Sum(nil), transform.Body), requestHashComplete, nil, 0, false, transform.OptimizerIDs, comp, compressEligible, transform.Body)
+		s.recordChatGPT(rc, r, requestID, traceID, suffix, start, 0, "cave_upstream_unreachable", reqCapture, reqHash.Sum(nil), transformedChatGPTHash(reqHash.Sum(nil), transform.Body), requestHashComplete, nil, 0, false, transform.OptimizerIDs, comp, compressEligible, transform.Body, "")
 		return
 	}
 	// OAuth backends can reject byte-modified requests for undocumented reasons.
@@ -199,12 +203,13 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 		})
 		if doErr != nil {
 			httpx.Error(w, r, http.StatusBadGateway, "cave_upstream_unreachable", "ChatGPT upstream is unreachable.")
-			s.recordChatGPT(rc, r, requestID, traceID, suffix, start, 0, "cave_upstream_unreachable", reqCapture, reqHash.Sum(nil), reqHash.Sum(nil), true, nil, 0, false, nil, nil, compressEligible, originalBody)
+			s.recordChatGPT(rc, r, requestID, traceID, suffix, start, 0, "cave_upstream_unreachable", reqCapture, reqHash.Sum(nil), reqHash.Sum(nil), true, nil, 0, false, nil, nil, compressEligible, originalBody, "")
 			return
 		}
 		if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
 			s.pinRaw(adapter, meta, originalBody, transform.Body)
 		}
+		rawRetried = true
 		resp = retryResp
 		transform = providers.TransformResult{Body: originalBody, OptimizerIDs: []string{}}
 		comp = nil
@@ -256,7 +261,15 @@ func (s *Server) chatgpt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestHashComplete := chatGPTRequestHashComplete(requestBodyFullyRead, r.ContentLength, reqCapture, requestBodyTracker)
-	s.recordChatGPT(rc, r, requestID, traceID, suffix, start, resp.StatusCode, errCode, reqCapture, reqHash.Sum(nil), transformedChatGPTHash(reqHash.Sum(nil), transform.Body), requestHashComplete, respCapture, respBytes, stream, transform.OptimizerIDs, comp, compressEligible, transform.Body)
+	// The cache tripwire, as on the generic route (prefix_monitor.go). Only a
+	// body this route read whole can be compared.
+	cacheBustCause := ""
+	if originalBody != nil && resp.StatusCode < 400 {
+		cacheBustCause = s.observeCachedPrefix(adapter, meta, originalBody, transform.Body, acceptance{
+			rawRetry: rawRetried, sent: sentSeq, session: evidence.SessionID, requestID: requestID,
+		})
+	}
+	s.recordChatGPT(rc, r, requestID, traceID, suffix, start, resp.StatusCode, errCode, reqCapture, reqHash.Sum(nil), transformedChatGPTHash(reqHash.Sum(nil), transform.Body), requestHashComplete, respCapture, respBytes, stream, transform.OptimizerIDs, comp, compressEligible, transform.Body, cacheBustCause)
 
 	// Path, status, and timing only — request headers carry the operator's
 	// OAuth credential and are never logged on this route.
@@ -280,7 +293,7 @@ func transformedChatGPTHash(raw []byte, transformed []byte) []byte {
 	return sum[:]
 }
 
-func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, traceID, endpoint string, start time.Time, status int, errCode string, reqCapture *cappedBuffer, reqHash, transformedHash []byte, requestHashComplete bool, respCapture *cappedBuffer, respBytes int64, stream bool, optimizers []string, comp *compressionOutcome, compressionEligible bool, acceptedBody []byte) {
+func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, traceID, endpoint string, start time.Time, status int, errCode string, reqCapture *cappedBuffer, reqHash, transformedHash []byte, requestHashComplete bool, respCapture *cappedBuffer, respBytes int64, stream bool, optimizers []string, comp *compressionOutcome, compressionEligible bool, acceptedBody []byte, cacheBustCause string) {
 	if s.sink == nil {
 		return
 	}
@@ -322,6 +335,8 @@ func (s *Server) recordChatGPT(rc RequestContext, r *http.Request, requestID, tr
 		// bytes shrank, so the CLI can tell "routing never applied" from "nothing
 		// to compress" (the generic route records the same denominator).
 		CompressionEligible:      compressionEligible,
+		CacheBust:                cacheBustCause != "",
+		CacheBustCause:           cacheBustCause,
 		RequestID:                requestID,
 		TraceID:                  traceID,
 		Label:                    labelOrDefault(rc.Label, "local"),

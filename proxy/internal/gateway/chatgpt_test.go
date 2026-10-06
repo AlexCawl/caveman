@@ -768,3 +768,35 @@ func TestChatGPTEpochVetoKeepsSubstitutions(t *testing.T) {
 		t.Fatalf("an epoch veto must still stop new compression:\n%s", rt.bodies[1])
 	}
 }
+
+// TestChatGPTTripwireRecordsCavemansBust: the /chatgpt route takes the same
+// compression path as the generic one, so it is held to the same rule on live
+// traffic: a turn that re-sends bytes the backend cached replaced as raw (here
+// the memo row was lost between turns) is caveman's bust, on the row too.
+func TestChatGPTTripwireRecordsCavemansBust(t *testing.T) {
+	first, second := strings.Repeat("codex first output ", 40), strings.Repeat("codex second output ", 40)
+	rt := &captureTransport{}
+	sink := &captureSink{}
+	cache := newTestPrefixCache()
+	srv := New(Config{
+		Auth:            stubAuth{rc: RequestContext{Label: "local", RuntimeMode: "compress"}},
+		Sink:            sink,
+		Compressor:      &liveZoneCompressor{},
+		PrefixCache:     cache,
+		RecoveryViaMCP:  true,
+		ChatGPTUpstream: "https://chatgpt.test/backend-api/codex",
+		HTTPClient:      &http.Client{Transport: rt},
+	})
+	serveChatGPT(srv, chatGPTTurn(first), "x-cave-session", "sess-codex")
+	cache.mu.Lock()
+	cache.entries = map[string]testReplacement{}
+	cache.mu.Unlock()
+	serveChatGPT(srv, chatGPTTurn(first, second), "x-cave-session", "sess-codex")
+
+	if len(rt.bodies) != 2 || strings.Contains(string(rt.bodies[0]), first) || !strings.Contains(string(rt.bodies[1]), first) {
+		t.Fatal("test setup: want turn 1 compressed and turn 2 re-sending it raw")
+	}
+	if row := sink.last(t); !row.CacheBust || row.CacheBustCause != bustCauseCaveman {
+		t.Fatalf("the /chatgpt row of a caveman bust: bust=%v cause=%q", row.CacheBust, row.CacheBustCause)
+	}
+}
