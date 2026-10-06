@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const assert = require('assert');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const STATS = path.join(ROOT, 'src', 'hooks', 'caveman-stats.js');
@@ -364,27 +364,44 @@ test('appends to lifetime history on each run', (tmp) => {
   assert.strictEqual(entry.model, 'claude-sonnet-4-7');
 });
 
-test('--record appends SessionEnd snapshot silently from stdin', (tmp) => {
+// SessionEnd runs `caveman-stats.js --record` with the hook payload on stdin.
+function runRecord(claudeDir, input, extraEnv = {}) {
+  return spawnSync(process.execPath, [STATS, '--record'], {
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_CONFIG_DIR: claudeDir, ...extraEnv },
+    input,
+  });
+}
+
+test('--record appends a SessionEnd snapshot silently, with this session\'s own mode', (tmp) => {
   const sess = makeSession(tmp, [
-    { type: 'assistant', message: { model: 'claude-sonnet-4-7', usage: { output_tokens: 350 } } },
+    { type: 'assistant', message: { model: 'claude-sonnet-4-7', usage: { output_tokens: 350, cache_read_input_tokens: 40 } } },
   ]);
   const claudeDir = path.join(tmp, '.claude');
-  fs.writeFileSync(path.join(claudeDir, '.caveman-active'), 'full');
-  const out = execFileSync(process.execPath, [STATS, '--record'], {
-    encoding: 'utf8',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: claudeDir },
-    input: JSON.stringify({ session_id: SESSION_END_SESSION_ID, transcript_path: sess, reason: 'stop' }),
-  });
-  assert.strictEqual(out, '');
+  fs.mkdirSync(path.join(claudeDir, '.caveman-sessions'), { recursive: true });
+  fs.writeFileSync(path.join(claudeDir, '.caveman-sessions', `${SESSION_END_SESSION_ID}.mode`), 'ultracave');
+  fs.writeFileSync(path.join(claudeDir, '.caveman-active'), 'caveman'); // another window's last write
+  const r = runRecord(claudeDir, JSON.stringify({ session_id: SESSION_END_SESSION_ID, transcript_path: sess, reason: 'other' }));
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stdout, '');
+  assert.strictEqual(r.stderr, '');
 
-  const histPath = path.join(claudeDir, '.caveman-history.jsonl');
-  const lines = fs.readFileSync(histPath, 'utf8').split('\n').filter(Boolean);
+  const lines = fs.readFileSync(path.join(claudeDir, '.caveman-history.jsonl'), 'utf8').split('\n').filter(Boolean);
   assert.strictEqual(lines.length, 1);
   const entry = JSON.parse(lines[0]);
   assert.strictEqual(entry.session_id, SESSION_END_SESSION_ID);
   assert.strictEqual(entry.output_tokens, 350);
-  assert.strictEqual(entry.est_saved_tokens, 650);
-  assert.strictEqual(fs.readFileSync(path.join(claudeDir, '.caveman-statusline-suffix'), 'utf8'), '⛏  650');
+  assert.strictEqual(entry.cache_read_input_tokens, 40);
+  assert.strictEqual(entry.turns, 1);
+  assert.strictEqual(entry.mode, 'ultracave');
+  for (const key of Object.keys(entry)) assert.doesNotMatch(key, /saved|savings|usd/i, `no savings field: ${key}`);
+
+  // The lifetime view now counts the session without anyone typing /caveman-stats.
+  const all = execFileSync(process.execPath, [STATS, '--all'], {
+    encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: claudeDir },
+  });
+  assert.match(all, /Sessions:\s+1\b/);
+  assert.match(all, /Output tokens:\s+350/);
 });
 
 test('--record ignores malformed hook stdin without guessing a session', (tmp) => {
@@ -392,15 +409,43 @@ test('--record ignores malformed hook stdin without guessing a session', (tmp) =
     { type: 'assistant', message: { model: 'claude-sonnet-4-7', usage: { output_tokens: 350 } } },
   ]);
   const claudeDir = path.join(tmp, '.claude');
-  fs.writeFileSync(path.join(claudeDir, '.caveman-active'), 'full');
-  const out = execFileSync(process.execPath, [STATS, '--record'], {
-    encoding: 'utf8',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: claudeDir },
-    input: INVALID_HOOK_JSON,
-  });
-  assert.strictEqual(out, '');
-  assert.equal(fs.existsSync(path.join(claudeDir, '.caveman-history.jsonl')), false);
+  const r = runRecord(claudeDir, INVALID_HOOK_JSON);
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stdout + r.stderr, '');
+  assert.strictEqual(fs.existsSync(path.join(claudeDir, '.caveman-history.jsonl')), false);
   assert.ok(fs.existsSync(sess), 'fixture session should exist but not be auto-selected');
+});
+
+test('--record never falls back to the newest transcript when the payload names none', (tmp) => {
+  makeSession(tmp, [{ type: 'assistant', message: { usage: { output_tokens: 350 } } }]);
+  const claudeDir = path.join(tmp, '.claude');
+  const r = runRecord(claudeDir, JSON.stringify({ session_id: SESSION_END_SESSION_ID, reason: 'other' }));
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stdout + r.stderr, '');
+  assert.strictEqual(fs.existsSync(path.join(claudeDir, '.caveman-history.jsonl')), false);
+});
+
+test('--record stays silent with exit 0 on an unreadable or empty transcript', (tmp) => {
+  const claudeDir = path.join(tmp, '.claude');
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const empty = path.join(tmp, 'empty.jsonl');
+  fs.writeFileSync(empty, '');
+  for (const transcript of [path.join(tmp, 'missing.jsonl'), empty]) {
+    const r = runRecord(claudeDir, JSON.stringify({ session_id: SESSION_END_SESSION_ID, transcript_path: transcript }));
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.stdout + r.stderr, '');
+  }
+  assert.strictEqual(fs.existsSync(path.join(claudeDir, '.caveman-history.jsonl')), false);
+});
+
+test('--record runs as a Claude hook even below a Gemini shell', (tmp) => {
+  const sess = makeSession(tmp, [{ type: 'assistant', message: { usage: { output_tokens: 12 } } }]);
+  const claudeDir = path.join(tmp, '.claude');
+  const r = runRecord(claudeDir, JSON.stringify({ session_id: SESSION_END_SESSION_ID, transcript_path: sess }), { GEMINI_CLI: '1' });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stdout, '');
+  const entry = JSON.parse(fs.readFileSync(path.join(claudeDir, '.caveman-history.jsonl'), 'utf8').trim());
+  assert.strictEqual(entry.output_tokens, 12);
 });
 
 test('--all aggregates latest entry per session', (tmp) => {
@@ -466,6 +511,7 @@ test('--all reports empty when no history', (tmp) => {
     env: { ...process.env, CLAUDE_CONFIG_DIR: claudeDir },
   });
   assert.match(out, /No sessions logged yet/);
+  assert.match(out, /recorded when (?:it|they) ends?/);
 });
 
 test('reports original and current memory file bytes without provider-savings claims', (tmp) => {
