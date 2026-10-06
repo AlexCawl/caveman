@@ -49,7 +49,6 @@ const OPENCLAW_SKILL_VERSION = /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(P
   : undefined;
 const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/${PINNED_REF}`;
 const HOOKS_REMOTE = `${RAW_BASE}/src/hooks`;
-const INIT_SCRIPT_URL = `${RAW_BASE}/src/tools/caveman-init.js`;
 const MCP_SHRINK_PKG = 'caveman-shrink';
 // Hook files to copy. Statusline ships in both .sh (macOS/Linux) and .ps1
 // (Windows) flavors — copy both regardless of host OS so a roaming
@@ -1501,7 +1500,7 @@ function installMcpShrink(ctx) {
 
 // ── Init writers (per-repo rule files) ────────────────────────────────────
 async function runInit(ctx) {
-  const { note, warn, opts, repoRoot } = ctx;
+  const { warn, opts, repoRoot } = ctx;
   const local = repoRoot && path.join(repoRoot, 'src/tools/caveman-init.js');
   const args = [process.cwd()];
   if (opts.dryRun) args.push('--dry-run');
@@ -1510,23 +1509,14 @@ async function runInit(ctx) {
     const r = runSpawn(process.execPath, [local, ...args], null, opts.dryRun);
     return spawnOk(r);
   }
-  // Curl-pipe fallback
-  if (opts.dryRun) {
-    note(`  would download ${INIT_SCRIPT_URL} and run it on ${process.cwd()}`);
-    return true;
-  }
-  const scratch = privateTmpDir();
-  try {
-    const tmp = path.join(scratch, 'caveman-init.js');
-    await downloadTo(INIT_SCRIPT_URL, tmp);
-    const r = child_process.spawnSync(process.execPath, [tmp, ...args], { stdio: 'inherit' });
-    return spawnOk(r);
-  } catch (e) {
-    warn('  ' + e.message);
-    return false;
-  } finally {
-    try { fs.rmSync(scratch, { recursive: true, force: true }); } catch (_) { /* best effort */ }
-  }
+  // No remote fallback (#627). A lone bin/install.js used to download
+  // caveman-init.js and EXECUTE it with no integrity check. Every supported
+  // install (a clone, or npx github:...) ships src/tools/caveman-init.js, and
+  // pinning it in the hooks manifest would go stale on every SKILL.md change
+  // (skills/compile.mjs rewrites its RULE_BODY).
+  warn('  per-repo init needs the full caveman package — run: npx -y github:' + REPO + ' -- --with-init');
+  warn('  (or node bin/install.js --with-init from a clone)');
+  return false;
 }
 
 // privateTmpDir returns a fresh 0700 directory with an unguessable name. The old
