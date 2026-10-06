@@ -226,9 +226,6 @@ func TestChmodSQLiteFileRejectsReplacedInode(t *testing.T) {
 	}
 	for _, replacement := range []string{"regular", "symlink"} {
 		t.Run(replacement, func(t *testing.T) {
-			if os.Getenv("ANDROID_ROOT") != "" && replacement == "regular" {
-				t.Skip("Android/Termux rejects hard links")
-			}
 			dir := t.TempDir()
 			path, target := filepath.Join(dir, "ccr.db"), filepath.Join(dir, "target")
 			if err := os.WriteFile(path, nil, 0o600); err != nil {
@@ -250,8 +247,10 @@ func TestChmodSQLiteFileRejectsReplacedInode(t *testing.T) {
 			}
 			if replacement == "symlink" {
 				err = os.Symlink(target, path)
-			} else {
-				err = os.Link(target, path)
+			} else if err = os.Link(target, path); err != nil {
+				// Android/Termux refuses hard links even when ANDROID_ROOT is
+				// scrubbed, as do some filesystems: probe the capability itself.
+				t.Skipf("hard links unsupported here: %v", err)
 			}
 			if err != nil {
 				t.Fatal(err)
