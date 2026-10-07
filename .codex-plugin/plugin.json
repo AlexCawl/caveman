@@ -7,19 +7,5 @@
     "url": "https://github.com/JuliusBrussee"
   },
   "skills": "./skills/",
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup|resume",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/.codex/codex-sessionstart.js\"",
-            "timeout": 5,
-            "statusMessage": "Loading caveman mode"
-          }
-        ]
-      }
-    ]
-  }
+  "hooks": "./.codex/hooks.json"
 }

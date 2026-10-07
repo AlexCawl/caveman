@@ -152,9 +152,10 @@ Open Hooks in Codex and review and trust **Loading caveman mode**, then start a
 new chat. The plugin loads Caveman's configured default in every project.
 It needs Node.js 18 or newer on `PATH`.
 
-The root `.codex-plugin/plugin.json` declares the plugin hook. No global
-`AGENTS.md` instruction or user hook entry is needed. The repository's separate
-`.codex/hooks.json` is for working inside the Caveman repository itself.
+The root `.codex-plugin/plugin.json` references `.codex/hooks.json`. No global
+`AGENTS.md` instruction or user hook entry is needed. The hook resolves its script
+from the installed plugin root, or from the Git root when used directly inside
+the Caveman repository.
 
 Set `CAVEMAN_DEFAULT_MODE=off` or `defaultMode: "off"` in your Caveman config to
 start without the voice. This startup hook resolves the configured default; it

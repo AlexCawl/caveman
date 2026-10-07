@@ -67,7 +67,8 @@ test('marketplace plugin activates from another project and respects off', (t) =
   const cwd = mkdtempSync(join(tmpdir(), 'caveman consumer '));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const manifest = JSON.parse(readFileSync(join(root, '.codex-plugin', 'plugin.json'), 'utf8'));
-  const hook = manifest.hooks.SessionStart[0].hooks[0];
+  const hooks = JSON.parse(readFileSync(resolve(root, manifest.hooks), 'utf8'));
+  const hook = hooks.hooks.SessionStart[0].hooks[0];
   const body = readFileSync(join(item.dir, 'skills', 'caveman', 'SKILL.md'), 'utf8')
     .replace(/^---[\s\S]*?---\s*/, '');
 
