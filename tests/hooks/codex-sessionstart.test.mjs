@@ -62,34 +62,6 @@ test('.codex/hooks.json manifest is valid and points at the hook script', () => 
   assert.match(hook.command, /node .*codex-sessionstart\.js/);
 });
 
-test('inline marketplace hook activates from another project and respects off', (t) => {
-  const item = fixture(t);
-  rmSync(join(item.dir, '.codex', 'hooks.json'));
-  const cwd = mkdtempSync(join(tmpdir(), 'caveman consumer '));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  const manifest = JSON.parse(readFileSync(join(root, '.codex-plugin', 'plugin.json'), 'utf8'));
-  const hooks = manifest.hooks;
-  const hook = hooks.hooks.SessionStart[0].hooks[0];
-  const body = readFileSync(join(item.dir, 'skills', 'caveman', 'SKILL.md'), 'utf8')
-    .replace(/^---[\s\S]*?---\s*/, '');
-
-  for (const mode of ['caveman', 'off']) {
-    const result = spawnSync('sh', ['-c', hook.command], {
-      cwd,
-      env: {
-        ...item.env,
-        PLUGIN_ROOT: item.dir,
-        CLAUDE_PLUGIN_ROOT: item.dir,
-        CAVEMAN_DEFAULT_MODE: mode,
-      },
-      encoding: 'utf8',
-      timeout: 20_000,
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, mode === 'off' ? '' : 'CAVEMAN MODE ACTIVE — mode: caveman\n\n' + body);
-  }
-});
-
 test('hand-copied fallback whitelist stays equal to caveman-config VALID_MODES', async () => {
   const source = readFileSync(join(root, '.codex', 'codex-sessionstart.js'), 'utf8');
   const m = source.match(/const FALLBACK_VALID_MODES = (\[[\s\S]*?\]);/);

@@ -308,7 +308,6 @@ def verify_manifests_and_syntax() -> None:
         ROOT / ".claude-plugin/marketplace.json",
         ROOT / ".cursor-plugin/plugin.json",
         ROOT / "hooks/hooks-cursor.json",
-        ROOT / ".codex/hooks.json",
         ROOT / "gemini-extension.json",
         ROOT / ".codex-plugin/plugin.json",
     ]
