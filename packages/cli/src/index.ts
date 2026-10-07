@@ -8691,6 +8691,7 @@ function applyNativeMutations(agent: NativeAgent, profile: AgentProfile, mutatio
       atomicWriteFile(mutation.file, mutation.after);
       written.push(mutation);
     }
+    if (agent === "claude") rememberClaudeProfile();
     atomicWriteFile(nativeJournalPath(agent), Buffer.from(JSON.stringify(journal, null, 2) + "\n"));
     unlinkSync(nativePendingJournalPath(agent));
     return journal;
@@ -9160,14 +9161,148 @@ function writeNativeRestoration(file: string, bytes: Buffer | null): void {
   }
 }
 
-function restoreNativeJournalFiles(journal: NativeJournal): Array<{ file: string; bytes: Buffer | null }> {
+function claudeProfileRegistryPath(): string {
+  return join(cavemanHome(), "integrations", "claude-profiles.json");
+}
+
+function rememberedClaudeProfiles(): string[] {
+  const bytes = fileBytes(claudeProfileRegistryPath());
+  if (!bytes) return [];
+  const roots: unknown = JSON.parse(bytes.toString("utf8"));
+  if (!Array.isArray(roots) || roots.some((root) => typeof root !== "string" || !isAbsolute(root))) {
+    throw new Error("Claude profile registry is invalid; refusing incomplete disable");
+  }
+  return roots as string[];
+}
+
+function rememberClaudeProfile(): void {
+  const roots = new Set(rememberedClaudeProfiles());
+  roots.add(claudeConfigDir());
+  atomicWriteFile(claudeProfileRegistryPath(), Buffer.from(JSON.stringify([...roots].sort(), null, 2) + "\n"));
+}
+
+function nativeRealPath(file: string): string {
+  try { return realpathSync(file); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return resolve(file);
+  }
+}
+
+function claudeProfileFiles(journal: NativeJournal | undefined): string[] {
+  const roots = new Set([join(homedir(), ".claude"), claudeConfigDir(), ...rememberedClaudeProfiles()]);
+  for (const entry of readdirSync(homedir(), { withFileTypes: true })) {
+    if (/^\.claude[-_].+/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) {
+      roots.add(join(homedir(), entry.name));
+    }
+  }
+  for (const operation of journal?.operations ?? []) {
+    if (operation.kind === "claude-settings") roots.add(dirname(operation.file));
+  }
+  const files = new Set([nativeRealPath(join(homedir(), ".claude.json"))]);
+  for (const root of roots) {
+    for (const name of ["settings.json", "settings.local.json", ".claude.json", ".mcp.json"]) {
+      files.add(nativeRealPath(join(root, name)));
+    }
+  }
+  return [...files].sort();
+}
+
+function isClaudeRuntimeHook(command: unknown): boolean {
+  if (typeof command !== "string") return false;
+  const identity = managedHookIdentity(command);
+  return identity === "native-hook:claude" || identity === "shrink-hook" || identity === "mem:recall-hook";
+}
+
+function isCavemanClaudeRoute(value: unknown, hasNativeHooks: boolean): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || !/^\/w\/claude\/?$/.test(url.pathname)) return false;
+    return hasNativeHooks || ["localhost", "127.0.0.1", "[::1]", "gateway.caveman.so", "gw.caveman.so", "api.caveman.so"].includes(url.hostname)
+      || url.origin === new URL(gatewayURL()).origin;
+  } catch { return false; }
+}
+
+// Journals restore known originals. Discovery also reaches copied profiles and
+// orphaned installs whose journal lived in a deleted test or alternate home.
+// Only recognizable Caveman runtime entries are removed without a journal.
+function cleanClaudeProfile(root: Record<string, unknown>): boolean {
+  let changed = false;
+  let hasNativeHooks = false;
+  const hooks = root.hooks;
+  if (hooks && typeof hooks === "object" && !Array.isArray(hooks)) {
+    for (const [event, groups] of Object.entries(hooks)) {
+      if (!Array.isArray(groups)) continue;
+      const kept = groups.filter((group) => {
+        if (!group || typeof group !== "object" || !Array.isArray(group.hooks)) return true;
+        const remaining = group.hooks.filter((hook: Record<string, unknown> | null) => {
+          if (!hook || !isClaudeRuntimeHook(hook.command)) return true;
+          if (managedHookIdentity(hook.command as string) === "native-hook:claude") hasNativeHooks = true;
+          changed = true;
+          return false;
+        });
+        if (remaining.length === group.hooks.length) return true;
+        group.hooks = remaining;
+        return remaining.length > 0;
+      });
+      if (kept.length > 0) (hooks as Record<string, unknown>)[event] = kept;
+      else if (groups.length > 0) delete (hooks as Record<string, unknown>)[event];
+    }
+    if (changed && Object.keys(hooks).length === 0) delete root.hooks;
+  }
+  const env = root.env;
+  if (env && typeof env === "object" && !Array.isArray(env)) {
+    const values = env as Record<string, unknown>;
+    if (isCavemanClaudeRoute(values.ANTHROPIC_BASE_URL, hasNativeHooks)) {
+      delete values.ANTHROPIC_BASE_URL;
+      if (values[CLAUDE_ASSUME_FIRST_PARTY_ENV] === "1") delete values[CLAUDE_ASSUME_FIRST_PARTY_ENV];
+      for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+        if (typeof values[key] === "string" && /^cave_(?:live|test)_/.test(values[key])) delete values[key];
+      }
+      if (Object.keys(values).length === 0) delete root.env;
+      changed = true;
+    }
+  }
+  const servers = root.mcpServers;
+  if (servers && typeof servers === "object" && !Array.isArray(servers)) {
+    const entries = servers as Record<string, unknown>;
+    const server = entries.caveman as { command?: unknown } | undefined;
+    if (server && typeof server.command === "string" && hookCommandBasename(server.command) === "caveman-mcp") {
+      delete entries.caveman;
+      if (Object.keys(entries).length === 0) delete root.mcpServers;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function restoreNativeJournalFiles(journal: NativeJournal | undefined, allClaudeProfiles = false): Array<{ file: string; bytes: Buffer | null }> {
   // Resolve every merge/conflict before first write. A conflict therefore leaves
   // all host files and the journal byte-identical.
-  const restored = journal.operations.map((operation) => ({ operation, bytes: restoreNativeOperation(operation) }));
-  const current = journal.operations.map((operation) => ({ file: operation.file, bytes: fileBytes(operation.file) }));
+  const restored = new Map((journal?.operations ?? []).map((operation) => [nativeRealPath(operation.file), restoreNativeOperation(operation)]));
+  if (allClaudeProfiles) {
+    for (const file of claudeProfileFiles(journal)) {
+      const bytes = restored.has(file) ? restored.get(file) : fileBytes(file);
+      if (!bytes) continue;
+      const root = parseJsonc(bytes.toString("utf8"));
+      if (!root || typeof root !== "object" || Array.isArray(root)) throw new Error(`${file} is not a JSON object`);
+      if (cleanClaudeProfile(root as Record<string, unknown>)) restored.set(file, jsonBytes(root as Record<string, unknown>));
+    }
+  }
+  const current = [...restored].map(([file]) => ({ file, bytes: fileBytes(file) }));
+  if (allClaudeProfiles && current.length > 0) {
+    const backup = join(cavemanHome(), "integrations", "backups", `claude-disable-${randomUUID()}`);
+    const manifest = current.map((item, index) => {
+      const path = join(backup, `${index}.bin`);
+      if (item.bytes) atomicWriteFile(path, item.bytes);
+      return { file: item.file, backup: item.bytes ? path : null };
+    });
+    atomicWriteFile(join(backup, "manifest.json"), Buffer.from(JSON.stringify(manifest, null, 2) + "\n"));
+    process.stderr.write(`${mark("ok")} Claude profile backups: ${backup}\n`);
+  }
   try {
-    for (const item of restored) writeNativeRestoration(item.operation.file, item.bytes);
-    unlinkSync(nativeJournalPath(journal.agent));
+    for (const [file, bytes] of restored) writeNativeRestoration(file, bytes);
+    if (journal) unlinkSync(nativeJournalPath(journal.agent));
   } catch (error) {
     for (const item of current) {
       try { writeNativeRestoration(item.file, item.bytes); } catch { /* original error remains authority */ }
@@ -9193,21 +9328,26 @@ function cleanupNativeAgentFiles(target: NativeAgent, journal: NativeJournal): v
   }
 }
 
-function disableNativeAgent(target: NativeAgent): boolean {
+function disableNativeAgent(target: NativeAgent, allClaudeProfiles = false): boolean {
   const disabled = withIntegrationLock(target, () => {
     recoverPendingNativeInstallUnlocked(target);
     const journal = readNativeJournal(target);
+    if (target === "claude" && allClaudeProfiles) {
+      const changed = restoreNativeJournalFiles(journal, true);
+      return changed.length > 0 ? { journal, files: changed.length } : undefined;
+    }
     if (!journal) return undefined;
     restoreNativeJournalFiles(journal);
-    return journal;
+    return { journal, files: journal.operations.length };
   });
   if (!disabled) {
-    process.stderr.write(`${mark("warn")} ${target}: no native Caveman integration journal found\n`);
+    process.stderr.write(`${mark("warn")} ${target === "claude" && allClaudeProfiles ? "Claude Code: no native Caveman routing or hooks found across discovered profiles" : `${target}: no native Caveman integration journal found`}\n`);
     return false;
   }
-  cleanupNativeAgentFiles(target, disabled);
+  if (disabled.journal) cleanupNativeAgentFiles(target, disabled.journal);
   const name = findAgent(target)?.display_name ?? target;
   process.stderr.write(`${mark("ok")} ${name}: ${target === "aider" ? "shallow" : "native"} Caveman disabled; unrelated host edits preserved\n`);
+  if (target === "claude" && allClaudeProfiles) process.stderr.write(`Checked all discovered Claude profiles. Restart running Claude sessions; their existing environment cannot be cleared by disable.\n`);
   return true;
 }
 
@@ -9242,16 +9382,12 @@ function repairNativeAgent(target: NativeAgent): void {
 }
 
 function disableNative(argv: string[]) {
-  if (argv.length === 1 && argv[0] === "--all") {
+  if (argv.length === 0 || (argv.length === 1 && argv[0] === "--all")) {
     const targets = (["claude", "codex", "hermes", "gemini", "opencode", "pi", "aider"] as NativeAgent[])
-      .filter((agent) => Boolean(readNativeJournal(agent) || readPendingNativeJournal(agent)));
-    if (targets.length === 0) {
-      process.stderr.write(`${mark("warn")} no native Caveman integrations are journaled\n`);
-      return;
-    }
+      .filter((agent) => agent === "claude" || Boolean(readNativeJournal(agent) || readPendingNativeJournal(agent)));
     let failed = 0;
     for (const target of targets) {
-      try { disableNativeAgent(target); }
+      try { disableNativeAgent(target, true); }
       catch (error) {
         failed++;
         process.stderr.write(`${mark("bad")} ${target}: ${(error as Error).message}\n`);
@@ -9262,7 +9398,7 @@ function disableNative(argv: string[]) {
   }
   const target = argv[0];
   if ((target !== "claude" && target !== "codex" && target !== "hermes" && target !== "gemini" && target !== "opencode" && target !== "pi" && target !== "aider") || argv.length !== 1) commandUsage("disable <claude|codex|hermes|gemini|opencode|pi|aider> | disable --all");
-  disableNativeAgent(target);
+  disableNativeAgent(target, true);
 }
 
 function nativeIntegrationStatus(agent: NativeAgent) {
