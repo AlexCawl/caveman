@@ -62,12 +62,13 @@ test('.codex/hooks.json manifest is valid and points at the hook script', () => 
   assert.match(hook.command, /node .*codex-sessionstart\.js/);
 });
 
-test('marketplace plugin activates from another project and respects off', (t) => {
+test('inline marketplace hook activates from another project and respects off', (t) => {
   const item = fixture(t);
+  rmSync(join(item.dir, '.codex', 'hooks.json'));
   const cwd = mkdtempSync(join(tmpdir(), 'caveman consumer '));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const manifest = JSON.parse(readFileSync(join(root, '.codex-plugin', 'plugin.json'), 'utf8'));
-  const hooks = JSON.parse(readFileSync(resolve(root, manifest.hooks), 'utf8'));
+  const hooks = manifest.hooks;
   const hook = hooks.hooks.SessionStart[0].hooks[0];
   const body = readFileSync(join(item.dir, 'skills', 'caveman', 'SKILL.md'), 'utf8')
     .replace(/^---[\s\S]*?---\s*/, '');
