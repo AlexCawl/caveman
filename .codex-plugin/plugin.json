@@ -1,0 +1,25 @@
+{
+  "name": "caveman",
+  "version": "3.1.0",
+  "description": "Ultra-compressed communication mode. Shortens prose while preserving technical terms, code, commands, and exact errors.",
+  "author": {
+    "name": "Julius Brussee",
+    "url": "https://github.com/JuliusBrussee"
+  },
+  "skills": "./skills/",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/.codex/codex-sessionstart.js\"",
+            "timeout": 5,
+            "statusMessage": "Loading caveman mode"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -52,6 +52,7 @@ If you want to install for one agent (or want to know exactly what command runs 
 | **Hermes Agent** | `npx -y github:JuliusBrussee/caveman -- --only hermes` *(or `node installer/install.js --only hermes` from a clone)* | Yes (native skills, enabled on load) |
 | **Antigravity CLI** (`agy`) | `npx -y github:JuliusBrussee/caveman -- --only antigravity-cli` | Yes ([agy plugin](#antigravity-cli)) |
 | **Codex CLI** | `npx -y github:JuliusBrussee/caveman -- --only codex` *(skills only, no hook: `npx skills add JuliusBrussee/caveman -a codex -g`)* | Yes (SessionStart hook — trust it once with `/hooks`); skills-only: `$caveman` (Codex calls skills with `$`, not `/`) |
+| **Codex desktop plugin** | `codex plugin marketplace add JuliusBrussee/caveman && codex plugin add caveman@caveman` | Yes, after reviewing and trusting the SessionStart hook |
 | **Cursor** | `npx -y github:JuliusBrussee/caveman -- --only cursor` *(or the [Cursor plugin](#cursor))* | Yes (session hook) |
 | **Windsurf** | `npx skills add JuliusBrussee/caveman -a windsurf -g` | Per-session by default; `--with-init` for an always-on rule file |
 | **Cline** | `npx skills add JuliusBrussee/caveman -a cline -g` | Per-session by default; `--with-init` for an always-on rule file |
@@ -140,6 +141,24 @@ one entry is added to `$CODEX_HOME/hooks.json`. Re-running never duplicates it.
 `--no-hooks` keeps the skills-only, per-session behavior: type `$caveman`.
 `--uninstall` removes only caveman's entry and files. Use the same `CODEX_HOME`
 for install and uninstall.
+
+### Codex desktop plugin
+
+Add the repository as a marketplace, then install `caveman@caveman`. For a fork,
+replace `JuliusBrussee/caveman` with its GitHub owner/repository. Use `--ref <branch>`
+on the marketplace command when testing a branch.
+
+Open Hooks in Codex and review and trust **Loading caveman mode**, then start a
+new chat. The plugin loads Caveman's configured default in every project.
+It needs Node.js 18 or newer on `PATH`.
+
+The root `.codex-plugin/plugin.json` declares the plugin hook. No global
+`AGENTS.md` instruction or user hook entry is needed. The repository's separate
+`.codex/hooks.json` is for working inside the Caveman repository itself.
+
+Set `CAVEMAN_DEFAULT_MODE=off` or `defaultMode: "off"` in your Caveman config to
+start without the voice. This startup hook resolves the configured default; it
+does not persist mode changes made during a chat.
 
 ### Oh My Pi (OMP)
 

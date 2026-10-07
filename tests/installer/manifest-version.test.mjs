@@ -45,6 +45,7 @@ function releaseVersion() {
 const HOST_MANIFESTS = [
   '.claude-plugin/plugin.json',
   '.cursor-plugin/plugin.json',
+  '.codex-plugin/plugin.json',
   'gemini-extension.json',
   'plugins/caveman/.codex-plugin/plugin.json',
 ];
