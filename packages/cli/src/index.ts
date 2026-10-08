@@ -3913,7 +3913,8 @@ type OffStateID =
   | "download-unreachable"
   | "download-stalled"
   | "unsupported-platform"
-  | "refresh-offline";
+  | "refresh-offline"
+  | "cache-bust";
 
 export type OffState = { id: OffStateID; line: string; fix?: string };
 
@@ -4007,6 +4008,13 @@ export const OFF_STATES = {
   zdr: {
     line: "ZDR org — wrap telemetry excluded by your data policy; local numbers only",
   },
+  // The proxy's cache tripwire: the client re-sent bytes the provider had
+  // cached and caveman forwarded them differently. Never expected; a bug.
+  cavemanCacheBust: (count: number): OffState => ({
+    id: "cache-bust",
+    line: `caveman changed bytes the provider had already cached on ${count} request${count === 1 ? "" : "s"} today — those turns paid to re-cache their prompt; this is a caveman bug`,
+    fix: "report it with ~/.caveman/proxy.log at github.com/JuliusBrussee/caveman/issues",
+  }),
 } as const;
 
 const OFF_STATE_PRECEDENCE: OffStateID[] = [
@@ -4020,6 +4028,7 @@ const OFF_STATE_PRECEDENCE: OffStateID[] = [
   "mem-missing",
   "zdr",
   "stale-binary",
+  "cache-bust",
 ];
 
 function fixedOffState(id: OffStateID, item: { line: string; fix?: string }): OffState {
@@ -4519,6 +4528,8 @@ type ProxyObserveSummary = {
   cache_creation_input_tokens?: number;
   headline_compression_refused?: boolean;
   cache_bust_requests?: number;
+  // The subset of cache_bust_requests caveman caused. Older proxies omit it.
+  caveman_cache_bust_requests?: number;
 };
 
 type EngineSessionMeasurementMode = "observe" | "compress";
@@ -6016,10 +6027,10 @@ function spawnLocalProxyProcess(mode: WrapRuntimeMode, mcpRecovery: boolean, too
     CAVEMAN_MODE: mode,
     CAVEMAN_LISTEN: `${host}:${port}`,
     // The recovery half of the proxy's subscription gate, and the switch that lets
-    // it compress streams at all. Stamped EXPLICITLY in both directions: wrap
-    // derives it from the agent's OWN MCP install (and
-    // forces it off for codex-subscription and observe-only runs), so an exported
-    // CAVEMAN_RECOVERY=mcp must not survive that answer — the proxy would elide
+    // it compress streams at all. Stamped EXPLICITLY in both directions: wrap,
+    // `enable`, the agent shortcut and the native hook derive it from the agent's
+    // OWN MCP install (codex-subscription included; observe-only runs force it
+    // off), so an exported CAVEMAN_RECOVERY=mcp must not survive that answer — the proxy would elide
     // spans behind markers this agent has no caveman_retrieve tool to expand, while
     // the CLI printed that compression was off. (honesty rule: no-placeholder)
     CAVEMAN_RECOVERY: mcpRecovery ? "mcp" : "",
@@ -7994,6 +8005,43 @@ export default {
 `;
 }
 
+// opencode-go serves OpenAI and Anthropic wire shapes from opencode.ai, so it
+// rides the proxy's built-in /compat/opencode-go mount (same one Pi uses), which
+// keeps the caller's credential and forwards OpenCode's session headers (#1090).
+function opencodeNativeRoutes(gw: string): Record<string, string> {
+  const base = appendUrlPath(gw, "/w/opencode");
+  return {
+    openai: appendUrlPath(base, "/openai/v1"),
+    anthropic: appendUrlPath(base, "/anthropic/v1"),
+    "opencode-go": appendUrlPath(base, "/compat/opencode-go/v1"),
+  };
+}
+
+// Only the journaled providers reach the proxy. Anything else (GitHub Copilot,
+// Zen) goes direct while the install reads healthy (#1190), so name it. Global
+// config only, the same file enable edits; a project opencode.json can still
+// pick another model.
+function opencodeUnroutedActiveProvider(routed: string[]): string | null {
+  for (const name of ["opencode.jsonc", "opencode.json"]) {
+    try {
+      const model = (parseJsonc(readFileSync(join(homedir(), ".config", "opencode", name), "utf8")) as Record<string, unknown> | null)?.model;
+      if (typeof model === "string" && model.includes("/")) {
+        const provider = model.slice(0, model.indexOf("/"));
+        return routed.includes(provider) ? null : provider;
+      }
+    } catch { /* missing or unreadable: try the next source */ }
+  }
+  // No model pinned: OpenCode picks among signed-in providers, so only a
+  // sign-in set with no routed provider at all is a sure miss.
+  try {
+    const dataRoot = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+    const signedIn = Object.keys(JSON.parse(readFileSync(join(dataRoot, "opencode", "auth.json"), "utf8")) ?? {});
+    return signedIn.length > 0 && !signedIn.some((id) => routed.includes(id)) ? signedIn[0]! : null;
+  } catch {
+    return null;
+  }
+}
+
 function opencodeNativeMutations(gw: string, mcpBinary: string): NativeMutation[] {
   const configPath = join(homedir(), ".config", "opencode", "opencode.json");
   const before = fileBytes(configPath);
@@ -8006,8 +8054,7 @@ function opencodeNativeMutations(gw: string, mcpBinary: string): NativeMutation[
   }
   const providers = root.provider && typeof root.provider === "object" && !Array.isArray(root.provider) ? root.provider as Record<string, unknown> : {};
   const previousRoutes: Record<string, unknown> = {};
-  const base = appendUrlPath(gw, "/w/opencode");
-  const routes = { openai: appendUrlPath(base, "/openai/v1"), anthropic: appendUrlPath(base, "/anthropic/v1") };
+  const routes = opencodeNativeRoutes(gw);
   for (const [providerID, route] of Object.entries(routes)) {
     const provider = providers[providerID] && typeof providers[providerID] === "object" && !Array.isArray(providers[providerID]) ? providers[providerID] as Record<string, unknown> : {};
     const options = provider.options && typeof provider.options === "object" && !Array.isArray(provider.options) ? provider.options as Record<string, unknown> : {};
@@ -9027,7 +9074,7 @@ function restoreNativeOperation(operation: NativeJournal["operations"][number]):
     const providers = root.provider && typeof root.provider === "object" && !Array.isArray(root.provider) ? root.provider as Record<string, unknown> : {};
     const routes = operation.owned?.routes && typeof operation.owned.routes === "object" && !Array.isArray(operation.owned.routes) ? operation.owned.routes as Record<string, unknown> : {};
     const previousRoutes = operation.owned?.previous_routes && typeof operation.owned.previous_routes === "object" && !Array.isArray(operation.owned.previous_routes) ? operation.owned.previous_routes as Record<string, unknown> : {};
-    for (const providerID of ["openai", "anthropic"]) {
+    for (const providerID of Object.keys(routes)) {
       const provider = providers[providerID] && typeof providers[providerID] === "object" && !Array.isArray(providers[providerID]) ? providers[providerID] as Record<string, unknown> : {};
       const options = provider.options && typeof provider.options === "object" && !Array.isArray(provider.options) ? provider.options as Record<string, unknown> : {};
       if (options.baseURL !== undefined && options.baseURL !== routes[providerID]) {
@@ -9261,7 +9308,7 @@ function nativeIntegrationStatus(agent: NativeAgent) {
           const providers = root.provider && typeof root.provider === "object" && !Array.isArray(root.provider) ? root.provider as Record<string, unknown> : {};
           const routes = operation.owned?.routes && typeof operation.owned.routes === "object" && !Array.isArray(operation.owned.routes) ? operation.owned.routes as Record<string, unknown> : {};
           const mcp = root.mcp && typeof root.mcp === "object" && !Array.isArray(root.mcp) ? root.mcp as Record<string, unknown> : {};
-          owned = ["openai", "anthropic"].every((providerID) => {
+          owned = Object.keys(routes).every((providerID) => {
             const provider = providers[providerID] && typeof providers[providerID] === "object" && !Array.isArray(providers[providerID]) ? providers[providerID] as Record<string, unknown> : {};
             const options = provider.options && typeof provider.options === "object" && !Array.isArray(provider.options) ? provider.options as Record<string, unknown> : {};
             return options.baseURL === routes[providerID];
@@ -9297,7 +9344,7 @@ function nativeIntegrationStatus(agent: NativeAgent) {
   const mcp = probeMcpBinary();
   const expectedRoute = agent === "codex"
     ? codexGatewayBase(gatewayURL(), detectCodexWrapAuthMode() === "subscription")
-    : appendUrlPath(gatewayURL(), agent === "claude" ? "/w/claude" : agent === "hermes" ? "/w/hermes/v1" : agent === "gemini" ? "/w/gemini" : agent === "opencode" ? "/w/opencode" : agent === "pi" ? "/w/pi" : "/w/aider/openai/v1");
+    : appendUrlPath(gatewayURL(), agent === "claude" ? "/w/claude" : agent === "hermes" ? "/w/hermes/v1" : agent === "gemini" ? "/w/gemini" : agent === "pi" ? "/w/pi" : "/w/aider/openai/v1");
   const routeKind: NativeMutation["kind"] = agent === "claude" ? "claude-settings" : agent === "codex" ? "codex-config" : agent === "hermes" ? "hermes-config" : agent === "gemini" ? "gemini-env" : agent === "opencode" ? "opencode-config" : agent === "pi" ? "pi-extension" : "aider-config";
   const routeOperation = journal?.operations.find((operation) => operation.kind === routeKind);
   // Pi's artifact encodes no route: the extension resolves the gateway at
@@ -9338,8 +9385,7 @@ function nativeIntegrationStatus(agent: NativeAgent) {
     return (semver[0]! >= 2) === installedV2;
   })();
   const routeHealthy = ownedHealthy && (agent === "opencode"
-    ? (routeOperation?.owned?.routes as Record<string, unknown> | undefined)?.openai === appendUrlPath(expectedRoute, "/openai/v1")
-      && (routeOperation?.owned?.routes as Record<string, unknown> | undefined)?.anthropic === appendUrlPath(expectedRoute, "/anthropic/v1")
+    ? Object.entries(opencodeNativeRoutes(gatewayURL())).every(([providerID, route]) => (routeOperation?.owned?.routes as Record<string, unknown> | undefined)?.[providerID] === route)
     : agent === "pi" ? piBundleCurrent : routeOperation?.owned?.route === expectedRoute);
   const proxyHealthy = wrapMode(gatewayURL()) === "managed" || Boolean(probeProxyVersion()?.capabilities.includes("native_runtime_v1"));
   const recoveryHealthy = agent === "aider" || Boolean(mcp?.probe.current);
@@ -9348,6 +9394,12 @@ function nativeIntegrationStatus(agent: NativeAgent) {
 	const coreActive = agent === "aider"
 	  ? ownedHealthy
 	  : coreSupported && nativeCoreRuntimeState().active;
+  const warnings: string[] = [];
+  if (agent === "opencode" && installed) {
+    const routed = Object.keys((routeOperation?.owned?.routes as Record<string, unknown> | undefined) ?? {});
+    const unrouted = opencodeUnroutedActiveProvider(routed);
+    if (unrouted) warnings.push(`OpenCode's active provider "${unrouted}" is not routed through Caveman; its requests go direct and are not compressed or counted (routed: ${routed.join(", ")})`);
+  }
   const fileText = checks.map((check) => fileBytes(check.file)?.toString("utf8") ?? "").join("\n");
   const components: NativeComponents = {
     routing: routeHealthy && proxyHealthy && (agent === "claude" ? fileText.includes("ANTHROPIC_BASE_URL") : agent === "codex" ? fileText.includes("model_providers.caveman") : agent === "hermes" ? fileText.includes(HERMES_NATIVE_ROUTE_BEGIN) : agent === "gemini" ? fileText.includes(GEMINI_NATIVE_ENV_BEGIN) : agent === "opencode" ? fileText.includes("caveman:native-opencode") : agent === "pi" ? fileText.includes("caveman:native-pi") : fileText.includes(AIDER_NATIVE_ROUTE_BEGIN)),
@@ -9399,6 +9451,7 @@ function nativeIntegrationStatus(agent: NativeAgent) {
     pack_current: packCurrent,
     drifted,
     components,
+    warnings,
     capabilities: nativeCapabilityReport(agent, components, versionStatus),
     files: checks,
   };
@@ -11694,10 +11747,16 @@ const HERMES_PLUGIN_ENABLE_END = "# <<< caveman:hermes-plugin-enable";
 const HERMES_PLUGIN_NAME = "caveman_shrink";
 
 export function hermesHome(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
-  // Hermes 0.19.1 hermes_constants.py: native Windows uses LOCALAPPDATA,
-  // overrides are stripped, and Path(value) does not expand a literal tilde.
+  // Hermes 0.21.5 hermes_constants.py: native Windows uses LOCALAPPDATA,
+  // overrides are stripped, then Path(expanduser(expandvars(value))).
+  // ponytail: no `~user` or Windows quote/escape forms; add if a user hits one.
   const override = env.HERMES_HOME?.trim();
-  if (override) return resolve(override);
+  if (override) {
+    const lookup = (whole: string, name: string) => env[name] ?? whole;
+    let expanded = override.replace(/\$(\w+)|\$\{([^{}$]*)\}/g, (whole, bare, braced) => lookup(whole, bare ?? braced));
+    if (platform === "win32") expanded = expanded.replace(/%([^%]+)%/g, lookup);
+    return resolve(expanded.replace(/^~(?=$|[\\/])/, homedir()));
+  }
   if (platform === "win32") {
     return join(env.LOCALAPPDATA?.trim() || join(homedir(), "AppData", "Local"), "hermes");
   }
@@ -15184,6 +15243,30 @@ async function nativeHook(argv: string[]) {
     }
   }
 
+  // Codex's native config.toml bakes in the auth mode (subscription vs
+  // api-key) at install time, but people run `codex login` afterwards all
+  // the time, which flips it without touching config.toml. That leaves the
+  // route stale until someone remembers to run `caveman doctor codex --fix`
+  // by hand. Just do what that command would do, right here at session
+  // start — but only for that specific drift. `degraded` also covers pack
+  // version bumps, missing hooks, MCP recovery being down, etc., and none
+  // of those should get a silent config rewrite just because Codex started;
+  // those still surface through `caveman doctor codex` like normal.
+  // Runs after the proxy revival above so the repair cannot race a
+  // proxy this hook just spawned. The check is file-only on purpose:
+  // nativeIntegrationStatus spawns `codex --version` and the proxy/MCP
+  // probes, and this whole delegated SessionStart gets 3s. Codex has
+  // already read config.toml by the time SessionStart fires, so the
+  // repaired route takes effect from the next Codex launch.
+  if (normalizedEvent === "SessionStart" && agent === "codex") {
+    try {
+      const route = readNativeJournal("codex")?.operations.find((operation) => operation.kind === "codex-config")?.owned?.route;
+      if (typeof route === "string" && route !== codexGatewayBase(gatewayURL(), detectCodexWrapAuthMode() === "subscription")) repairNativeAgent("codex");
+    } catch {
+      // Best-effort; a real problem still shows up in `caveman doctor codex`.
+    }
+  }
+
   const runtimeRequest = sessionId && normalizedEvent !== "Unknown"
     ? nativeRuntimeRequest(agent, normalizedEvent, sessionId, event)
     : undefined;
@@ -18569,6 +18652,8 @@ async function status(argv: string[]) {
   if (refreshOffline()) states.push(fixedOffState("refresh-offline", OFF_STATES.refreshOffline));
 
   const today = versionInfo ? readProxyObserveSummary(localMidnightRFC3339()) : null;
+  const cavemanBusts = Number(today?.caveman_cache_bust_requests ?? 0);
+  if (Number.isSafeInteger(cavemanBusts) && cavemanBusts > 0) states.push(OFF_STATES.cavemanCacheBust(cavemanBusts));
   const runningMode = runtime.owner !== "unknown" && runtime.mode ? runtime.mode : null;
   const resolvedMode = gate.mode;
   const snapshot = readLearnSnapshot();
@@ -18629,6 +18714,7 @@ async function status(argv: string[]) {
     const active = Object.entries(integration.capabilities).filter(([, value]) => value.active).map(([name]) => name);
     process.stdout.write(statusRow(integration.agent, `${integration.state} · ${integration.version_status} · ${active.join(", ") || "proxy-only/none active"}`) + "\n");
   }
+  for (const warning of native.flatMap((integration) => integration.warnings)) process.stdout.write(`${mark("warn")} ${warning}\n`);
   const degraded = native.find((integration) => integration.state === "degraded");
   const available = native.find((integration) => integration.state === "available" && integration.components.shared_runtime);
   const needsRuntime = native.find((integration) => integration.state === "available" && !integration.components.shared_runtime);

@@ -16,17 +16,17 @@ provenance and PyPI attestations automatically.
 Tags must be annotated, GitHub-verified, and point to a commit on `main`. The
 workflow rejects a tag whose version differs from the package metadata.
 
-| Tag | Artifact | Latest published (2026-09-24) | In this branch (Caveman 3.0.0) | GitHub Release |
+| Tag | Artifact | Latest published (2026-10-06) | In this branch (Caveman 3.2.0) | GitHub Release |
 |---|---|---|---|---|
-| `sdk-ts-v*` | npm `@caveman-ai/sdk` | `1.1.0` | `1.2.0` | Yes |
-| `sdk-python-v*` | PyPI `caveman-sdk` | `1.1.0` | `1.2.0` | Yes |
-| `middleware-ts-v*` | npm `@caveman-ai/middleware` | `0.1.0-alpha.2` | `1.0.0` | Yes |
-| `middleware-python-v*` | PyPI `caveman-middleware` | `0.1.0a1` | `1.0.0` | Yes |
-| `contracts-v*` | npm `@caveman-ai/contracts` | never published | `2.0.0` | Yes |
-| `pi-v*` | npm `@caveman-ai/pi` | `0.1.1` | `0.2.0` | No |
-| `bin-v*` | Go binaries and container image | `bin-v1.1.7` (`bin-v1.1.8` was pinned, never tagged) | `bin-v2.0.2` (pinned in `packages/cli/BINARY_RELEASE`) | Yes, with the binaries |
-| `cli-v*` | npm `@caveman-ai/cli` | `1.3.4` (hand-published) | `2.0.1` | No |
-| `v*` | Caveman product (installer, plugin, skills) | `v2.7.0` | `v3.0.0` | Yes, "Latest" |
+| `sdk-ts-v*` | npm `@caveman-ai/sdk` | `1.2.0` | `1.2.0` | Yes |
+| `sdk-python-v*` | PyPI `caveman-sdk` | `1.2.0` | `1.2.0` | Yes |
+| `middleware-ts-v*` | npm `@caveman-ai/middleware` | `1.0.0` | `1.0.1` | Yes |
+| `middleware-python-v*` | PyPI `caveman-middleware` | `1.0.0` | `1.0.0` | Yes |
+| `contracts-v*` | npm `@caveman-ai/contracts` | `2.0.0` | `2.0.0` | Yes |
+| `pi-v*` | npm `@caveman-ai/pi` | `0.1.1` (`pi-v0.2.0` tagged, not on npm) | `0.3.0` | No |
+| `bin-v*` | Go binaries and container image | `bin-v2.0.2` | `bin-v2.1.0` (pinned in `packages/cli/BINARY_RELEASE`) | Yes, with the binaries |
+| `cli-v*` | npm `@caveman-ai/cli` | `2.0.1` | `2.1.0` | No |
+| `v*` | Caveman product (installer, plugin, skills) | `v3.1.0` | `v3.2.0` | Yes, "Latest" |
 
 `tests/verify_repo.py` checks that each SDK and middleware package's version,
 version constant (`SDK_VERSION`, `MIDDLEWARE_VERSION`), and top `CHANGELOG.md`
@@ -154,10 +154,27 @@ CLI and the npm launchers check that signature against the public key compiled
 into them before installing any binary. The signed manifest also covers the
 license files attached to every binary release: `LICENSE` (Apache-2.0),
 `LICENSE-MIT` (the pre-3.0.0 MIT text), `NOTICE`, `LICENSING.md`, the third-party notices for the embedded pixel renderer,
-its fonts, and `caveman-browse`, and `THIRD_PARTY_GO_LICENSES.tar.gz`: the
-license texts of every third-party Go module the six binaries link on any
-platform, plus the Go runtime's, collected with a pinned
-`github.com/google/go-licenses/v2@v2.0.1`.
+its fonts, and `caveman-browse`, the notices for what `zig cc` links into the
+cgo binaries (`LICENSE.zig`, `COPYRIGHT.musl`, `COPYING.mingw-w64`), and
+`THIRD_PARTY_GO_LICENSES.tar.gz`: the license texts of every third-party Go
+module the six binaries link on any platform, plus the Go runtime's, collected
+with a pinned `github.com/google/go-licenses/v2@v2.0.1`.
+
+`caveman-proxy` and `caveman-engine` are cgo builds, so they carry the
+tree-sitter code compressor (TypeScript, JavaScript, Python, Rust, Java, C,
+C++); `scripts/build-release-binaries.mjs` cross-compiles them with `zig cc`
+(static musl on Linux, mingw-w64 on Windows, macOS 12 floor, no debug info so
+two builds produce the same bytes) and refuses any zig but
+`RELEASE_ZIG_VERSION`, which both workflows download by sha256. The other four
+binaries stay pure Go, and so does the container image (`Dockerfile`), whose
+code compressor therefore parses Go only; the release notes say so. The workflow runs the linux/amd64 engine's embedded evals
+and requires the Linux cgo binaries (amd64 and arm64) to be static before
+anything is signed. On every PR, engine-ci's `release-shape` job builds the
+linux/amd64 set, runs the release-shape tests and evals, and checks that set is
+static; the cross-build of all six targets runs only after merge. Locally:
+`ZIG=/path/to/zig node scripts/build-release-binaries.mjs --test` builds the
+host target, runs the `TestReleaseShape*` tests with the release flags, and runs
+the built engine's evals.
 
 Optional platform code signing runs when its secrets exist on the
 `binary-release` environment and is skipped when they don't:

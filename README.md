@@ -68,9 +68,9 @@ Caveman is a voice, not broken grammar. Every reply follows the same structure:
 | **Answer first** | `[thing] [action] [reason]. [next step].` No greeting, no "let me", no recap, no "hope this helps" |
 | **One idea per sentence** | Built on [ASD-STE100](https://www.asd-ste100.org/), the controlled English written for aircraft maintenance manuals: 20 words max, active voice, one term per thing |
 | **Meaning never dropped** | Articles can go. *not*, *never*, *no*, *only* never go. Numbers and units stay exact |
-| **Payload verbatim** | Code, commands, paths, and error messages untouched, character for character |
+| **Payload verbatim** | Code, commands, paths, error messages, and your existing code comments untouched, character for character. Small fix shows the changed lines, not the whole file again |
 | **Quiet tool runs** | No chatter between tool calls. One line per phase, one line with the result |
-| **Knows when to stop** | Security warnings, irreversible actions, step-by-step orders, and confused users get full sentences. Then grunt resumes |
+| **Knows when to stop** | Security warnings, irreversible actions, step-by-step orders, questions back to you, and confused users get full sentences. Then grunt resumes |
 | **Never performs** | No "me think", no caveman prefix. If caveman phrasing isn't shorter, plain wins |
 | **Your prompts stay yours** | Never rewritten. [Research say that backfire](#the-numbers) |
 
@@ -82,7 +82,7 @@ Every reply runs a check before it sends: opener that announces the plan, delete
 npx skills add JuliusBrussee/caveman -g
 ```
 
-Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [30+ more](./INSTALL.md). Type `/caveman` if it doesn't start on its own. Say `stop caveman` to go back. One rock. That it.
+Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [30+ more](./INSTALL.md). Type `/caveman` (`$caveman` in Codex) if it doesn't start on its own. Say `stop caveman` to go back. One rock. That it.
 
 Want big rock too? [The proxy](#big-rock-the-proxy) shrinks what the agent **reads**: 33.2% fewer input tokens, same answers. Needs Node.js 22.13+.
 
@@ -92,29 +92,38 @@ caveman claude        # or codex · gemini · aider · kilo · qwen · opencode 
 ```
 
 <details>
-<summary><strong>Other ways in</strong>: Claude Code plugin, Gemini, every agent at once, Windows, uninstall</summary>
+<summary><strong>Other ways in</strong>: Claude app and phone, Claude Code plugin, Gemini, every agent at once, Windows, uninstall</summary>
 
 <br>
 
+Claude on the web, the phone app, or Cowork? No terminal. Add caveman to your Claude account once, in Customize > Plugins: [steps](./INSTALL.md#claude-apps-claudeai-desktop-mobile-cowork). Not tested end to end yet.
+
 ```bash
-# Claude Code plugin, auto-starts every session
+# Claude Code plugin, auto-starts every interactive session, subagents too
 claude plugin marketplace add JuliusBrussee/caveman && claude plugin install caveman@caveman
 
 # Gemini CLI
 gemini extensions install https://github.com/JuliusBrussee/caveman
 
 # Every agent on your machine at once, plus the Claude Code statusline badge (Node.js 22.13+)
-curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.1.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.2.0/install.sh | bash
+```
+
+Already inside Claude Code? Same rock, slash form. Type these where you talk to Claude:
+
+```text
+/plugin marketplace add JuliusBrussee/caveman
+/plugin install caveman@caveman
 ```
 
 Windows, PowerShell 5.1+:
 
 ```powershell
-irm https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.1.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.2.0/install.ps1 | iex
 ```
 
-On npm 12 or newer, new npm block git install, so one-liners above fail until next release. Use this for now:
-`npx --allow-git=root -y github:JuliusBrussee/caveman#v3.1.0`
+On npm 12 or newer, new npm block git install. One-liners above handle it themselves from v3.2.0 on. Old one-liner pinned to v3.1.0 or older still fail there: use one above, or this:
+`npx --allow-git=root -y github:JuliusBrussee/caveman#v3.2.0`
 
 Changed your mind: `npx -y github:JuliusBrussee/caveman -- --uninstall` (on npm 12+, add `--allow-git=root` too)
 
@@ -157,7 +166,7 @@ Two findings shaped caveman. Adobe found that cavemanning *your* prompt makes an
 | `/caveman` | 4,119 |
 | `/ultracave` | **2,693** |
 
-New models already know "be concise", so that line is the real baseline. On top of it, `/caveman` cuts 3% more at the median and `/ultracave` cuts 35% more. [Harness](./evals/README.md)
+New models already know "be concise", so that line is the real baseline. On top of it, `/caveman` cuts 3% more at the median and `/ultracave` cuts 35% more. Measured on the 3.1.0 skill text, not yet re-run on this release's. [Harness](./evals/README.md)
 
 <!-- BENCHMARK-TABLE-START -->
 <!-- BENCHMARK-TABLE-END -->
@@ -167,9 +176,9 @@ New models already know "be concise", so that line is the real baseline. On top 
 | What | Result |
 |---|---|
 | A web page the agent reads (`caveman browse`, 200-row table) | **121 tokens instead of 15,704** for a Playwright snapshot, 129.8× smaller. Tiny forms lose 2.3×. [Bench](./browse/BENCHMARK.md) |
-| Memory files like `CLAUDE.md` (`/caveman-compress`) | **46% smaller** across five fixtures, with every heading, code block, and path intact. [Bench](./skills/caveman-compress/README.md#benchmarks) |
+| Memory files like `CLAUDE.md` (`/caveman-compress`) | **4,138 tokens instead of 6,198** across five fixtures, 22.8% to 49.1% smaller per file, with every heading, code block, and path intact. [Bench](./skills/caveman-compress/README.md#benchmarks) |
 
-The rules add about 1,000 input tokens to every call. If you pay per request instead of per token (GitHub Copilot premium requests), a shorter answer costs the same, so skip it. Every case where caveman loses: [HONEST-NUMBERS.md](./docs/HONEST-NUMBERS.md).
+The `/caveman` rules are about 1,160 tokens of text (tiktoken count). What that adds to your bill depends on caching; not measured yet. If you pay per request instead of per token (GitHub Copilot premium requests), a shorter answer costs the same, so skip it. Every case where caveman loses: [HONEST-NUMBERS.md](./docs/HONEST-NUMBERS.md).
 
 ## Big rock: the proxy
 
