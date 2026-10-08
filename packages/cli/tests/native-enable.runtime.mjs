@@ -1782,10 +1782,10 @@ test("enable claude installs the voice skills and discloses the write", async ()
 
   const disabled = await run(["disable", "claude"], fx.env);
   assert.equal(disabled.code, 0, disabled.stderr);
+  // disable turns off routing and hooks; the skills are the user's and stay.
   for (const name of ["caveman", "ultracave", "megacave"]) {
-    assert.equal(existsSync(dirname(fx.skill(name))), false, `${name} dir must be removed`);
+    assert.match(readFileSync(fx.skill(name), "utf8"), new RegExp(`^---\\nname: ${name}\\n`));
   }
-  assert.equal(existsSync(join(fx.home, ".caveman", "integrations", "claude.voice-skills.json")), false);
 });
 
 test("enable codex installs the voice skills under CODEX_HOME; hermes installs none", async () => {
@@ -1812,20 +1812,7 @@ test("a pre-existing voice skill is never clobbered and survives disable", async
   assert.ok(existsSync(fx.skill("ultracave")));
   assert.equal((await run(["disable", "claude"], fx.env)).code, 0);
   assert.equal(readFileSync(fx.skill("caveman"), "utf8"), "mine\n");
-  assert.equal(existsSync(fx.skill("ultracave")), false);
-});
-
-test("disable removes unchanged voice skills and keeps an edited one", async () => {
-  const fx = voiceFixture();
-  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
-  writeFileSync(fx.skill("ultracave"), "edited by user\n");
-  writeFileSync(join(dirname(fx.skill("megacave")), "notes.md"), "sibling\n");
-  const disabled = await run(["disable", "claude"], fx.env);
-  assert.equal(disabled.code, 0, disabled.stderr);
-  assert.equal(existsSync(fx.skill("caveman")), false);
-  assert.equal(readFileSync(fx.skill("ultracave"), "utf8"), "edited by user\n");
-  assert.equal(existsSync(fx.skill("megacave")), false);
-  assert.ok(existsSync(join(dirname(fx.skill("megacave")), "notes.md")), "non-empty skill dir must be preserved");
+  assert.ok(existsSync(fx.skill("ultracave")));
 });
 
 test("editing or deleting a voice skill never degrades the integration or blocks enable", async () => {
@@ -1846,8 +1833,6 @@ test("editing or deleting a voice skill never degrades the integration or blocks
 test("enable on an install that predates voice skills picks them up once", async () => {
   const fx = voiceFixture();
   assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
-  assert.equal((await run(["disable", "claude"], fx.env)).code, 0);
-  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
   rmSync(join(fx.configDir, "skills"), { recursive: true });
   unlinkSync(join(fx.home, ".caveman", "integrations", "claude.voice-skills.json"));
   const again = await run(["enable", "claude"], fx.env);
@@ -1864,36 +1849,6 @@ test("a voice-skill write failure does not fail enable", async () => {
   assert.equal(enabled.code, 0, enabled.stderr);
   assert.match(enabled.stderr, /voice skills not installed/);
   assert.equal(JSON.parse((await run(["doctor", "claude"], fx.env)).stdout).state, "installed");
-});
-
-test("disable keeps a symlinked skill, clears a self-deleted one's dir and always drops the record", async () => {
-  const fx = voiceFixture();
-  const record = join(fx.home, ".caveman", "integrations", "claude.voice-skills.json");
-  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
-  // Byte-identical target behind a user symlink: still the user's.
-  const dotfile = join(fx.home, "dotfiles-caveman.md");
-  writeFileSync(dotfile, readFileSync(fx.skill("caveman")));
-  unlinkSync(fx.skill("caveman"));
-  symlinkSync(dotfile, fx.skill("caveman"));
-  unlinkSync(fx.skill("megacave"));
-  // A tampered entry must not reach outside the suite's SKILL.md files.
-  const outside = join(fx.home, "keep.txt");
-  writeFileSync(outside, "keep\n");
-  const parsed = JSON.parse(readFileSync(record, "utf8"));
-  parsed.files.push({ file: outside, sha256: "0" }, "garbage");
-  writeFileSync(record, JSON.stringify(parsed));
-
-  const disabled = await run(["disable", "claude"], fx.env);
-  assert.equal(disabled.code, 0, disabled.stderr);
-  assert.ok(lstatSync(fx.skill("caveman")).isSymbolicLink());
-  assert.equal(existsSync(dirname(fx.skill("megacave"))), false);
-  assert.equal(existsSync(dirname(fx.skill("ultracave"))), false);
-  assert.equal(readFileSync(outside, "utf8"), "keep\n");
-  assert.equal(existsSync(record), false);
-
-  // Record gone, so the next enable installs again instead of silently skipping.
-  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
-  assert.ok(existsSync(fx.skill("ultracave")));
 });
 
 test("enable codex skips a voice skill the Skills CLI already put in ~/.agents/skills", async () => {

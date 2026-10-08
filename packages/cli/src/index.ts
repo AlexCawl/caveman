@@ -21,7 +21,6 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  rmdirSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -8839,10 +8838,11 @@ function nativeMutationsFor(agent: NativeAgent, gw: string, mcpBinary: string | 
 }
 
 // Voice skills (`output` suite) ride along with a Claude/Codex native install so
-// `/caveman` exists after `caveman <agent>`. Ownership lives in a sidecar, NOT in
-// the native journal: journal operations feed `nativeIntegrationStatus`, where an
-// edited or deleted file reads `degraded` and blocks enable. A skill the user
-// edits, pixelizes or deletes must never do that.
+// `/caveman` exists after `caveman <agent>`. They are NOT native-journal
+// operations: those feed `nativeIntegrationStatus`, where an edited or deleted
+// file reads `degraded` and blocks enable, and `disable` restores them away. A
+// skill is the user's once written: `disable` turns off routing and hooks and
+// leaves it. The sidecar only marks that the install already ran.
 function nativeVoiceSkillsRecordPath(agent: NativeAgent): string {
   return join(cavemanHome(), "integrations", `${agent}.voice-skills.json`);
 }
@@ -8855,7 +8855,7 @@ function installNativeVoiceSkills(agent: NativeAgent): void {
     const record = nativeVoiceSkillsRecordPath(agent);
     if (existsSync(record)) return;
     const root = join(agent === "claude" ? claudeConfigDir() : codexHomeDir(), "skills");
-    const files: Array<{ file: string; sha256: string }> = [];
+    const files: string[] = [];
     let failure: unknown;
     try {
       for (const name of AGENT_SKILL_SUITES.output ?? []) {
@@ -8873,48 +8873,16 @@ function installNativeVoiceSkills(agent: NativeAgent): void {
           try { unlinkSync(file); } catch { /* nothing landed */ }
           throw error;
         }
-        files.push({ file, sha256: bytesHash(body) });
+        files.push(file);
       }
     } catch (error) { failure = error; }
-    // Record whatever landed so disable can still remove it; a total failure
-    // leaves no record and is retried by the next enable.
+    // A total failure leaves no record and is retried by the next enable.
     if (files.length > 0 || !failure) atomicWriteFile(record, Buffer.from(JSON.stringify({ files }, null, 2) + "\n"));
     if (failure) throw failure;
-    if (files.length > 0) process.stderr.write(`  voice skills: ${files.map((item) => item.file).join(", ")}\n`);
+    if (files.length > 0) process.stderr.write(`  voice skills: ${files.join(", ")}\n`);
   } catch (error) {
     process.stderr.write(dim(`→ voice skills not installed: ${(error as Error).message}\n`));
   }
-}
-
-// Removes only files the record names that still hold the bytes we wrote. The
-// record always goes, even when a file could not be removed: a leftover record
-// would make every later enable skip the install, and an unowned file is the
-// safe direction.
-function removeNativeVoiceSkills(agent: NativeAgent): void {
-  const record = nativeVoiceSkillsRecordPath(agent);
-  try {
-    const bytes = fileBytes(record);
-    if (!bytes) return;
-    const files: unknown = (JSON.parse(bytes.toString("utf8")) as { files?: unknown }).files;
-    for (const item of Array.isArray(files) ? files : []) {
-      try {
-        const { file, sha256 } = item as { file?: unknown; sha256?: unknown };
-        // The record is user-writable: only ever touch a suite skill's SKILL.md.
-        if (typeof file !== "string" || basename(file) !== "SKILL.md" || !(AGENT_SKILL_SUITES.output ?? []).includes(basename(dirname(file)))) continue;
-        if (existsSync(file)) {
-          // A symlink the user put here is theirs even if its target matches.
-          if (!lstatSync(file).isFile() || bytesHash(readFileSync(file)) !== sha256) continue;
-          unlinkSync(file);
-        }
-        try { rmdirSync(dirname(file)); } catch { /* non-empty: preserve */ }
-      } catch (error) {
-        process.stderr.write(dim(`→ voice skill not removed: ${(error as Error).message}\n`));
-      }
-    }
-  } catch (error) {
-    process.stderr.write(dim(`→ voice skills not removed: ${(error as Error).message}\n`));
-  }
-  try { unlinkSync(record); } catch { /* absent */ }
 }
 
 function enableNative(argv: string[]) {
@@ -9418,12 +9386,10 @@ function disableNativeAgent(target: NativeAgent, allClaudeProfiles = false): boo
     const journal = readNativeJournal(target);
     if (target === "claude" && allClaudeProfiles) {
       const changed = restoreNativeJournalFiles(journal, true);
-      removeNativeVoiceSkills(target);
       return changed.length > 0 ? { journal, files: changed.length } : undefined;
     }
     if (!journal) return undefined;
     restoreNativeJournalFiles(journal);
-    removeNativeVoiceSkills(target);
     return { journal, files: journal.operations.length };
   });
   if (!disabled) {

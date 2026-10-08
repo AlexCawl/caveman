@@ -117,7 +117,7 @@ On Claude Code and Codex, the first `caveman <agent>` run (or
 `caveman enable <agent>` on an existing install) also writes the voice skills
 (`caveman`, `ultracave`, `megacave`) into the agent's user skills directory, so
 `/caveman` is available. An existing `SKILL.md` is never overwritten, and
-`caveman disable <agent>` removes only unedited copies.
+`caveman disable <agent>` leaves the skills in place.
 
 The npm CLI requires Node.js 22.13 or newer. Caveman exposes ten native agent
 shortcuts: `aider`, `claude`, `codex`, `gemini`, `hermes`, `kilo` (`kilocode`
