@@ -55,7 +55,15 @@ function resolvedNodeArg(shell, command, claudePluginRoot) {
 // Resolve a tool against the caller's PATH, so a test can hand the hook a PATH
 // that lacks node without also losing the shell that runs it.
 function which(tool) {
-  return spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+  // Git Bash reports /usr/bin paths, which Windows' process launcher cannot
+  // execute once the child PATH has been replaced by the no-node fixture.
+  const command = process.platform === 'win32'
+    ? `cygpath -w "$(command -v ${tool})"`
+    : `command -v ${tool}`;
+  const result = spawnSync('sh', ['-c', command], { encoding: 'utf8' });
+  assert.equal(result.status, 0, `could not locate ${tool}: ${result.stderr}`);
+  assert.ok(result.stdout.trim(), `could not locate ${tool}`);
+  return result.stdout.trim();
 }
 
 for (const hookName of ['SessionStart', 'SubagentStart', 'UserPromptSubmit', 'SessionEnd']) {
