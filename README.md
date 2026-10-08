@@ -22,7 +22,7 @@
 Cited by **[Adobe Research](https://arxiv.org/abs/2606.24083)** · A/B tested by **[JetBrains](https://blog.jetbrains.com/ai/2026/07/speak-to-ai-agents-like-cavemen-tosave-tokens/)** · Remade for Elasticsearch on **[Elasticsearch Labs](https://www.elastic.co/search-labs/blog/elastic-caveman-ai-token-reduction)**<br>
 **#1** on [Hacker News](https://news.ycombinator.com/item?id=47647455) · **#1** on GitHub Trending · *"No way this actually works."* [ThePrimeagen](https://www.youtube.com/watch?v=L29q2LRiMRc)
 
-**[How it talks](#how-caveman-talks) · [Install](#install) · [The numbers](#the-numbers) · [The proxy](#big-rock-the-proxy) · [What you get](#what-you-get) · [In the wild](#in-the-wild)**
+**[How it talks](#how-caveman-talks) · [Install](#install) · [The numbers](#the-numbers) · [The proxy](#big-rock-the-proxy) · [The skill](#small-rock-the-skill) · [What you get](#what-you-get) · [In the wild](#in-the-wild)**
 
 </div>
 
@@ -79,57 +79,13 @@ Every reply runs a check before it sends: opener that announces the plan, delete
 ## Install
 
 ```bash
-npx skills add JuliusBrussee/caveman -g
-```
-
-Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [30+ more](./INSTALL.md). Type `/caveman` (`$caveman` in Codex) if it doesn't start on its own. Say `stop caveman` to go back. One rock. That it.
-
-Want big rock too? [The proxy](#big-rock-the-proxy) shrinks what the agent **reads**: 33.2% fewer input tokens, same answers. Needs Node.js 22.13+.
-
-```bash
 npm install -g @caveman-ai/cli && caveman setup --install
 caveman claude        # or codex · gemini · aider · kilo · qwen · opencode · hermes · openclaw · pi
 ```
 
-<details>
-<summary><strong>Other ways in</strong>: Claude app and phone, Claude Code plugin, Gemini, every agent at once, Windows, uninstall</summary>
+**This is the proxy, the big rock.** Your agent reads 33.2% fewer input tokens across whole sessions, same answers. It runs on your machine, with your keys and your Claude Pro/Max login. Needs Node.js 22.13+. After the first run, plain `claude` stays caveman'd. One rock. That it.
 
-<br>
-
-Claude on the web, the phone app, or Cowork? No terminal. Add caveman to your Claude account once, in Customize > Plugins: [steps](./INSTALL.md#claude-apps-claudeai-desktop-mobile-cowork). Not tested end to end yet.
-
-```bash
-# Claude Code plugin, auto-starts every interactive session, subagents too
-claude plugin marketplace add JuliusBrussee/caveman && claude plugin install caveman@caveman
-
-# Gemini CLI
-gemini extensions install https://github.com/JuliusBrussee/caveman
-
-# Every agent on your machine at once, plus the Claude Code statusline badge (Node.js 22.13+)
-curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.2.0/install.sh | bash
-```
-
-Already inside Claude Code? Same rock, slash form. Type these where you talk to Claude:
-
-```text
-/plugin marketplace add JuliusBrussee/caveman
-/plugin install caveman@caveman
-```
-
-Windows, PowerShell 5.1+:
-
-```powershell
-irm https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.2.0/install.ps1 | iex
-```
-
-On npm 12 or newer, new npm block git install. One-liners above handle it themselves from v3.2.0 on. Old one-liner pinned to v3.1.0 or older still fail there: use one above, or this:
-`npx --allow-git=root -y github:JuliusBrussee/caveman#v3.2.0`
-
-Changed your mind: `npx -y github:JuliusBrussee/caveman -- --uninstall` (on npm 12+, add `--allow-git=root` too)
-
-Install broke? Open your agent in this repo and say *"Read CLAUDE.md and INSTALL.md, install caveman for me."* Agent fix own brain.
-
-</details>
+[What the proxy does](#big-rock-the-proxy) · Only want shorter answers? [Get just the skill](#small-rock-the-skill)
 
 ## The numbers
 
@@ -186,12 +142,7 @@ The `/caveman` rules are about 1,160 tokens of text (tiktoken count). What that 
 
 The skill shrinks what the agent **says**. The proxy shrinks what it **reads**: logs, test output, JSON, diffs, web pages. It runs on your machine, with your keys and your Claude Pro/Max login. Every original stays on your disk, and the agent can pull it back any time.
 
-```bash
-npm install -g @caveman-ai/cli && caveman setup --install
-caveman claude        # or codex · gemini · aider · kilo · qwen · opencode · hermes · openclaw · pi
-```
-
-Then:
+Installed it [above](#install)? Then:
 
 ```bash
 caveman learn                 # rank where your tokens go, from agent history already on disk
@@ -215,6 +166,58 @@ pip install 'caveman-middleware[langchain]' caveman-sdk   # Python 3.11+
 ```
 
 [TypeScript guide](./packages/middleware/typescript/README.md) · [Python guide](./packages/middleware/python/README.md) · [Every framework](https://docs.caveman.so/docs/sdk/middleware/frameworks) · [One container for the whole team](docs/technical/deploy.md)
+
+## Small rock: the skill
+
+**Only want shorter answers? This is output compression alone. No proxy.**
+
+```bash
+npx skills add JuliusBrussee/caveman -g
+```
+
+<a href="https://skills.sh/JuliusBrussee/caveman"><img src="https://skills.sh/b/JuliusBrussee/caveman" alt="skills.sh"></a>
+
+Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [30+ more](./INSTALL.md). Type `/caveman` (`$caveman` in Codex) if it doesn't start on its own. Say `stop caveman` to go back.
+
+<details>
+<summary><strong>Other ways in</strong>: Claude app and phone, Claude Code plugin, Gemini, every agent at once, Windows, uninstall</summary>
+
+<br>
+
+Claude on the web, the phone app, or Cowork? No terminal. Add caveman to your Claude account once, in Customize > Plugins: [steps](./INSTALL.md#claude-apps-claudeai-desktop-mobile-cowork). Not tested end to end yet.
+
+```bash
+# Claude Code plugin, auto-starts every interactive session, subagents too
+claude plugin marketplace add JuliusBrussee/caveman && claude plugin install caveman@caveman
+
+# Gemini CLI
+gemini extensions install https://github.com/JuliusBrussee/caveman
+
+# Every agent on your machine at once, plus the Claude Code statusline badge (Node.js 22.13+)
+curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.2.0/install.sh | bash
+```
+
+Already inside Claude Code? Same rock, slash form. Type these where you talk to Claude:
+
+```text
+/plugin marketplace add JuliusBrussee/caveman
+/plugin install caveman@caveman
+```
+
+Windows, PowerShell 5.1+:
+
+```powershell
+irm https://raw.githubusercontent.com/JuliusBrussee/caveman/v3.2.0/install.ps1 | iex
+```
+
+On npm 12 or newer, new npm block git install. One-liners above handle it themselves from v3.2.0 on. Old one-liner pinned to v3.1.0 or older still fail there: use one above, or this:
+`npx --allow-git=root -y github:JuliusBrussee/caveman#v3.2.0`
+
+Changed your mind: `npx -y github:JuliusBrussee/caveman -- --uninstall` (on npm 12+, add `--allow-git=root` too)
+
+Install broke? Open your agent in this repo and say *"Read CLAUDE.md and INSTALL.md, install caveman for me."* Agent fix own brain.
+
+</details>
 
 ## What you get
 
