@@ -122,7 +122,9 @@ def main():
                         detail = (root / "proxy.log").read_text(encoding="utf-8", errors="replace")[-1000:]
                         raise ValueError(f"published proxy did not become healthy: {detail}")
                     time.sleep(0.1)
-                child = "fetch(process.env.CAVE_GATEWAY_URL+'/health/live').then(r=>{if(!r.ok)process.exit(1);console.log('release-wrap-ok')})"
+                child = ("const base=process.env.OPENAI_BASE_URL;"
+                         "if(!base||base!==process.env.CAVE_GATEWAY_URL)process.exit(2);"
+                         "fetch(base+'/health/live').then(r=>{if(!r.ok)process.exit(1);console.log('release-wrap-ok')})")
                 wrapped = run([*cli, "wrap", "--off", node, "-e", child])
                 state = json.loads(run([str(proxy), "status", "--json", "--port", str(port)]).stdout)
                 if b"release-wrap-ok" not in wrapped.stdout or state.get("mode") != "record":
