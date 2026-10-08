@@ -26,7 +26,7 @@ workflow rejects a tag whose version differs from the package metadata.
 | `pi-v*` | npm `@caveman-ai/pi` | `0.3.0` | `0.3.0` | No |
 | `bin-v*` | Go binaries and container image | `bin-v2.1.0` | `bin-v2.1.0` (pinned in `packages/cli/BINARY_RELEASE`) | Yes, with the binaries |
 | `cli-v*` | npm `@caveman-ai/cli` | `2.1.0` | `2.1.0` | No |
-| `v*` | Caveman product (installer, plugin, skills) | `v3.1.0` | `v3.2.0` | Yes, "Latest" |
+| `v*` | Caveman product (installer, plugin, skills) | `v3.2.0` | `v3.2.0` | Yes, "Latest" |
 
 `tests/verify_repo.py` checks that each SDK and middleware package's version,
 version constant (`SDK_VERSION`, `MIDDLEWARE_VERSION`), and top `CHANGELOG.md`
