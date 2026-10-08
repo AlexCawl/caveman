@@ -84,6 +84,13 @@ npx skills add JuliusBrussee/caveman -g
 
 Works in Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Copilot, and [30+ more](./INSTALL.md). Type `/caveman` if it doesn't start on its own. Say `stop caveman` to go back. One rock. That it.
 
+Want big rock too? [The proxy](#big-rock-the-proxy) shrinks what the agent **reads**: 33.2% fewer input tokens, same answers. Needs Node.js 22.13+.
+
+```bash
+npm install -g @caveman-ai/cli && caveman setup --install
+caveman claude        # or codex · gemini · aider · kilo · qwen · opencode · hermes · openclaw · pi
+```
+
 <details>
 <summary><strong>Other ways in</strong>: Claude Code plugin, Gemini, every agent at once, Windows, uninstall</summary>
 
