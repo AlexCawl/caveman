@@ -19,6 +19,8 @@ function fixture(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(join(root, 'src/hooks'), join(dir, 'src/hooks'), { recursive: true });
   cpSync(join(root, 'skills'), join(dir, 'skills'), { recursive: true });
+  mkdirSync(join(dir, 'scripts'));
+  cpSync(join(root, 'scripts/run-claude-hook.sh'), join(dir, 'scripts/run-claude-hook.sh'));
   const project = join(dir, 'consumer project');
   mkdirSync(project);
   const env = { ...process.env, HOME: dir, USERPROFILE: dir,
@@ -29,6 +31,8 @@ function fixture(t) {
   const payloadFor = (event, payload) => ({ session_id: 'session-a', cwd: project,
     hook_event_name: event, source: 'startup', prompt: 'ordinary request', ...payload });
   const run = (event, payload = {}, extraEnv = {}, command) => {
+    // Codex expands plugin placeholders before passing the command to the shell.
+    command = command?.replaceAll('${PLUGIN_ROOT}', env.PLUGIN_ROOT);
     const result = spawnSync(command ? (process.platform === 'win32' ? 'cmd.exe' : 'sh') : process.execPath,
       command ? (process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command]) : [pathFor(event)], {
         // Payload cwd owns project config, even when the process starts elsewhere.
@@ -51,8 +55,8 @@ test('plugin manifests use the same handlers with host-specific inline schemas',
   for (const [event, script] of Object.entries(scripts)) {
     const a = claude.hooks[event][0].hooks[0];
     const b = codex.hooks.hooks[event][0].hooks[0];
-    assert.equal(a.command, b.command);
-    assert.ok(a.command.includes(script));
+    assert.equal(a.command, 'sh "${CLAUDE_PLUGIN_ROOT}/scripts/run-claude-hook.sh" ' + script);
+    assert.equal(b.command, 'node "${PLUGIN_ROOT}/src/hooks/' + script + '"');
     assert.equal(a.timeout, 30);
     assert.equal(b.timeout, 5);
   }
@@ -71,6 +75,20 @@ test('inline commands run outside the repository, from a path with spaces', t =>
   assert.match(f.run('SessionStart', {}, {}, start), /Caveman is a voice, not broken grammar\./);
   assert.match(f.run('UserPromptSubmit', { prompt: '$caveman:ultracave fix this bug' }, {}, prompt), /grammar stripped/);
   assert.equal(f.mode(), 'ultracave');
+});
+
+test('Claude launcher runs both shared handlers from a path with spaces', t => {
+  const f = fixture(t);
+  for (const event of Object.keys(scripts)) {
+    const command = claude.hooks[event][0].hooks[0].command;
+    const result = spawnSync('sh', ['-c', command], {
+      cwd: f.project, env: { ...f.env, PLUGIN_DATA: '', CAVEMAN_DEFAULT_MODE: 'caveman' },
+      input: JSON.stringify(f.payloadFor(event, {})), encoding: 'utf8', timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /CAVEMAN MODE ACTIVE/);
+  }
+  assert.equal(existsSync(f.env.PLUGIN_DATA), false);
 });
 
 test('default resolution uses env, payload project config, then user config', t => {
