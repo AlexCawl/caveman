@@ -16,17 +16,17 @@ provenance and PyPI attestations automatically.
 Tags must be annotated, GitHub-verified, and point to a commit on `main`. The
 workflow rejects a tag whose version differs from the package metadata.
 
-| Tag | Artifact | Latest published (2026-10-06) | In this branch (Caveman 3.2.0) | GitHub Release |
+| Tag | Artifact | Latest published (2026-10-07) | Version in main (Caveman 3.2.0) | GitHub Release |
 |---|---|---|---|---|
 | `sdk-ts-v*` | npm `@caveman-ai/sdk` | `1.2.0` | `1.2.0` | Yes |
 | `sdk-python-v*` | PyPI `caveman-sdk` | `1.2.0` | `1.2.0` | Yes |
-| `middleware-ts-v*` | npm `@caveman-ai/middleware` | `1.0.0` | `1.0.1` | Yes |
+| `middleware-ts-v*` | npm `@caveman-ai/middleware` | `1.0.1` | `1.0.1` | Yes |
 | `middleware-python-v*` | PyPI `caveman-middleware` | `1.0.0` | `1.0.0` | Yes |
 | `contracts-v*` | npm `@caveman-ai/contracts` | `2.0.0` | `2.0.0` | Yes |
-| `pi-v*` | npm `@caveman-ai/pi` | `0.1.1` (`pi-v0.2.0` tagged, not on npm) | `0.3.0` | No |
-| `bin-v*` | Go binaries and container image | `bin-v2.0.2` | `bin-v2.1.0` (pinned in `packages/cli/BINARY_RELEASE`) | Yes, with the binaries |
-| `cli-v*` | npm `@caveman-ai/cli` | `2.0.1` | `2.1.0` | No |
-| `v*` | Caveman product (installer, plugin, skills) | `v3.1.0` | `v3.2.0` | Yes, "Latest" |
+| `pi-v*` | npm `@caveman-ai/pi` | `0.3.0` | `0.3.0` | No |
+| `bin-v*` | Go binaries and container image | `bin-v2.1.0` | `bin-v2.1.0` (pinned in `packages/cli/BINARY_RELEASE`) | Yes, with the binaries |
+| `cli-v*` | npm `@caveman-ai/cli` | `2.1.0` | `2.1.0` | No |
+| `v*` | Caveman product (installer, plugin, skills) | `v3.2.0` | `v3.2.0` | Yes, "Latest" |
 
 `tests/verify_repo.py` checks that each SDK and middleware package's version,
 version constant (`SDK_VERSION`, `MIDDLEWARE_VERSION`), and top `CHANGELOG.md`
@@ -113,8 +113,8 @@ under `release-<major>.x` instead. A prerelease publishes under its channel,
 `npm install <package>` never resolves a prerelease once the package has a
 stable version, and never moves backwards.
 
-`@caveman-ai/middleware@latest` still points at `0.1.0-alpha.2`, published
-before this rule. It moves to `1.0.0` when that ships (`1.0.0` is greater).
+`@caveman-ai/middleware@latest` points at stable `1.0.1`. Its earlier
+`0.1.0-alpha.2` publication remains available by exact version.
 
 PyPI has no dist-tags: pip skips prereleases (`0.1.0a1`) unless the user pins
 one or passes `--pre`.
@@ -503,6 +503,15 @@ release notes):
 Do not flip public install commands until each registry endpoint resolves to this
 project from clean environments. Prove exact version, package owner/repository,
 fresh install, and import. Provider spend is outside release workflow.
+
+For the CLI, dispatch `release-smoke.yml` with the exact published `cli-version`
+and expected `binary-tag`. Its macOS ARM, Linux x64 and Windows x64 jobs run
+`.blocks/release-smoke.py` in temporary homes without inherited credentials.
+Each job installs the registry package, verifies its version and binary pin,
+installs the signed companions, checks record-mode wrapping against the published
+proxy, compresses and retrieves byte-exact content, then uninstalls the npm
+package while preserving an unrelated configuration file. The block also runs
+locally with `--version`, `--binary-tag` and `--repo`; it cleans up its proxy and home.
 
 If smoke fails, deprecate affected npm version or yank PyPI release, remove public
 install command, fix forward with new version, and preserve failed artifact and
