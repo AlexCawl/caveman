@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isolatedCliEnv } from "./_cli.mjs";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
 
@@ -53,6 +55,12 @@ if (process.argv[2] === "shrink-hook") {
   const env = {
     ...process.env,
     HOME: home,
+    USERPROFILE: home,
+    CLAUDE_CONFIG_DIR: "",
+    CODEX_HOME: "",
+    GEMINI_CLI_HOME: "",
+    HERMES_HOME: "",
+    XDG_CONFIG_HOME: join(home, ".config"),
     CAVEMAN_HOME: join(home, ".caveman"),
     CAVEMAN_MCP_BIN: mcp,
     CAVEMAN_PROXY_BIN: proxy,
@@ -296,6 +304,14 @@ test("enable codex after a binary path change keeps one caveman hook per event",
 // be recomputed, never let a stray inherited value survive into the spawned
 // proxy's env, and CAVEMAN_PROXY_OWNER must be "wrap" (the hook-revived
 // proxy's 30-minute-idle-exit lifecycle), not the immortal one "start" gets.
+async function unusedGateway() {
+  const server = createServer();
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  await new Promise((resolve) => server.close(resolve));
+  return url;
+}
+
 test("enable codex spawns the local proxy with explicit recovery/owner, not inherited env", async () => {
   const fx = fixture();
   const spawnLog = join(fx.home, "proxy-spawn.log");
@@ -304,7 +320,8 @@ test("enable codex spawns the local proxy with explicit recovery/owner, not inhe
   // the fixture's caveman-mcp stub reports mcp_recovery, so the correctly
   // recomputed value is "mcp"; this planted value is neither that nor empty,
   // so it only proves anything if it does NOT show up in the log.
-  const env = { ...fx.env, CAVEMAN_PROXY_SPAWN_LOG: spawnLog, CAVEMAN_RECOVERY: "stale-leaked-value" };
+  const gateway = await unusedGateway();
+  const env = { ...fx.env, CAVE_GATEWAY_URL: gateway, CAVEMAN_PROXY_SPAWN_LOG: spawnLog, CAVEMAN_RECOVERY: "stale-leaked-value" };
   mkdirSync(join(fx.home, ".codex"), { recursive: true });
 
   const out = await run(["enable", "codex"], env);
@@ -317,7 +334,7 @@ test("enable codex spawns the local proxy with explicit recovery/owner, not inhe
   }
   assert.ok(existsSync(spawnLog), "enable never spawned the local proxy");
   const logged = readFileSync(spawnLog, "utf8").trim();
-  assert.match(logged, /listen=127\.0\.0\.1:8787\b/, "spawned proxy must listen where config.toml just routed Codex to");
+  assert.ok(logged.includes(`listen=${new URL(gateway).host} `), "spawned proxy must listen where config.toml just routed Codex to");
   assert.match(logged, /recovery=mcp\b/, "CAVEMAN_RECOVERY must be recomputed from the current MCP install, not inherited");
   assert.doesNotMatch(logged, /stale-leaked-value/, "a stray parent-env CAVEMAN_RECOVERY must never survive into the spawn");
   assert.match(logged, /owner=wrap\b/, "enable's proxy must share the hook-revived (wrap) lifecycle, not the immortal one \"start\" gets");
@@ -330,6 +347,7 @@ test("enable codex spawns the local proxy with explicit recovery/owner, not inhe
 // command does.
 test("a second enable still starts the proxy when nothing is listening", async () => {
   const fx = fixture();
+  fx.env.CAVE_GATEWAY_URL = await unusedGateway();
   mkdirSync(join(fx.home, ".codex"), { recursive: true });
 
   const first = await run(["enable", "codex"], fx.env);
@@ -345,7 +363,7 @@ test("a second enable still starts the proxy when nothing is listening", async (
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.ok(existsSync(spawnLog), "a repeated enable must still revive a dead proxy");
-  assert.match(readFileSync(spawnLog, "utf8").trim(), /listen=127\.0\.0\.1:8787\b/);
+  assert.ok(readFileSync(spawnLog, "utf8").includes(`listen=${new URL(fx.env.CAVE_GATEWAY_URL).host} `));
 });
 
 // Every other spawn site (agentShortcut, the native hook) gates on !opts.noProxy.
@@ -662,9 +680,10 @@ test("a shrink entry an earlier install left behind does not survive think.shrin
   const doctor = await run(["doctor", "claude"], fx.env);
   assert.equal(JSON.parse(doctor.stdout).state, "installed");
 
-  // ...and `disable` still restores the host file it found, stale entry included.
+  // Disable withdraws stale Caveman hooks too; restoring the old hook would
+  // silently re-enable part of the runtime the user explicitly turned off.
   assert.equal((await run(["disable", "claude"], fx.env)).code, 0);
-  assert.match(readFileSync(settingsPath, "utf8"), /shrink-hook/);
+  assert.doesNotMatch(readFileSync(settingsPath, "utf8"), /shrink-hook/);
 });
 
 test("the degraded gate names the repair that actually repairs", async () => {
@@ -894,6 +913,112 @@ test("disable --all removes every journaled integration and preserves unrelated 
   assert.equal(JSON.parse(readFileSync(claudePath, "utf8")).theme, "keep");
   assert.match(readFileSync(codexPath, "utf8"), /approval_policy = "never"/);
   assert.doesNotMatch(readFileSync(codexPath, "utf8"), /caveman:native/);
+});
+
+for (const args of [[], ["claude"], ["--all"]]) {
+  test(`disable ${args.join(" ")} clears orphaned Claude profiles without a journal`, async () => {
+    const fx = fixture();
+    const custom = join(fx.home, "accounts", "work");
+    const profiles = [".claude", ".claude-max20", ".claude_max5"].map((name) => join(fx.home, name));
+    profiles.push(custom);
+    const native = { type: "command", command: "'/deleted/test/bin/caveman-proxy' native-hook claude --adapter '/deleted/test/native-hook-fast.js'" };
+    const keep = { type: "command", command: "caveman-blocks hook --harness claude" };
+    for (const root of profiles) {
+      mkdirSync(root, { recursive: true });
+      writeFileSync(join(root, "settings.json"), JSON.stringify({
+        theme: "keep", env: { KEEP: "yes", ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/w/claude", _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1", ANTHROPIC_API_KEY: "sk-ant-preserve" },
+        hooks: { SessionStart: [{ matcher: "startup", hooks: [native, keep] }] },
+      }));
+      writeFileSync(join(root, "settings.local.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.caveman.so/w/claude", ANTHROPIC_AUTH_TOKEN: "cave_live_fixture" } }));
+      writeFileSync(join(root, ".claude.json"), JSON.stringify({ mcpServers: { caveman: { command: "/deleted/test/caveman-mcp" }, other: { command: "keep" } } }));
+    }
+    const alias = join(fx.home, ".claude-alias");
+    mkdirSync(alias);
+    symlinkSync(join(profiles[0], "settings.json"), join(alias, "settings.json"));
+    const env = { ...fx.env, CLAUDE_CONFIG_DIR: custom };
+    const out = await run(["disable", ...args], env);
+    assert.equal(out.code, 0, out.stderr);
+    assert.match(out.stderr, /Restart running Claude sessions/);
+    for (const root of profiles) {
+      assert.deepEqual(JSON.parse(readFileSync(join(root, "settings.json"), "utf8")), {
+        theme: "keep", env: { KEEP: "yes", ANTHROPIC_API_KEY: "sk-ant-preserve" },
+        hooks: { SessionStart: [{ matcher: "startup", hooks: [keep] }] },
+      });
+      assert.deepEqual(JSON.parse(readFileSync(join(root, "settings.local.json"), "utf8")), {});
+      assert.deepEqual(JSON.parse(readFileSync(join(root, ".claude.json"), "utf8")), { mcpServers: { other: { command: "keep" } } });
+    }
+    assert.equal(lstatSync(join(alias, "settings.json")).isSymbolicLink(), true);
+    const backupRoot = join(fx.home, ".caveman", "integrations", "backups");
+    const backups = readdirSync(backupRoot);
+    const manifest = JSON.parse(readFileSync(join(backupRoot, backups[0], "manifest.json"), "utf8"));
+    assert.equal(manifest.length, profiles.length * 3, "symlink aliases must be deduplicated");
+    assert.match(readFileSync(manifest[0].backup, "utf8"), /caveman/);
+    assert.equal((await run(["disable", ...args], env)).code, 0);
+    assert.deepEqual(readdirSync(backupRoot), backups, "second disable must make no changes");
+  });
+}
+
+test("disable discovers a previously enabled custom profile after its journal is lost", async () => {
+  const fx = fixture();
+  const custom = join(fx.home, "accounts", "work");
+  assert.equal((await run(["enable", "claude"], { ...fx.env, CLAUDE_CONFIG_DIR: custom })).code, 0);
+  unlinkSync(join(fx.home, ".caveman", "integrations", "claude.json"));
+  const out = await run(["disable", "claude"], fx.env);
+  assert.equal(out.code, 0, out.stderr);
+  assert.doesNotMatch(readFileSync(join(custom, "settings.json"), "utf8"), /ANTHROPIC_BASE_URL|native-hook|shrink-hook/);
+  assert.doesNotMatch(readFileSync(join(custom, ".claude.json"), "utf8"), /caveman-mcp/);
+});
+
+test("disable preserves foreign routes and MCP registrations while removing only runtime hooks", async () => {
+  const fx = fixture();
+  const root = join(fx.home, ".claude-work");
+  mkdirSync(root);
+  const env = { ANTHROPIC_BASE_URL: "https://other.example/v1", _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "0", ANTHROPIC_API_KEY: "sk-ant-preserve" };
+  writeFileSync(join(root, "settings.json"), `// user comment\n${JSON.stringify({ env, hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "caveman shrink-hook" }] }] } })}`);
+  const mcp = '{"mcpServers":{"caveman":{"command":"my-custom-server"}}}\n';
+  writeFileSync(join(root, ".claude.json"), mcp);
+  const out = await run(["disable", "claude"], fx.env);
+  assert.equal(out.code, 0, out.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "settings.json"), "utf8")), { env });
+  assert.equal(readFileSync(join(root, ".claude.json"), "utf8"), mcp);
+});
+
+test("disable preflights every profile before restoring a journal or changing any settings", async () => {
+  const fx = fixture();
+  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
+  const installed = readFileSync(join(fx.home, ".claude", "settings.json"), "utf8");
+  const bad = join(fx.home, ".claude-broken");
+  mkdirSync(bad);
+  writeFileSync(join(bad, "settings.json"), '{"env":');
+  const out = await run(["disable", "claude"], fx.env);
+  assert.notEqual(out.code, 0);
+  assert.equal(readFileSync(join(fx.home, ".claude", "settings.json"), "utf8"), installed);
+  assert.equal(readFileSync(join(bad, "settings.json"), "utf8"), '{"env":');
+  assert.ok(existsSync(join(fx.home, ".caveman", "integrations", "claude.json")));
+});
+
+test("native and shared fixtures isolate inherited Claude profiles from enable and disable", async () => {
+  const external = mkdtempSync(join(tmpdir(), "cave-real-profile-"));
+  const path = join(external, "settings.json");
+  const original = '{"env":{"ANTHROPIC_BASE_URL":"https://keep.example"}}\n';
+  writeFileSync(path, original);
+  const before = process.env.CLAUDE_CONFIG_DIR;
+  let shared;
+  try {
+    process.env.CLAUDE_CONFIG_DIR = external;
+    const fx = fixture();
+    shared = isolatedCliEnv({ PATH: fx.env.PATH, CAVEMAN_MCP_BIN: fx.env.CAVEMAN_MCP_BIN, CAVEMAN_PROXY_BIN: fx.env.CAVEMAN_PROXY_BIN });
+    for (const env of [fx.env, shared.env]) {
+      assert.equal((await run(["enable", "claude"], env)).code, 0);
+      assert.equal((await run(["disable"], env)).code, 0);
+      assert.equal(readFileSync(path, "utf8"), original);
+    }
+  } finally {
+    if (before === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = before;
+    shared?.cleanup();
+    rmSync(external, { recursive: true, force: true });
+  }
 });
 
 test("doctor --fix upgrades a stale native pack journal without losing later user edits", async () => {
@@ -1632,4 +1757,152 @@ test("doctor flags an opencode plugin whose baked invocation no longer exists an
   assert.equal(JSON.parse(fixed.stdout).fix.result, "repaired");
   assert.equal(JSON.parse(fixed.stdout).state, "installed");
   assert.doesNotMatch(readFileSync(pluginPath, "utf8"), /v26\.9\.0/);
+});
+
+// Voice skills ride along with the Claude/Codex native install. Explicit
+// CLAUDE_CONFIG_DIR: the fixture env inherits the host's, and this must never
+// land in a real config dir.
+function voiceFixture() {
+  const fx = fixture();
+  const configDir = join(fx.home, "claude-config");
+  const env = { ...fx.env, CLAUDE_CONFIG_DIR: configDir, CODEX_HOME: join(fx.home, "codex-home"), HERMES_HOME: "" };
+  const skill = (name, root = configDir) => join(root, "skills", name, "SKILL.md");
+  return { ...fx, env, configDir, skill };
+}
+
+test("enable claude installs the voice skills and discloses the write", async () => {
+  const fx = voiceFixture();
+  const enabled = await run(["enable", "claude"], fx.env);
+  assert.equal(enabled.code, 0, enabled.stderr);
+  for (const name of ["caveman", "ultracave", "megacave"]) {
+    assert.match(readFileSync(fx.skill(name), "utf8"), new RegExp(`^---\\nname: ${name}\\n`));
+    assert.ok(enabled.stderr.includes(fx.skill(name)), enabled.stderr);
+  }
+  assert.equal(existsSync(join(fx.home, ".claude", "skills")), false, "CLAUDE_CONFIG_DIR must be honored");
+
+  const disabled = await run(["disable", "claude"], fx.env);
+  assert.equal(disabled.code, 0, disabled.stderr);
+  for (const name of ["caveman", "ultracave", "megacave"]) {
+    assert.equal(existsSync(dirname(fx.skill(name))), false, `${name} dir must be removed`);
+  }
+  assert.equal(existsSync(join(fx.home, ".caveman", "integrations", "claude.voice-skills.json")), false);
+});
+
+test("enable codex installs the voice skills under CODEX_HOME; hermes installs none", async () => {
+  const fx = voiceFixture();
+  mkdirSync(join(fx.home, "codex-home"));
+  const codex = await run(["enable", "codex"], fx.env);
+  assert.equal(codex.code, 0, codex.stderr);
+  assert.ok(existsSync(fx.skill("caveman", join(fx.home, "codex-home"))));
+  assert.equal(existsSync(join(fx.home, ".codex", "skills")), false, "CODEX_HOME must be honored");
+  const hermes = await run(["enable", "hermes"], fx.env);
+  assert.equal(hermes.code, 0, hermes.stderr);
+  assert.doesNotMatch(hermes.stderr, /voice skills/);
+  assert.equal(existsSync(join(fx.home, ".caveman", "integrations", "hermes.voice-skills.json")), false);
+});
+
+test("a pre-existing voice skill is never clobbered and survives disable", async () => {
+  const fx = voiceFixture();
+  mkdirSync(dirname(fx.skill("caveman")), { recursive: true });
+  writeFileSync(fx.skill("caveman"), "mine\n");
+  const enabled = await run(["enable", "claude"], fx.env);
+  assert.equal(enabled.code, 0, enabled.stderr);
+  assert.equal(readFileSync(fx.skill("caveman"), "utf8"), "mine\n");
+  assert.equal(enabled.stderr.includes(fx.skill("caveman")), false, "must not claim a file it did not write");
+  assert.ok(existsSync(fx.skill("ultracave")));
+  assert.equal((await run(["disable", "claude"], fx.env)).code, 0);
+  assert.equal(readFileSync(fx.skill("caveman"), "utf8"), "mine\n");
+  assert.equal(existsSync(fx.skill("ultracave")), false);
+});
+
+test("disable removes unchanged voice skills and keeps an edited one", async () => {
+  const fx = voiceFixture();
+  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
+  writeFileSync(fx.skill("ultracave"), "edited by user\n");
+  writeFileSync(join(dirname(fx.skill("megacave")), "notes.md"), "sibling\n");
+  const disabled = await run(["disable", "claude"], fx.env);
+  assert.equal(disabled.code, 0, disabled.stderr);
+  assert.equal(existsSync(fx.skill("caveman")), false);
+  assert.equal(readFileSync(fx.skill("ultracave"), "utf8"), "edited by user\n");
+  assert.equal(existsSync(fx.skill("megacave")), false);
+  assert.ok(existsSync(join(dirname(fx.skill("megacave")), "notes.md")), "non-empty skill dir must be preserved");
+});
+
+test("editing or deleting a voice skill never degrades the integration or blocks enable", async () => {
+  const fx = voiceFixture();
+  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
+  writeFileSync(fx.skill("caveman"), "pixelized\n");
+  rmSync(dirname(fx.skill("megacave")), { recursive: true });
+  const doctor = await run(["doctor", "claude"], fx.env);
+  assert.equal(doctor.code, 0, doctor.stderr);
+  assert.equal(JSON.parse(doctor.stdout).state, "installed");
+  const again = await run(["enable", "claude"], fx.env);
+  assert.equal(again.code, 0, again.stderr);
+  assert.match(again.stderr, /already enabled/);
+  assert.equal(readFileSync(fx.skill("caveman"), "utf8"), "pixelized\n");
+  assert.equal(existsSync(fx.skill("megacave")), false, "a deleted skill is not written back");
+});
+
+test("enable on an install that predates voice skills picks them up once", async () => {
+  const fx = voiceFixture();
+  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
+  assert.equal((await run(["disable", "claude"], fx.env)).code, 0);
+  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
+  rmSync(join(fx.configDir, "skills"), { recursive: true });
+  unlinkSync(join(fx.home, ".caveman", "integrations", "claude.voice-skills.json"));
+  const again = await run(["enable", "claude"], fx.env);
+  assert.equal(again.code, 0, again.stderr);
+  assert.match(again.stderr, /already enabled/);
+  assert.ok(existsSync(fx.skill("caveman")));
+});
+
+test("a voice-skill write failure does not fail enable", async () => {
+  const fx = voiceFixture();
+  mkdirSync(fx.configDir, { recursive: true });
+  writeFileSync(join(fx.configDir, "skills"), "not a directory\n");
+  const enabled = await run(["enable", "claude"], fx.env);
+  assert.equal(enabled.code, 0, enabled.stderr);
+  assert.match(enabled.stderr, /voice skills not installed/);
+  assert.equal(JSON.parse((await run(["doctor", "claude"], fx.env)).stdout).state, "installed");
+});
+
+test("disable keeps a symlinked skill, clears a self-deleted one's dir and always drops the record", async () => {
+  const fx = voiceFixture();
+  const record = join(fx.home, ".caveman", "integrations", "claude.voice-skills.json");
+  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
+  // Byte-identical target behind a user symlink: still the user's.
+  const dotfile = join(fx.home, "dotfiles-caveman.md");
+  writeFileSync(dotfile, readFileSync(fx.skill("caveman")));
+  unlinkSync(fx.skill("caveman"));
+  symlinkSync(dotfile, fx.skill("caveman"));
+  unlinkSync(fx.skill("megacave"));
+  // A tampered entry must not reach outside the suite's SKILL.md files.
+  const outside = join(fx.home, "keep.txt");
+  writeFileSync(outside, "keep\n");
+  const parsed = JSON.parse(readFileSync(record, "utf8"));
+  parsed.files.push({ file: outside, sha256: "0" }, "garbage");
+  writeFileSync(record, JSON.stringify(parsed));
+
+  const disabled = await run(["disable", "claude"], fx.env);
+  assert.equal(disabled.code, 0, disabled.stderr);
+  assert.ok(lstatSync(fx.skill("caveman")).isSymbolicLink());
+  assert.equal(existsSync(dirname(fx.skill("megacave"))), false);
+  assert.equal(existsSync(dirname(fx.skill("ultracave"))), false);
+  assert.equal(readFileSync(outside, "utf8"), "keep\n");
+  assert.equal(existsSync(record), false);
+
+  // Record gone, so the next enable installs again instead of silently skipping.
+  assert.equal((await run(["enable", "claude"], fx.env)).code, 0);
+  assert.ok(existsSync(fx.skill("ultracave")));
+});
+
+test("enable codex skips a voice skill the Skills CLI already put in ~/.agents/skills", async () => {
+  const fx = voiceFixture();
+  mkdirSync(join(fx.home, "codex-home"));
+  mkdirSync(join(fx.home, ".agents", "skills", "caveman"), { recursive: true });
+  writeFileSync(join(fx.home, ".agents", "skills", "caveman", "SKILL.md"), "from skills cli\n");
+  const codex = await run(["enable", "codex"], fx.env);
+  assert.equal(codex.code, 0, codex.stderr);
+  assert.equal(existsSync(fx.skill("caveman", join(fx.home, "codex-home"))), false);
+  assert.ok(existsSync(fx.skill("ultracave", join(fx.home, "codex-home"))));
 });

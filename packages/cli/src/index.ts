@@ -21,6 +21,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  rmdirSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -8691,6 +8692,7 @@ function applyNativeMutations(agent: NativeAgent, profile: AgentProfile, mutatio
       atomicWriteFile(mutation.file, mutation.after);
       written.push(mutation);
     }
+    if (agent === "claude") rememberClaudeProfile();
     atomicWriteFile(nativeJournalPath(agent), Buffer.from(JSON.stringify(journal, null, 2) + "\n"));
     unlinkSync(nativePendingJournalPath(agent));
     return journal;
@@ -8836,6 +8838,85 @@ function nativeMutationsFor(agent: NativeAgent, gw: string, mcpBinary: string | 
               : aiderNativeMutations(gw);
 }
 
+// Voice skills (`output` suite) ride along with a Claude/Codex native install so
+// `/caveman` exists after `caveman <agent>`. Ownership lives in a sidecar, NOT in
+// the native journal: journal operations feed `nativeIntegrationStatus`, where an
+// edited or deleted file reads `degraded` and blocks enable. A skill the user
+// edits, pixelizes or deletes must never do that.
+function nativeVoiceSkillsRecordPath(agent: NativeAgent): string {
+  return join(cavemanHome(), "integrations", `${agent}.voice-skills.json`);
+}
+
+// Fail-open and once per install: an existing record means this already ran, so
+// a skill the user deleted afterwards is not written back.
+function installNativeVoiceSkills(agent: NativeAgent): void {
+  if (agent !== "claude" && agent !== "codex") return;
+  try {
+    const record = nativeVoiceSkillsRecordPath(agent);
+    if (existsSync(record)) return;
+    const root = join(agent === "claude" ? claudeConfigDir() : codexHomeDir(), "skills");
+    const files: Array<{ file: string; sha256: string }> = [];
+    let failure: unknown;
+    try {
+      for (const name of AGENT_SKILL_SUITES.output ?? []) {
+        const file = join(root, name, "SKILL.md");
+        // The Skills CLI puts global Codex skills in ~/.agents/skills; a copy
+        // there already answers `/caveman`, so a second one is only a duplicate.
+        if (agent === "codex" && existsSync(join(homedir(), ".agents", "skills", name, "SKILL.md"))) continue;
+        const body = Buffer.from(SKILLS[name]!);
+        mkdirSync(dirname(file), { recursive: true });
+        // `wx` never clobbers: an existing SKILL.md (any content, any link) stays
+        // the user's and is not recorded as ours.
+        try { writeFileSync(file, body, { flag: "wx" }); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+          // A half-written file would read as the user's on every later run.
+          try { unlinkSync(file); } catch { /* nothing landed */ }
+          throw error;
+        }
+        files.push({ file, sha256: bytesHash(body) });
+      }
+    } catch (error) { failure = error; }
+    // Record whatever landed so disable can still remove it; a total failure
+    // leaves no record and is retried by the next enable.
+    if (files.length > 0 || !failure) atomicWriteFile(record, Buffer.from(JSON.stringify({ files }, null, 2) + "\n"));
+    if (failure) throw failure;
+    if (files.length > 0) process.stderr.write(`  voice skills: ${files.map((item) => item.file).join(", ")}\n`);
+  } catch (error) {
+    process.stderr.write(dim(`→ voice skills not installed: ${(error as Error).message}\n`));
+  }
+}
+
+// Removes only files the record names that still hold the bytes we wrote. The
+// record always goes, even when a file could not be removed: a leftover record
+// would make every later enable skip the install, and an unowned file is the
+// safe direction.
+function removeNativeVoiceSkills(agent: NativeAgent): void {
+  const record = nativeVoiceSkillsRecordPath(agent);
+  try {
+    const bytes = fileBytes(record);
+    if (!bytes) return;
+    const files: unknown = (JSON.parse(bytes.toString("utf8")) as { files?: unknown }).files;
+    for (const item of Array.isArray(files) ? files : []) {
+      try {
+        const { file, sha256 } = item as { file?: unknown; sha256?: unknown };
+        // The record is user-writable: only ever touch a suite skill's SKILL.md.
+        if (typeof file !== "string" || basename(file) !== "SKILL.md" || !(AGENT_SKILL_SUITES.output ?? []).includes(basename(dirname(file)))) continue;
+        if (existsSync(file)) {
+          // A symlink the user put here is theirs even if its target matches.
+          if (!lstatSync(file).isFile() || bytesHash(readFileSync(file)) !== sha256) continue;
+          unlinkSync(file);
+        }
+        try { rmdirSync(dirname(file)); } catch { /* non-empty: preserve */ }
+      } catch (error) {
+        process.stderr.write(dim(`→ voice skill not removed: ${(error as Error).message}\n`));
+      }
+    }
+  } catch (error) {
+    process.stderr.write(dim(`→ voice skills not removed: ${(error as Error).message}\n`));
+  }
+  try { unlinkSync(record); } catch { /* absent */ }
+}
+
 function enableNative(argv: string[]) {
   const detected = argv.includes("--detected");
   const target = argv.find((arg) => !arg.startsWith("--"));
@@ -8859,7 +8940,10 @@ function enableNative(argv: string[]) {
       nativeProxyBinaryRequired(gw);
       const existing = nativeIntegrationStatus(agent);
       if (existing.installed) {
-        if (existing.state === "installed") return "already" as const;
+        if (existing.state === "installed") {
+          installNativeVoiceSkills(agent);
+          return "already" as const;
+        }
         // `--fix` on purpose: bare `caveman doctor <agent>` prints JSON that says
         // `degraded` and nothing that says how to leave that state, so pointing
         // at it alone dead-ends the user who followed this line here (#1049).
@@ -8882,6 +8966,7 @@ function enableNative(argv: string[]) {
             ? `  lifecycle/Core: ${nativeHookCommand(agent)}; command-output rewrite unavailable in Codex\n`
             : `  lifecycle/Core/tool rewrite: ${nativeHookCommand(agent)}${agent === "hermes" ? " via native plugin" : ` + ${cavemanBinForHook()} shrink-hook`}\n`);
       applyNativeMutations(agent, profile, mutations);
+      installNativeVoiceSkills(agent);
       return "enabled" as const;
     });
     // Outside the lock, and on BOTH outcomes. The native SessionStart hook
@@ -9160,14 +9245,148 @@ function writeNativeRestoration(file: string, bytes: Buffer | null): void {
   }
 }
 
-function restoreNativeJournalFiles(journal: NativeJournal): Array<{ file: string; bytes: Buffer | null }> {
+function claudeProfileRegistryPath(): string {
+  return join(cavemanHome(), "integrations", "claude-profiles.json");
+}
+
+function rememberedClaudeProfiles(): string[] {
+  const bytes = fileBytes(claudeProfileRegistryPath());
+  if (!bytes) return [];
+  const roots: unknown = JSON.parse(bytes.toString("utf8"));
+  if (!Array.isArray(roots) || roots.some((root) => typeof root !== "string" || !isAbsolute(root))) {
+    throw new Error("Claude profile registry is invalid; refusing incomplete disable");
+  }
+  return roots as string[];
+}
+
+function rememberClaudeProfile(): void {
+  const roots = new Set(rememberedClaudeProfiles());
+  roots.add(claudeConfigDir());
+  atomicWriteFile(claudeProfileRegistryPath(), Buffer.from(JSON.stringify([...roots].sort(), null, 2) + "\n"));
+}
+
+function nativeRealPath(file: string): string {
+  try { return realpathSync(file); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return resolve(file);
+  }
+}
+
+function claudeProfileFiles(journal: NativeJournal | undefined): string[] {
+  const roots = new Set([join(homedir(), ".claude"), claudeConfigDir(), ...rememberedClaudeProfiles()]);
+  for (const entry of readdirSync(homedir(), { withFileTypes: true })) {
+    if (/^\.claude[-_].+/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) {
+      roots.add(join(homedir(), entry.name));
+    }
+  }
+  for (const operation of journal?.operations ?? []) {
+    if (operation.kind === "claude-settings") roots.add(dirname(operation.file));
+  }
+  const files = new Set([nativeRealPath(join(homedir(), ".claude.json"))]);
+  for (const root of roots) {
+    for (const name of ["settings.json", "settings.local.json", ".claude.json", ".mcp.json"]) {
+      files.add(nativeRealPath(join(root, name)));
+    }
+  }
+  return [...files].sort();
+}
+
+function isClaudeRuntimeHook(command: unknown): boolean {
+  if (typeof command !== "string") return false;
+  const identity = managedHookIdentity(command);
+  return identity === "native-hook:claude" || identity === "shrink-hook" || identity === "mem:recall-hook";
+}
+
+function isCavemanClaudeRoute(value: unknown, hasNativeHooks: boolean): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || !/^\/w\/claude\/?$/.test(url.pathname)) return false;
+    return hasNativeHooks || ["localhost", "127.0.0.1", "[::1]", "gateway.caveman.so", "gw.caveman.so", "api.caveman.so"].includes(url.hostname)
+      || url.origin === new URL(gatewayURL()).origin;
+  } catch { return false; }
+}
+
+// Journals restore known originals. Discovery also reaches copied profiles and
+// orphaned installs whose journal lived in a deleted test or alternate home.
+// Only recognizable Caveman runtime entries are removed without a journal.
+function cleanClaudeProfile(root: Record<string, unknown>): boolean {
+  let changed = false;
+  let hasNativeHooks = false;
+  const hooks = root.hooks;
+  if (hooks && typeof hooks === "object" && !Array.isArray(hooks)) {
+    for (const [event, groups] of Object.entries(hooks)) {
+      if (!Array.isArray(groups)) continue;
+      const kept = groups.filter((group) => {
+        if (!group || typeof group !== "object" || !Array.isArray(group.hooks)) return true;
+        const remaining = group.hooks.filter((hook: Record<string, unknown> | null) => {
+          if (!hook || !isClaudeRuntimeHook(hook.command)) return true;
+          if (managedHookIdentity(hook.command as string) === "native-hook:claude") hasNativeHooks = true;
+          changed = true;
+          return false;
+        });
+        if (remaining.length === group.hooks.length) return true;
+        group.hooks = remaining;
+        return remaining.length > 0;
+      });
+      if (kept.length > 0) (hooks as Record<string, unknown>)[event] = kept;
+      else if (groups.length > 0) delete (hooks as Record<string, unknown>)[event];
+    }
+    if (changed && Object.keys(hooks).length === 0) delete root.hooks;
+  }
+  const env = root.env;
+  if (env && typeof env === "object" && !Array.isArray(env)) {
+    const values = env as Record<string, unknown>;
+    if (isCavemanClaudeRoute(values.ANTHROPIC_BASE_URL, hasNativeHooks)) {
+      delete values.ANTHROPIC_BASE_URL;
+      if (values[CLAUDE_ASSUME_FIRST_PARTY_ENV] === "1") delete values[CLAUDE_ASSUME_FIRST_PARTY_ENV];
+      for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+        if (typeof values[key] === "string" && /^cave_(?:live|test)_/.test(values[key])) delete values[key];
+      }
+      if (Object.keys(values).length === 0) delete root.env;
+      changed = true;
+    }
+  }
+  const servers = root.mcpServers;
+  if (servers && typeof servers === "object" && !Array.isArray(servers)) {
+    const entries = servers as Record<string, unknown>;
+    const server = entries.caveman as { command?: unknown } | undefined;
+    if (server && typeof server.command === "string" && hookCommandBasename(server.command) === "caveman-mcp") {
+      delete entries.caveman;
+      if (Object.keys(entries).length === 0) delete root.mcpServers;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function restoreNativeJournalFiles(journal: NativeJournal | undefined, allClaudeProfiles = false): Array<{ file: string; bytes: Buffer | null }> {
   // Resolve every merge/conflict before first write. A conflict therefore leaves
   // all host files and the journal byte-identical.
-  const restored = journal.operations.map((operation) => ({ operation, bytes: restoreNativeOperation(operation) }));
-  const current = journal.operations.map((operation) => ({ file: operation.file, bytes: fileBytes(operation.file) }));
+  const restored = new Map((journal?.operations ?? []).map((operation) => [nativeRealPath(operation.file), restoreNativeOperation(operation)]));
+  if (allClaudeProfiles) {
+    for (const file of claudeProfileFiles(journal)) {
+      const bytes = restored.has(file) ? restored.get(file) : fileBytes(file);
+      if (!bytes) continue;
+      const root = parseJsonc(bytes.toString("utf8"));
+      if (!root || typeof root !== "object" || Array.isArray(root)) throw new Error(`${file} is not a JSON object`);
+      if (cleanClaudeProfile(root as Record<string, unknown>)) restored.set(file, jsonBytes(root as Record<string, unknown>));
+    }
+  }
+  const current = [...restored].map(([file]) => ({ file, bytes: fileBytes(file) }));
+  if (allClaudeProfiles && current.length > 0) {
+    const backup = join(cavemanHome(), "integrations", "backups", `claude-disable-${randomUUID()}`);
+    const manifest = current.map((item, index) => {
+      const path = join(backup, `${index}.bin`);
+      if (item.bytes) atomicWriteFile(path, item.bytes);
+      return { file: item.file, backup: item.bytes ? path : null };
+    });
+    atomicWriteFile(join(backup, "manifest.json"), Buffer.from(JSON.stringify(manifest, null, 2) + "\n"));
+    process.stderr.write(`${mark("ok")} Claude profile backups: ${backup}\n`);
+  }
   try {
-    for (const item of restored) writeNativeRestoration(item.operation.file, item.bytes);
-    unlinkSync(nativeJournalPath(journal.agent));
+    for (const [file, bytes] of restored) writeNativeRestoration(file, bytes);
+    if (journal) unlinkSync(nativeJournalPath(journal.agent));
   } catch (error) {
     for (const item of current) {
       try { writeNativeRestoration(item.file, item.bytes); } catch { /* original error remains authority */ }
@@ -9193,21 +9412,28 @@ function cleanupNativeAgentFiles(target: NativeAgent, journal: NativeJournal): v
   }
 }
 
-function disableNativeAgent(target: NativeAgent): boolean {
+function disableNativeAgent(target: NativeAgent, allClaudeProfiles = false): boolean {
   const disabled = withIntegrationLock(target, () => {
     recoverPendingNativeInstallUnlocked(target);
     const journal = readNativeJournal(target);
+    if (target === "claude" && allClaudeProfiles) {
+      const changed = restoreNativeJournalFiles(journal, true);
+      removeNativeVoiceSkills(target);
+      return changed.length > 0 ? { journal, files: changed.length } : undefined;
+    }
     if (!journal) return undefined;
     restoreNativeJournalFiles(journal);
-    return journal;
+    removeNativeVoiceSkills(target);
+    return { journal, files: journal.operations.length };
   });
   if (!disabled) {
-    process.stderr.write(`${mark("warn")} ${target}: no native Caveman integration journal found\n`);
+    process.stderr.write(`${mark("warn")} ${target === "claude" && allClaudeProfiles ? "Claude Code: no native Caveman routing or hooks found across discovered profiles" : `${target}: no native Caveman integration journal found`}\n`);
     return false;
   }
-  cleanupNativeAgentFiles(target, disabled);
+  if (disabled.journal) cleanupNativeAgentFiles(target, disabled.journal);
   const name = findAgent(target)?.display_name ?? target;
   process.stderr.write(`${mark("ok")} ${name}: ${target === "aider" ? "shallow" : "native"} Caveman disabled; unrelated host edits preserved\n`);
+  if (target === "claude" && allClaudeProfiles) process.stderr.write(`Checked all discovered Claude profiles. Restart running Claude sessions; their existing environment cannot be cleared by disable.\n`);
   return true;
 }
 
@@ -9237,21 +9463,18 @@ function repairNativeAgent(target: NativeAgent): void {
       atomicWriteFile(nativeJournalPath(target), journalBytes);
       throw error;
     }
+    installNativeVoiceSkills(target);
   });
   process.stderr.write(`${mark("ok")} ${profile.display_name}: native Caveman repaired; unrelated host edits preserved\n`);
 }
 
 function disableNative(argv: string[]) {
-  if (argv.length === 1 && argv[0] === "--all") {
+  if (argv.length === 0 || (argv.length === 1 && argv[0] === "--all")) {
     const targets = (["claude", "codex", "hermes", "gemini", "opencode", "pi", "aider"] as NativeAgent[])
-      .filter((agent) => Boolean(readNativeJournal(agent) || readPendingNativeJournal(agent)));
-    if (targets.length === 0) {
-      process.stderr.write(`${mark("warn")} no native Caveman integrations are journaled\n`);
-      return;
-    }
+      .filter((agent) => agent === "claude" || Boolean(readNativeJournal(agent) || readPendingNativeJournal(agent)));
     let failed = 0;
     for (const target of targets) {
-      try { disableNativeAgent(target); }
+      try { disableNativeAgent(target, true); }
       catch (error) {
         failed++;
         process.stderr.write(`${mark("bad")} ${target}: ${(error as Error).message}\n`);
@@ -9262,7 +9485,7 @@ function disableNative(argv: string[]) {
   }
   const target = argv[0];
   if ((target !== "claude" && target !== "codex" && target !== "hermes" && target !== "gemini" && target !== "opencode" && target !== "pi" && target !== "aider") || argv.length !== 1) commandUsage("disable <claude|codex|hermes|gemini|opencode|pi|aider> | disable --all");
-  disableNativeAgent(target);
+  disableNativeAgent(target, true);
 }
 
 function nativeIntegrationStatus(agent: NativeAgent) {
