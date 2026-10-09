@@ -8,7 +8,7 @@ Codex stores per-session modes in `$PLUGIN_DATA/.caveman-sessions/`, never
 falls back to another chat's legacy flag, and requires a valid `session_id`.
 It emits JSON `additionalContext` without `systemMessage`. Startup/clear apply
 the default; resume/compact preserve the stored mode, including `off`. Native
-`$skill` and `[$skill](path)` references use the common parser; Claude-only
+`$skill` and Markdown skill references use the common parser; Claude-only
 statusline, model overrides and usage scripts do not run in Codex.
 
 ## What's Included
