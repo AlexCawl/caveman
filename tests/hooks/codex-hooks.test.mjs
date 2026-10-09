@@ -89,6 +89,16 @@ test('default resolution uses env, payload project config, then user config', t 
   assert.match(f.run('SessionStart', {}, { CAVEMAN_DEFAULT_MODE: ' ultra' }), /mode: caveman/);
 });
 
+test('Claude SDK entrypoint does not override the Codex default', t => {
+  const f = fixture(t);
+  writeFileSync(join(f.project, '.caveman.json'), '{"defaultMode":"ultracave"}');
+  for (const source of ['startup', 'resume']) {
+    assert.match(f.run('SessionStart', { source, session_id: 'sdk-' + source },
+      { CLAUDE_CODE_ENTRYPOINT: 'sdk-ts' }), /mode: ultracave/);
+    assert.equal(f.mode('sdk-' + source), 'ultracave');
+  }
+});
+
 test('manual startup, explicit activation, durable off, and clear reset', t => {
   const f = fixture(t);
   f.env.CAVEMAN_DEFAULT_MODE = 'manual';
