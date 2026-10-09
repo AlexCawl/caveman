@@ -60,8 +60,8 @@
     "defaultPrompt": [
       "Use caveman mode. Cut filler. Keep technical accuracy."
     ],
-    "composerIcon": "./.codex-plugin/assets/caveman-small.svg",
-    "logo": "./.codex-plugin/assets/caveman.svg",
+    "composerIcon": "./assets/caveman-small.svg",
+    "logo": "./assets/caveman.svg",
     "screenshots": [],
     "brandColor": "#6B7280"
   }
